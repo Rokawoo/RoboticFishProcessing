@@ -9,7 +9,8 @@ Implements Requirement Spec **Section 2.2 Vision System (VS)** and **Section 2.3
 | Folder | Contents |
 |---|---|
 | `rfp_vision/` | Runtime vision node: detection, keypoints, pose estimation, failure checks, fish list output |
-| `data/` | Dataset pipeline, one folder per stage: `preprocessing/`, `annotating/`, `training/` |
+| `data/` | Dataset pipeline, one folder per stage: `preprocessing/`, `annotating/`, `training/`; see [data/README.md](data/README.md) for how to run it |
+| `trained_cv_models/` | One folder per training run, with its weights (`weights/best.pt`), plots and scores; not in Git |
 | `configs/` | Camera settings, model paths and thresholds |
 | `tests/` | Tests |
 

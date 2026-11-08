@@ -58,8 +58,10 @@ RoboticFishProcessing/
 │   ├── rfp_vision/     Python package (runtime vision node)
 │   ├── data/           dataset pipeline, one folder per stage
 │   │   ├── preprocessing/  capture, frame extraction, filtering
-│   │   ├── annotating/     labeling and label export
-│   │   └── training/       split by fish, training, evaluation
+│   │   ├── annotating/     labeling, augmentation and label review
+│   │   ├── dataset/        frames, labels and the train/val split (not in Git)
+│   │   └── training/       training and evaluation
+│   ├── trained_cv_models/  one folder per training run (not in Git)
 │   ├── configs/
 │   └── tests/
 ├── Arm/            # motion, grasp sequence, suction gripper, placement, calibration, safety
@@ -72,7 +74,10 @@ RoboticFishProcessing/
 │   ├── prompts/        VLM prompt templates
 │   ├── configs/
 │   └── tests/
-├── pyproject.toml
+├── pyproject.toml      # packages, per subsystem (optional extras)
+├── environment.yml     # conda dev environment (uses requirements.txt)
+├── requirements.txt    # pip: all extras, plus PyTorch with CUDA
+├── CLAUDE.md           # notes for AI coding assistants working on this repo
 └── LICENSE
 ```
 
@@ -100,19 +105,25 @@ Each subsystem folder has its own README with what it owns and which Requirement
 
 ## Getting started
 
-ROS 2 Humble, MoveIt 2, frcobot_ros2, librealsense and vLLM are installed system-wide (apt, source or their own installers), not through pip. The Python packages in this repository install with pip:
+ROS 2 Humble, MoveIt 2, frcobot_ros2, librealsense and vLLM are installed system-wide (apt, source or their own installers), not through pip or conda.
+
+For development (the Vision data pipeline, training, tests), create the conda environment. It installs every Python package of this repository, including PyTorch with CUDA:
 
 ```bash
 git clone https://github.com/Rokawoo/RoboticFishProcessing.git
 cd RoboticFishProcessing
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"   # add vision, arm, control or analysis as needed, e.g. ".[dev,vision]"
+conda env create -f environment.yml   # once; after pyproject.toml changes: conda env update -f environment.yml --prune
+conda activate rfp                    # in VS Code, pick "rfp" as the Python interpreter
 pytest
 ```
 
+Without conda, any Python 3.10 environment works the same way: `pip install -r requirements.txt`. To install only part of the project, pick extras instead, e.g. `pip install -e ".[dev,arm]"`. PyTorch comes from the CUDA 13.0 index, which needs NVIDIA driver 580 or newer; `requirements.txt` says how to switch for an older driver. Check the GPU is used with `python -c "import torch; print(torch.cuda.is_available())"`.
+
+**Label Studio** runs in its own environment, because it pins older libraries (such as `numpy<2`) that clash with this one: `conda create -n label-studio python=3.11`, then `conda activate label-studio` and `pip install label-studio`, or use its official Docker image (`heartexlabs/label-studio`). It opens in the browser, and its YOLO exports go next to the images in `Vision/data/dataset/image_sets/` (see [Vision/data/README.md](Vision/data/README.md)).
+
 ## Data and models
 
-Video clips (`.bag` and `.mp4`), extracted frames, labels, model weights, MLflow runs and rosbag2 logs are not stored in Git; they go on the team's dataset store, and `.gitignore` keeps them out of the repository. Every clip and frame is named by fish ID and view, and the dataset is split into train, validation and test sets by fish, so no fish appears in more than one set and the test results reflect fish the models have never seen.
+Video clips (`.bag` or `.db3`, and `.mp4`), extracted frames, labels, model weights, MLflow runs and rosbag2 logs are not stored in Git; they go on the team's dataset store, and `.gitignore` keeps them out of the repository. Every clip and frame is named by fish ID and view, and the dataset is split into train, validation and test sets by fish, so no fish appears in more than one set and the test results reflect fish the models have never seen.
 
 ## Documentation
 
