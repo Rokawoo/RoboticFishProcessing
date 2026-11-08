@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robotic-fish-processing"
+version = "0.0.1"
+description = "Vision-guided grasping and placement of catfish with a FAIRINO FR5 arm, a RealSense camera, YOLO and a VLM"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "The RoboticFishProcessing authors" }]
+# ROS 2 Humble (rclpy, MoveIt 2), frcobot_ros2, librealsense and vLLM are
+# installed system-wide, not from PyPI. See README.md.
+dependencies = []
+
+[project.optional-dependencies]
+vision = [
+    "numpy",
+    "opencv-python",
+    "pyrealsense2>=2.51.1",
+    "ultralytics>=8.4",
+    "imagehash",
+    "mlflow",
+]
+arm = [
+    "numpy",
+    "opencv-python",
+]
+control = [
+    "openai",
+]
+analysis = [
+    "pandas",
+    "matplotlib",
+]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[project.urls]
+Repository = "https://github.com/Rokawoo/RoboticFishProcessing"
+
+[tool.setuptools.packages.find]
+where = ["Vision", "Arm", "ControlSys"]
+include = ["rfp_*"]
+
+[tool.pytest.ini_options]
+testpaths = ["Vision/tests", "Arm/tests", "ControlSys/tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

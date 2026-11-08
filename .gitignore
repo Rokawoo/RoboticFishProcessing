@@ -218,3 +218,36 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ==== RoboticFishProcessing ====
+
+# ROS 2 / colcon workspace output (build/ is ignored above)
+install/
+log/
+
+# Recordings, frames, labels and model files stay on the dataset store, not in
+# Git. Vision/data/ holds the code for each stage of the data pipeline.
+/data/
+datasets/
+*.bag
+*.mcap
+*.db3
+*.mp4
+Vision/data/**/*.png
+Vision/data/**/*.jpg
+Vision/data/**/*.jpeg
+
+# Model weights and training runs
+*.pt
+*.pth
+*.onnx
+*.engine
+runs/
+mlruns/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
