@@ -255,6 +255,8 @@ Vision/data/dataset/**
 !Vision/data/dataset/**/
 !Vision/data/dataset/**/.gitkeep
 !Vision/data/dataset/**/*.py
+# The class list defines what each class id means, so it is shared.
+!Vision/data/dataset/classes.txt
 
 # Model weights and training runs
 *.pt
@@ -263,6 +265,11 @@ Vision/data/dataset/**
 *.engine
 runs/
 mlruns/
+# One folder per training run (weights, plots, results): keep only the folder.
+Vision/trained_cv_models/*
+!Vision/trained_cv_models/.gitkeep
+# Local MLflow database and logged files from training/train.py
+Vision/data/training/mlflow/
 
 # Editors and OS
 .vscode/
