@@ -1,3 +1,13 @@
+# Training Data
+*.PNG
+*.png
+*.jpeg
+*.jpg
+*.JPG
+*.mp4
+*.mov
+*.mp3
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -236,6 +246,15 @@ datasets/
 Vision/data/**/*.png
 Vision/data/**/*.jpg
 Vision/data/**/*.jpeg
+
+# Vision/data/dataset: only the folder layout (.gitkeep files) and scripts are
+# tracked. Images, videos, labels, YOLO caches and data.yaml stay local.
+# Ignore everything, re-include folders so Git looks inside them, then
+# re-include the files to keep.
+Vision/data/dataset/**
+!Vision/data/dataset/**/
+!Vision/data/dataset/**/.gitkeep
+!Vision/data/dataset/**/*.py
 
 # Model weights and training runs
 *.pt
