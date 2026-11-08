@@ -1,52 +1,32 @@
-# Fish segmentation model: training settings for train.py
-#
-# Any Ultralytics train argument can go here. Anything left out uses the
-# Ultralytics default. Full list: https://docs.ultralytics.com/modes/train/#train-settings
-#
-# Relative paths are relative to this file. Any value can be overridden from
-# the command line without editing this file:
-#   python train.py epochs=5 batch=8
+# Fish segmentation training settings for train.py.
+# Any Ultralytics train argument works (https://docs.ultralytics.com/modes/train/#train-settings);
+# omitted ones use Ultralytics' defaults. Relative paths are relative to this file.
+# Override on the command line: python train.py epochs=5 batch=8
 
-# --- Model and data ---------------------------------------------------------
-model: yolo26m-seg.pt        # COCO-pretrained YOLO26 medium segmentation weights, downloaded
-                             # into this folder on first use. Sizes: n < s < m < l < x
-                             # (bigger = more accurate, slower, more VRAM).
-data: ../dataset/train/data.yaml  # written by the splitter; points at images/ and labels/ there
+model: yolo26m-seg.pt             # downloaded here on first use; sizes n < s < m < l < x
+data: ../dataset/train/data.yaml  # written by the splitter
+project: ../../trained_cv_models  # run folder: <name>_<model>_<date>_<time>/
+name: fish_seg                    # also the MLflow experiment name
 
-# --- Output -----------------------------------------------------------------
-project: runs                # results go to runs/<name>_<date>_<time>/ (runs/ is git-ignored)
-name: fish_seg               # also the MLflow experiment name
+epochs: 300                  # upper limit; early stopping ends sooner
+patience: 50
+imgsz: 640                   # long side of the 1280x720 D405 frames; try 960 if mask edges are coarse
+batch: -1                    # auto: largest batch in ~60% of GPU memory
+cache: disk                  # .npy next to the images; 'ram' is faster but not exactly repeatable
+workers: 8
 
-# --- How long ---------------------------------------------------------------
-epochs: 300                  # upper limit; early stopping usually ends training sooner
-patience: 50                 # stop after 50 epochs with no improvement on val
-
-# --- Speed ------------------------------------------------------------------
-imgsz: 640                   # D405 color frames (1280x720) are scaled so the long side is 640.
-                             # Try 960 if mask edges look coarse (slower, needs more VRAM).
-batch: -1                    # auto: the largest batch that fits in ~60% of GPU memory
-cache: disk                  # save decoded images as .npy next to the images: faster epochs,
-                             # and repeatable runs ('ram' is faster but not exactly repeatable).
-                             # The splitter deletes these files along with the old split.
-workers: 8                   # parallel data-loading processes
-
-# --- Augmentation -----------------------------------------------------------
-# Random changes to each training image so the model learns the fish, not the
-# exact pictures. Tuned for our workcell: camera looking down from a fixed
-# observation pose, diffuse lighting, a plain table, fish at any heading,
-# several fish per image.
-degrees: 180                 # fish lie at any heading, so every rotation is a real case
+# Augmentation for a top-down camera at a fixed pose: fish at any heading, several per image.
+degrees: 180                 # any heading is real
 fliplr: 0.5                  # a mirrored left-side fish looks like a right-side fish
-flipud: 0.5                  # a top-down view has no "up", so vertical flips are real cases too
-scale: 0.3                   # camera height is fixed; only fish size varies (default 0.5)
+flipud: 0.5                  # top-down: no "up"
+scale: 0.3                   # fixed camera height (default 0.5)
 translate: 0.1
 shear: 0.0
-perspective: 0.0             # the camera always sees the table from the same pose
-hsv_h: 0.015                 # hue: fish color barely changes
-hsv_s: 0.5                   # saturation: wet vs dry skin (default 0.7, meant for outdoor scenes)
-hsv_v: 0.3                   # brightness: lighting is controlled (default 0.4)
-mosaic: 1.0                  # stitch 4 images into 1: more fish and more context per step
-close_mosaic: 15             # last 15 epochs use whole images, like the real camera sees
-mixup: 0.0                   # see-through blended fish never happen and blur the mask edges
-copy_paste: 0.3              # paste mirrored copies of 30% of the fish into free spots of the
-                             # same image: more fish per image, at new headings and positions
+perspective: 0.0             # fixed camera pose
+hsv_h: 0.015
+hsv_s: 0.5                   # wet vs dry skin (default 0.7)
+hsv_v: 0.3                   # controlled lighting (default 0.4)
+mosaic: 1.0
+close_mosaic: 15             # last epochs on whole images, as the camera sees them
+mixup: 0.0                   # blended, see-through fish never happen
+copy_paste: 0.3              # mirrored copies of 30% of the fish into free spots of the image
