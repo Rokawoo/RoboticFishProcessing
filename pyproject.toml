@@ -23,6 +23,9 @@ vision = [
     "ultralytics>=8.4",
     "imagehash",
     "mlflow",
+    "albumentations>=2.0",  # data/annotating/augment_images.py
+    "pillow",               # data/annotating/label_editor.py
+    "pyyaml",
 ]
 arm = [
     "numpy",
@@ -37,7 +40,7 @@ analysis = [
 ]
 dev = [
     "pytest",
-    "ruff",
+    "ruff>=0.17",  # older versions check a smaller default rule set
 ]
 
 [project.urls]
