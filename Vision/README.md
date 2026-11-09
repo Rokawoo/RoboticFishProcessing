@@ -33,7 +33,7 @@ flowchart TD
 |---|---|---|---|
 | 1. Frames | `python preprocessing/extract_frames.py` | Pick videos (`.mp4`, `.bag`, `.db3`) and frames per second. Name videos by fish and view: `fish012_left.mp4`. | `dataset/image_sets/<video name>/`, minus blurry and near-duplicate frames |
 | 2. Label | `python annotating/auto_labeler.py` | Pick a set, switch to **Auto-label** (G), click each fish, check the cyan outline, Enter, Right. No fish in the image: B. Or Label Studio, exporting YOLO labels next to the images. | A `.txt` label next to each image |
-| 3. Augment | `python annotating/augment_images.py` | Pick a labeled set and copies per image. Lighting, white balance, motion blur, noise, shadow; pixels only, so labels copy unchanged. | `dataset/image_sets/<set> (augmented)/` |
+| 3. Augment | `python annotating/augment_images.py` (`--all`: every set) | Pick a labeled set and copies per image. Lighting, white balance, motion blur, noise, shadow; pixels only, so labels copy unchanged (polygons past the edge are cut at it). | `dataset/image_sets/<set> (augmented)/` |
 | 4. Review | `python annotating/label_viewer.py` | Step through any set: drag corners, delete bad polygons or images (same as the auto labeler's Edit mode). | Fixed labels; deleted images in `<set>/_deleted/` |
 | 5. Split | `python dataset/train/train_val_data_splitter.py` | Check the split it shows, confirm. | `dataset/train/` (80/10/10 train/val/test), `data.yaml` |
 | 6. Train | `python training/train.py` | Settings: `training/fish_seg.yaml`; override on the command line (`epochs=5`). | `trained_cv_models/<name>_<model>_<date>_<time>/`, scored on train/val/test |

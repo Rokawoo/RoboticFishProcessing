@@ -214,11 +214,64 @@ def test_effects_change_pixels_but_never_move_the_fish(augmenter):
     truth = image[:, :, 1] > 200
     for name, effect in augmenter.build_effects().items():
         pipeline = A.Compose([effect], seed=0)
-        for _ in range(5):
+        for _ in range(10):
             out = pipeline(image=image)["image"]
             assert out.shape == image.shape and (out != image).any(), name
             fish = out[:, :, 1].astype(int) - out[:, :, 2].astype(int) > 60
             assert iou(truth, fish) > 0.85, name
+
+
+def test_motion_blur_is_centered_on_the_labels(augmenter):
+    import albumentations as A
+    import numpy as np
+
+    dot = np.zeros((41, 41, 3), np.uint8)
+    dot[20, 20] = 255
+    blur = A.Compose([augmenter.CenteredMotionBlur(blur_limit=(3, 9), p=1)], seed=0)
+    for _ in range(20):
+        out = blur(image=dot)["image"][:, :, 0].astype(float)
+        ys, xs = np.nonzero(out)
+        weights = out[ys, xs]
+        assert len(xs) > 1  # blurred
+        center = ((xs * weights).sum() / weights.sum(), (ys * weights).sum() / weights.sum())
+        assert center == pytest.approx((20, 20), abs=0.01)  # not moved
+
+
+def test_labels_carry_over_exactly_and_are_cut_at_the_edge(augmenter, tmp_path):
+    source = tmp_path / "a.txt"
+    inside = "0 0.1234567 0.2 0.3 0.2 0.3 0.4"
+    box = "1 0.5 0.5 0.2 0.2"
+    lines = [inside, "0 0.6 0.4 1.4 0.5 0.6 0.6", box, "0 1.1 0.2 1.5 0.2 1.5 0.6"]
+    source.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    target = tmp_path / "b.txt"
+    assert augmenter.carry_label(source, target) == (1, 1)  # one cut, one fully outside
+    lines = target.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == inside and lines[2] == box  # copied character for character
+    assert lines[1] == "0 0.600000 0.400000 1.000000 0.450000 1.000000 0.550000 0.600000 0.600000"
+    assert len(lines) == 3
+
+
+def test_all_augments_every_labeled_set_and_skips_the_rest(augmenter, tmp_path, monkeypatch):
+    import numpy as np
+
+    sets = tmp_path / "image_sets"
+    for name in ("fishA", "fishB", "_trash"):
+        (sets / name).mkdir(parents=True)
+        pc.imwrite(sets / name / f"{name}_000000.jpg", np.full((60, 80, 3), 100, np.uint8))
+    pc.write_label(sets / "fishA" / "fishA_000000.txt", [(0, [(0.1, 0.1), (0.5, 0.1), (0.5, 0.5)])])
+    monkeypatch.setattr(augmenter, "IMAGE_SETS_DIR", sets)
+    monkeypatch.setattr(sys, "argv", ["augment_images.py", "--all"])
+    augmenter.main()
+    assert sorted(p.name for p in sets.iterdir()) == [
+        "_trash",
+        "fishA",
+        "fishA (augmented)",
+        "fishB",
+    ]
+    assert len(pc.list_images(sets / "fishA (augmented)")) == augmenter.DEFAULT_COPIES
+    monkeypatch.setattr(sys, "argv", ["augment_images.py", "--all", "--copies", "1", "-y"])
+    augmenter.main()  # the augmented set itself isn't augmented again; fishA's is replaced
+    assert len(pc.list_images(sets / "fishA (augmented)")) == 1
 
 
 def test_label_studio_export_layout_is_understood(augmenter, tmp_path):

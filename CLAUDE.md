@@ -36,7 +36,7 @@ Requirement IDs (Requirement Spec, Confluence) use these prefixes in code, docst
 Rules the code depends on:
 
 - **`pipeline_common.py` owns paths, file names, label I/O, image I/O and popups.** Use its helpers (`set_dirs`, `label_index`, `find_label`, `read_label`, `write_label`, `imread`, `imwrite`, `mask_to_polygon`, `ask_*`). The scripts aren't a package; each adds `Vision/data` to `sys.path`.
-- **Labels** are YOLO segmentation polygons, normalized 0-1. `read_label` returns non-polygon lines separately (`other`); write them back unchanged.
+- **Labels** are YOLO segmentation polygons, normalized 0-1. `read_label` returns non-polygon lines separately (`other`); write them back unchanged. `write_label` cuts polygons at the image edge (`clip_polygon`, joining the crossing points along the edge): YOLO skips images whose labels go past 0-1.
 - **Names carry meaning.** Frames: `<video name>_<frame number:06d>.jpg`; videos are named by fish ID and view (`fish012_left.mp4`). Augmented copies: `<original name>__aug<n>-<effect>`. Label Studio's `1a2b3c4d-` label prefix is matched.
 - **The split** is 80/10/10 train/val/test (`TRAIN_RATIO`, `TEST_RATIO`), each set cut in blocks of consecutive frames so near-duplicate neighbors don't leak across splits; augmented images go to train only, when their original is in train. The same fish may be in every split (the team decided against splitting by fish, despite VD-70's wording). Keep the block and augmented rules.
 - `Vision/data/dataset/classes.txt` is the class list (tracked); the splitter stops if a set's `classes.txt` disagrees.
@@ -62,6 +62,7 @@ Rules the code depends on:
 - `cv2.imread`/`imwrite` fail on non-ASCII paths on Windows: use `pipeline_common.imread`/`imwrite`.
 - A second `tk.Tk()` after destroying one can fail on Windows ("Can't find a usable init.tcl"): reuse one root.
 - Tk on Windows is blurry at display scaling > 100% unless the process is DPI aware. ttk's clam theme gives buttons a minimum width of 11 characters (`width=0` fixes it). Tk deletes a `tkfont.Font` when Python collects it: keep a reference.
+- Albumentations' `MotionBlur` kernels are off-center (up to 2.8 px; 1.5 px with `allow_shifted=False`), moving the picture off its labels: `augment_images.CenteredMotionBlur` makes them point-symmetric. To check for shifts, phase correlation misreads symmetric blurs; use `cv2.matchTemplate`.
 - Augmentation is pixel-only on purpose: labels copy byte for byte; geometry is Ultralytics' job at training time. (A spatial effect would need `BORDER_CONSTANT`, `fill_mask=0`: mirrored borders create unlabeled fish.) `PlanckianJitter`'s default range reaches 15000 K (strong blue); we use 4000-7500 K.
 - Ultralytics: `settings` is one file per user shared by all projects (`train.py` restores the mlflow setting); downloads land in the working directory (`train.py` changes into `training/`); `cache="ram"` isn't deterministic (we use `"disk"`); YOLO26 needs 8.4+.
 - MLflow 3 refuses the plain-folder store: use SQLite (needs the full `mlflow` package, not `mlflow-skinny`).
