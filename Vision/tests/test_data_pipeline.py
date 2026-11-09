@@ -537,6 +537,37 @@ def test_editor_delete_polygon_and_image(editor):
     assert len(ed.images) == 2
 
 
+def test_toolbar_state_help_tooltip_and_open_another_set(editor, tmp_path, monkeypatch):
+    import numpy as np
+    from PIL import Image
+
+    ed = editor
+    module = load_script("annotating/label_viewer.py")  # Tooltip, messagebox
+    assert ed.delete_button.instate(["disabled"])  # nothing selected
+    ed.on_press(click(ed, 100, 60))
+    assert ed.delete_button.instate(["!disabled"])
+    ed.show_help()
+    assert ed.help_window.winfo_exists()
+    tip = module.Tooltip(ed.delete_button, "Delete the selected polygon")
+    tip.show()
+    assert tip.window.winfo_exists()
+    tip.hide()
+    assert tip.window is None
+
+    errors = []
+    monkeypatch.setattr(module.messagebox, "showerror", lambda *a, **k: errors.append(a))
+    ed.open_folder(tmp_path / "missing")
+    assert errors and ed.folder.name == "fishA"  # nothing to open: stays on this set
+    other = tmp_path / "fishC"
+    other.mkdir()
+    for i in range(2):
+        Image.fromarray(np.full((100, 100, 3), 90, np.uint8)).save(other / f"fishC_{i:06d}.jpg")
+    ed.delete_polygon()
+    ed.open_folder(other)
+    assert pc.read_label(tmp_path / "fishA" / "fishA_000000.txt") == ([], [])  # saved first
+    assert ed.folder == other.resolve() and len(ed.images) == 2 and not ed.polys
+
+
 def test_zoom_keeps_the_point_under_the_mouse(editor):
     ed = editor
     point = (200.0, 100.0)
@@ -587,8 +618,12 @@ def auto_labeler(tmp_path, monkeypatch, tk_root):
 
 def test_auto_labeler_color_engine_click_enter_next_image_and_label_the_rest(auto_labeler):
     app = auto_labeler
+    assert not app.color_row.winfo_manager()  # color controls hidden for SAM
     app.set_engine("color")
     app.set_auto(True)
+    assert app.color_row.winfo_manager() == "pack"
+    assert app.badge.cget("text") == "AUTO-LABEL · COLOR"
+    assert app.add_button.instate(["disabled"])  # nothing outlined yet
     app.on_press(click(app, 320, 180))  # the fish's back
     app.on_press(click(app, 325, 225, shift=True))  # its belly: same fish, another color
     app.update_preview()

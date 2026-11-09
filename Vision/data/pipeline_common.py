@@ -251,6 +251,25 @@ def load_class_names(set_folder: Path | None = None) -> list[str]:
 _popup_root = None
 
 
+def enable_dpi_awareness() -> None:
+    """
+    Draw Tk windows at the screen's real resolution on Windows. Without it,
+    Windows renders them small and stretches them at display scaling > 100%,
+    which makes text and images blurry. Call before creating the Tk root.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # system DPI aware
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+
 def _hidden_root():
     """
     One hidden Tk window per run for all dialogs. Creating a second Tk after
@@ -260,6 +279,7 @@ def _hidden_root():
     import tkinter as tk
 
     if _popup_root is None:
+        enable_dpi_awareness()
         try:
             _popup_root = tk.Tk()
         except tk.TclError:

@@ -6,24 +6,9 @@ Usage:
     python label_viewer.py                 # pick a set folder in a popup
     python label_viewer.py "<set folder>"
 
-Changes are saved when you change image or close the window (Ctrl+S saves now).
-
-Mouse
-    click a fish                 select its polygon
-    drag a corner                move it
-    drag the dot mid-edge        add a corner there
-    right-click a corner         remove it
-    wheel / middle-drag          zoom at the mouse / pan (R resets the view)
-Keys
-    Right / Left (or D / A)      next / previous image
-    U                            next image without a label
-    N                            new polygon: click corners, then Enter or click the
-                                 first corner (Backspace: remove last corner, Esc: cancel)
-    Delete                       delete the selected polygon
-    0-9                          class of the selected polygon and of new ones
-    Ctrl+Z / Ctrl+S              undo / save
-    Ctrl+Delete                  delete the image and its label (moved to <set>/_deleted/)
-    H / F                        hide labels / toggle the fill
+Every button explains itself when you hover over it; F1 (or ?) lists all mouse
+actions and keys. Changes are saved when you change image or set, or close the
+window (Ctrl+S saves now).
 
 An image whose polygons are all deleted keeps an empty label file: YOLO reads
 that as "no fish" (background), unlike an image without a label file.
@@ -36,7 +21,8 @@ import shutil
 import sys
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageTk
 
@@ -45,6 +31,7 @@ from pipeline_common import (
     IMAGE_SETS_DIR,
     LABEL_EXT,
     TRASH_DIR_NAME,
+    enable_dpi_awareness,
     find_label,
     fix_console,
     label_index,
@@ -68,18 +55,50 @@ COLORS = [  # per class id
     (200, 200, 200),
 ]
 FILL_ALPHA = 60
-HIT_RADIUS = 9  # screen px
+HIT_RADIUS = 9  # px at 100% display scaling
 UNDO_LIMIT = 100
 MAX_ZOOM = 40.0  # x fit-to-window
+MESSAGE_MS = 8000  # messages in the status bar disappear after this
 
-HELP = (
-    "Click: select   Drag corner: move   Drag mid-edge dot: add corner   "
-    "Right-click corner: remove   Del: delete polygon   0-9: class\n"
-    "N: new polygon (click corners; Enter or first corner: finish; Backspace; Esc)   "
-    "Ctrl+Z: undo   Ctrl+S: save   Ctrl+Del: delete image\n"
-    "Left/Right or A/D: image   U: next unlabeled   H: hide labels   F: fill   "
-    "Wheel: zoom   Middle-drag: pan   R: reset view"
-)
+# Window colors
+CANVAS_BG = "#1e1e1e"
+PANEL = "#2b2b2b"
+FIELD = "#3a3a3a"
+BUTTON = "#3c3c46"
+HOVER = "#4a4a5c"
+ACCENT = "#2f6fd6"
+FG = "#e8e8e8"
+DIM = "#9a9a9a"
+UNSAVED = "#ffb84d"
+BADGES = {"EDIT": "#2e7d32", "DRAWING": "#b26a00", "AUTO-LABEL": "#00838f"}
+
+HELP = [
+    (
+        "Mouse (edit mode)",
+        [
+            ("Click", "select a polygon"),
+            ("Drag a corner", "move it"),
+            ("Drag a mid-edge dot", "add a corner there"),
+            ("Right-click a corner", "remove it"),
+            ("Wheel / middle-drag", "zoom at the mouse / pan"),
+        ],
+    ),
+    (
+        "Keys",
+        [
+            ("Right, Left (D, A)", "next / previous image (saves this one)"),
+            ("U", "next image without a label"),
+            ("N", "new polygon: click its corners, then Enter or click the first corner"),
+            ("Backspace / Esc", "while drawing: remove the last corner / cancel"),
+            ("Delete", "delete the selected polygon"),
+            ("0-9", "class of the selected polygon and of new ones"),
+            ("Ctrl+Z / Ctrl+S", "undo / save"),
+            ("Ctrl+Delete", f"delete the image and its label (moved to <set>/{TRASH_DIR_NAME}/)"),
+            ("H / F / R", "hide labels / fill on-off / fit the image to the window"),
+            ("F1", "this help"),
+        ],
+    ),
+]
 
 
 def _font(size: int):
@@ -100,7 +119,130 @@ def point_in_polygon(x: float, y: float, pts: list[list[float]]) -> bool:
     return inside
 
 
+def apply_theme(root: tk.Misc) -> dict[str, tkfont.Font]:
+    """Dark flat ttk look. Returns the fonts it made (keep them: Tk deletes collected fonts)."""
+    base = tkfont.nametofont("TkDefaultFont", root=root)
+    base.configure(size=10)
+    fonts = {"bold": base.copy()}
+    fonts["bold"].configure(weight="bold")
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure(
+        ".",
+        background=PANEL,
+        foreground=FG,
+        fieldbackground=FIELD,
+        bordercolor=PANEL,
+        lightcolor=PANEL,
+        darkcolor=PANEL,
+        troughcolor=FIELD,
+        focuscolor=PANEL,
+        selectbackground=ACCENT,
+        selectforeground="#ffffff",
+        arrowcolor=FG,
+    )
+    for name in ("TButton", "Toolbutton"):  # width 0: as wide as the text (clam: 11+ chars)
+        style.configure(name, background=BUTTON, padding=(10, 3), width=0)
+        style.map(
+            name,
+            background=[
+                ("disabled", PANEL),
+                ("selected", ACCENT),
+                ("pressed", ACCENT),
+                ("active", HOVER),
+            ],
+            foreground=[("disabled", "#6a6a6a"), ("selected", "#ffffff")],
+        )
+    ui = max(1.0, root.winfo_fpixels("1i") / 96)
+    style.configure(
+        "TCheckbutton",
+        indicatorbackground=FIELD,
+        indicatorforeground="#ffffff",
+        indicatorsize=round(12 * ui),
+    )
+    style.map(
+        "TCheckbutton",
+        background=[("active", PANEL)],
+        indicatorbackground=[("selected", ACCENT), ("active", HOVER)],
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", FIELD)],
+        foreground=[("readonly", FG)],
+        selectbackground=[("readonly", FIELD)],
+        selectforeground=[("readonly", FG)],
+        background=[("active", HOVER), ("!active", BUTTON)],
+    )
+    handle = "#9aa4b8"
+    style.configure(
+        "Horizontal.TScale",
+        background=handle,
+        lightcolor=handle,
+        darkcolor=handle,
+        troughcolor="#4a4a4a",
+        gripcount=0,
+    )
+    style.configure("Heading.TLabel", font=fonts["bold"])
+    style.configure("Key.TLabel", foreground="#7fd8d8")
+    root.option_add("*TCombobox*Listbox.background", FIELD)
+    root.option_add("*TCombobox*Listbox.foreground", FG)
+    root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+    return fonts
+
+
+class Tooltip:
+    """Text under a widget while the mouse rests on it."""
+
+    DELAY_MS = 450
+
+    def __init__(self, widget: tk.Widget, text: str):
+        self.widget, self.text = widget, text
+        self.window: tk.Toplevel | None = None
+        self.pending = None
+        widget.bind("<Enter>", self.schedule, add="+")
+        widget.bind("<Leave>", self.hide, add="+")
+        widget.bind("<ButtonPress>", self.hide, add="+")
+
+    def schedule(self, _event=None) -> None:
+        self.hide()
+        self.pending = self.widget.after(self.DELAY_MS, self.show)
+
+    def show(self) -> None:
+        self.pending = None
+        if not self.widget.winfo_exists():
+            return
+        self.window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tk.Label(
+            tw,
+            text=self.text,
+            justify="left",
+            bg="#454545",
+            fg="#f4f4f4",
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=4,
+            wraplength=int(self.widget.winfo_fpixels("4i")),
+        ).pack()
+        tw.update_idletasks()
+        x = min(
+            self.widget.winfo_rootx(), self.widget.winfo_screenwidth() - tw.winfo_reqwidth() - 4
+        )
+        tw.wm_geometry(f"+{x}+{self.widget.winfo_rooty() + self.widget.winfo_height() + 4}")
+
+    def hide(self, _event=None) -> None:
+        if self.pending is not None:
+            self.widget.after_cancel(self.pending)
+            self.pending = None
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+
+
 class LabelViewer:
+    TITLE = "Label viewer"
+
     def __init__(self, root: tk.Misc, folder: Path):
         self.root = root
         self.folder = folder
@@ -111,8 +253,16 @@ class LabelViewer:
         self.current_class = 0
         self.show_labels = True
         self.fill = True
-        self.message = ""
-        self.font = _font(14)
+        self.help_window: tk.Toplevel | None = None
+        self.clear_message = None
+        self.ui = max(1.0, root.winfo_fpixels("1i") / 96)  # display scaling (1.5 at 150%)
+        self.font = _font(round(13 * self.ui))
+        # Dark outline around class names (needs a FreeType font: Pillow 10.1+).
+        self.text_stroke = (
+            {"stroke_width": round(2 * self.ui), "stroke_fill": (0, 0, 0)}
+            if isinstance(self.font, ImageFont.FreeTypeFont)
+            else {}
+        )
 
         # Current image. Polygons are in image pixels.
         self.polys: list[list] = []  # [[class id, [[x, y], ...]], ...]
@@ -138,17 +288,30 @@ class LabelViewer:
         self.pan_start = None
         self.photo = None
 
-        root.title(f"Label viewer - {folder.name}")
+        self.fonts = apply_theme(root)
+        root.title(f"{self.TITLE} - {folder.name}")
         w, h = root.winfo_screenwidth(), root.winfo_screenheight()
-        root.geometry(f"{int(w * 0.85)}x{int(h * 0.85)}+{int(w * 0.05)}+{int(h * 0.03)}")
-        root.configure(bg="#1e1e1e")
-        self.canvas = tk.Canvas(root, bg="#1e1e1e", highlightthickness=0, cursor="crosshair")
+        root.geometry(f"{int(w * 0.9)}x{int(h * 0.85)}+{int(w * 0.05)}+{int(h * 0.03)}")
+        root.configure(bg=PANEL)
+        # Bars first, canvas last: when the window shrinks, the canvas gives way.
+        self.toolbar = ttk.Frame(root, padding=(4, 4, 4, 0))
+        self.toolbar.pack(side="top", fill="x")
+        status = tk.Frame(root, bg=PANEL)
+        status.pack(side="bottom", fill="x")
+        self.status = tk.Label(status, bg=PANEL, fg=FG, anchor="w", padx=8, pady=3)
+        self.status.pack(side="left")
+        self.message_label = tk.Label(status, bg=PANEL, fg="#7fd8d8", anchor="e", padx=8)
+        self.message_label.pack(side="right")
+        hint = tk.Frame(root, bg=CANVAS_BG)
+        hint.pack(side="bottom", fill="x")
+        self.badge = tk.Label(hint, fg="#ffffff", font=self.fonts["bold"], padx=8, pady=2)
+        self.badge.pack(side="left", padx=(6, 0), pady=3)
+        self.hint_label = tk.Label(hint, bg=CANVAS_BG, fg=DIM, anchor="w", padx=8)
+        self.hint_label.pack(side="left", fill="x")
+        self.canvas = tk.Canvas(root, bg=CANVAS_BG, highlightthickness=0, cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
-        bar = {"anchor": "w", "justify": "left", "bg": "#2b2b2b", "padx": 8}
-        self.status = tk.Label(root, fg="#e8e8e8", pady=2, **bar)
-        self.status.pack(fill="x")
-        tk.Label(root, text=HELP, fg="#9a9a9a", pady=4, **bar).pack(fill="x")
         self.image_item = self.canvas.create_image(0, 0, anchor="nw")
+        self.build_toolbar()
 
         self.canvas.bind("<Configure>", self.on_resize)
         self.canvas.bind("<ButtonPress-1>", self.on_press)
@@ -178,13 +341,187 @@ class LabelViewer:
             "<Key-h>": lambda e: self.toggle("show_labels"),
             "<Key-f>": lambda e: self.toggle("fill"),
             "<Key-r>": lambda e: self.fit(),
+            "<F1>": lambda e: self.show_help(),
         }
         for key, handler in keys.items():
             root.bind(key, handler)
         for digit in "0123456789":
             root.bind(f"<Key-{digit}>", lambda e, d=int(digit): self.set_class(d))
         root.protocol("WM_DELETE_WINDOW", self.close)
+        self.canvas.focus_set()
         self.load(0)
+
+    # --- toolbar ------------------------------------------------------------
+    def toolbar_row(self) -> ttk.Frame:
+        row = ttk.Frame(self.toolbar)
+        row.pack(side="top", fill="x", pady=(0, 4))
+        return row
+
+    def focus_after(self, command):
+        """Run a toolbar command, then give the keys back to the image."""
+
+        def run(*_):
+            command()
+            self.canvas.focus_set()
+
+        return run
+
+    def button(self, row, text, command, tip, side="left", style="TButton") -> ttk.Button:
+        b = ttk.Button(
+            row, text=text, command=self.focus_after(command), takefocus=False, style=style
+        )
+        b.pack(side=side, padx=2)
+        Tooltip(b, tip)
+        return b
+
+    def check(self, row, text, value, command, tip) -> tk.BooleanVar:
+        var = tk.BooleanVar(value=value)
+        c = ttk.Checkbutton(
+            row, text=text, variable=var, command=self.focus_after(command), takefocus=False
+        )
+        c.pack(side="left", padx=4)
+        Tooltip(c, tip)
+        return var
+
+    def choice(self, row, var, options, command, tip) -> None:
+        """Buttons of which one is pressed: [(value, text, tip), ...]."""
+        for value, text, option_tip in options:
+            r = ttk.Radiobutton(
+                row,
+                text=text,
+                value=value,
+                variable=var,
+                command=self.focus_after(command),
+                style="Toolbutton",
+                takefocus=False,
+            )
+            r.pack(side="left")
+            Tooltip(r, f"{option_tip}\n\n{tip}")
+
+    @staticmethod
+    def label(row, text, padx=(10, 4)) -> ttk.Label:
+        lbl = ttk.Label(row, text=text)
+        lbl.pack(side="left", padx=padx)
+        return lbl
+
+    @staticmethod
+    def gap(row) -> None:
+        ttk.Separator(row, orient="vertical").pack(side="left", fill="y", padx=8, pady=2)
+
+    def build_toolbar(self) -> None:
+        bar = self.toolbar_row()
+        self.button(bar, "Open set…", self.open_set, "Open another image set (saves this one)")
+        self.gap(bar)
+        self.button(bar, "◀ Prev", lambda: self.go(self.index - 1), "Previous image (Left or A)")
+        self.button(
+            bar,
+            "Next ▶",
+            lambda: self.go(self.index + 1),
+            "Next image (Right or D). Changing image saves the labels.",
+        )
+        self.button(bar, "Next unlabeled", self.next_unlabeled, "Next image without a label (U)")
+        self.gap(bar)
+        self.button(
+            bar,
+            "New polygon",
+            self.start_drawing,
+            "Draw a polygon by hand (N): click its corners, then Enter or click the first "
+            "corner. Backspace removes the last corner, Esc cancels.",
+        )
+        self.delete_button = self.button(
+            bar, "Delete polygon", self.delete_polygon, "Delete the selected polygon (Delete)"
+        )
+        self.undo_button = self.button(
+            bar, "Undo", self.undo_last, "Undo the last change to this image (Ctrl+Z)"
+        )
+        self.save_button = self.button(
+            bar,
+            "Save",
+            lambda: self.save(announce=True),
+            "Save the labels now (Ctrl+S). Changing image, set or closing also saves.",
+        )
+        self.gap(bar)
+        self.label(bar, "Class", padx=(2, 4))
+        self.class_box = ttk.Combobox(
+            bar, state="readonly", width=16, values=self.class_choices(), takefocus=False
+        )
+        self.class_box.current(0)
+        self.class_box.pack(side="left")
+        self.class_box.bind(
+            "<<ComboboxSelected>>",
+            self.focus_after(lambda: self.set_class(self.class_box.current())),
+        )
+        Tooltip(
+            self.class_box,
+            "Class of the selected polygon and of new ones (keys 0-9). "
+            "The names come from dataset/classes.txt.",
+        )
+        self.gap(bar)
+        self.labels_var = self.check(
+            bar, "Labels", True, lambda: self.toggle("show_labels"), "Show or hide the labels (H)"
+        )
+        self.fill_var = self.check(
+            bar, "Fill", True, lambda: self.toggle("fill"), "Fill the polygons with color (F)"
+        )
+        self.button(
+            bar,
+            "Fit",
+            self.fit,
+            "Fit the image to the window (R). Wheel: zoom at the mouse, middle-drag: pan.",
+        )
+        self.button(bar, "Help", self.show_help, "All mouse actions and keys (F1)", side="right")
+        self.button(
+            bar,
+            "Delete image",
+            self.delete_image,
+            f"Delete this image and its label (Ctrl+Delete). They are moved to "
+            f"{TRASH_DIR_NAME}/ in the set, not erased.",
+            side="right",
+        )
+
+    def class_choices(self) -> list[str]:
+        names = self.class_names or [f"class {i}" for i in range(10)]
+        return [f"{i}: {n}" for i, n in enumerate(names)]
+
+    def update_controls(self) -> None:
+        """Gray out what can't be used right now."""
+        for button, usable in (
+            (self.delete_button, self.selected is not None),
+            (self.undo_button, bool(self.undo)),
+            (self.save_button, self.dirty),
+        ):
+            button.state(["!disabled"] if usable else ["disabled"])
+
+    def help_sections(self) -> list[tuple[str, list[tuple[str, str]]]]:
+        return HELP
+
+    def show_help(self) -> None:
+        if self.help_window is not None and self.help_window.winfo_exists():
+            self.help_window.lift()
+            return
+        self.help_window = win = tk.Toplevel(self.root)
+        win.title(f"{self.TITLE} - help")
+        win.configure(bg=PANEL)
+        win.transient(self.root)
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        row = 0
+        for section, entries in self.help_sections():
+            ttk.Label(frame, text=section, style="Heading.TLabel").grid(
+                row=row, column=0, columnspan=2, sticky="w", pady=(10 if row else 0, 4)
+            )
+            row += 1
+            for keys, action in entries:
+                ttk.Label(frame, text=keys, style="Key.TLabel").grid(
+                    row=row, column=0, sticky="nw", padx=(8, 18)
+                )
+                ttk.Label(frame, text=action).grid(row=row, column=1, sticky="w")
+                row += 1
+        ttk.Button(frame, text="Close", command=win.destroy).grid(
+            row=row, column=1, sticky="e", pady=(12, 0)
+        )
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.bind("<F1>", lambda e: win.destroy())
 
     # --- coordinates ------------------------------------------------------
     def to_image(self, cx: float, cy: float) -> tuple[float, float]:
@@ -195,7 +532,7 @@ class LabelViewer:
         return [min(max(x, 0.0), w), min(max(y, 0.0), h)]
 
     def tolerance(self) -> float:
-        return HIT_RADIUS / self.scale  # image px
+        return HIT_RADIUS * self.ui / self.scale  # image px
 
     # --- loading, saving, navigation --------------------------------------
     def load(self, index: int) -> None:
@@ -210,9 +547,9 @@ class LabelViewer:
         self.polys = [[cls, [[x * w, y * h] for x, y in pts]] for cls, pts in polygons]
         self.dirty, self.undo, self.selected = False, [], None
         self.drag, self.drawing = None, None
-        if self.other:
-            self.message = f"{len(self.other)} non-polygon label line(s) kept unchanged"
         self.fit()
+        if self.other:
+            self.say(f"{len(self.other)} non-polygon label line(s) kept unchanged")
 
     def save(self, announce: bool = False) -> None:
         if not self.dirty:
@@ -245,6 +582,39 @@ class LabelViewer:
                 return
         self.say("Every image has a label")
 
+    def open_set(self) -> None:
+        if self.drawing is not None:
+            self.say("Finish (Enter) or cancel (Esc) the polygon first")
+            return
+        name = filedialog.askdirectory(
+            parent=self.root, title="Open an image set", initialdir=str(self.folder.parent)
+        )
+        if name:
+            self.open_folder(Path(name))
+
+    def open_folder(self, folder: Path) -> None:
+        folder = folder.resolve()
+        image_dir, label_dir = set_dirs(folder)
+        images = list_images(image_dir)
+        if not images:
+            messagebox.showerror(self.TITLE, f"No images in {folder}", parent=self.root)
+            return
+        self.save()
+        self.folder, self.image_dir, self.label_dir, self.images = (
+            folder,
+            image_dir,
+            label_dir,
+            images,
+        )
+        self.class_names = load_class_names(folder)
+        self.class_box.configure(values=self.class_choices())
+        if self.current_class >= len(self.class_choices()):
+            self.current_class = 0
+        self.class_box.current(self.current_class)
+        self.root.title(f"{self.TITLE} - {folder.name}")
+        self.load(0)
+        self.say(f"Opened {folder.name}: {len(images)} image(s)")
+
     def delete_image(self) -> None:
         path = self.images[self.index]
         question = (
@@ -265,7 +635,7 @@ class LabelViewer:
         del self.images[self.index]
         self.dirty = False
         if not self.images:
-            messagebox.showinfo("Label viewer", "No images left in this folder.", parent=self.root)
+            messagebox.showinfo(self.TITLE, "No images left in this folder.", parent=self.root)
             self.root.destroy()
             return
         self.load(min(self.index, len(self.images) - 1))
@@ -273,6 +643,8 @@ class LabelViewer:
 
     def close(self) -> None:
         self.save()
+        if self.clear_message is not None:
+            self.root.after_cancel(self.clear_message)
         self.root.destroy()
 
     # --- editing ----------------------------------------------------------
@@ -326,10 +698,13 @@ class LabelViewer:
         self.redraw()
 
     def set_class(self, cls: int) -> None:
+        if cls < 0:
+            return
         if self.class_names and cls >= len(self.class_names):
             self.say(f"No class {cls}: classes.txt lists 0-{len(self.class_names) - 1}")
             return
         self.current_class = cls
+        self.class_box.current(cls)
         if self.selected is not None and self.polys[self.selected][0] != cls:
             self.push_undo()
             self.polys[self.selected][0] = cls
@@ -338,6 +713,8 @@ class LabelViewer:
 
     def toggle(self, attr: str) -> None:
         setattr(self, attr, not getattr(self, attr))
+        self.labels_var.set(self.show_labels)
+        self.fill_var.set(self.fill)
         self.redraw()
 
     # --- hit tests (image px) -----------------------------------------------
@@ -378,6 +755,7 @@ class LabelViewer:
 
     # --- mouse --------------------------------------------------------------
     def on_press(self, event) -> None:
+        self.canvas.focus_set()
         x, y = self.to_image(event.x, event.y)
         if self.drawing is not None:
             first = self.drawing[0] if self.drawing else None
@@ -478,10 +856,13 @@ class LabelViewer:
         x1 = min(w, math.ceil((cw - self.ox) / s) + 1)
         y1 = min(h, math.ceil((ch - self.oy) / s) + 1)
         size = (max(1, round((x1 - x0) * s)), max(1, round((y1 - y0) * s)))
-        resample = (
-            Image.Resampling.NEAREST if s >= 3 else Image.Resampling.BILINEAR
-        )  # sharp pixels when zoomed in
-        self.view = self.display_image().crop((x0, y0, x1, y1)).resize(size, resample)
+        crop = self.display_image().crop((x0, y0, x1, y1))
+        if s >= 3:  # zoomed in: show the real pixels
+            self.view = crop.resize(size, Image.Resampling.NEAREST)
+        elif s >= 1:
+            self.view = crop.resize(size, Image.Resampling.BICUBIC)
+        else:  # shrunk: Lanczos keeps edges sharp; reducing_gap keeps it fast
+            self.view = crop.resize(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
         self.view_origin = (x0, y0)
         self.redraw()
 
@@ -517,13 +898,34 @@ class LabelViewer:
         return self.class_names[cls] if cls < len(self.class_names) else f"class {cls}"
 
     def say(self, message: str) -> None:
-        self.message = message
+        """Show a message in the status bar for a few seconds, and redraw."""
+        self.message_label.configure(text=message)
+        if self.clear_message is not None:
+            self.root.after_cancel(self.clear_message)
+        self.clear_message = self.root.after(MESSAGE_MS, self._clear_message)
         self.redraw()
+
+    def _clear_message(self) -> None:
+        self.clear_message = None
+        if self.message_label.winfo_exists():
+            self.message_label.configure(text="")
+
+    def hint(self) -> tuple[str, str]:
+        """(mode badge, what the mouse does now) for the bar under the image."""
+        if self.drawing is not None:
+            return "DRAWING", (
+                "Click the corners.  Enter or click the first corner: finish.  "
+                "Backspace: remove the last corner.  Esc: cancel."
+            )
+        return "EDIT", (
+            "Click a polygon to select it, drag its corners.  N: draw a new one.  "
+            "Wheel: zoom.  F1: all keys."
+        )
 
     def render(self) -> Image.Image:
         """Visible part of the image with the labels, at screen size."""
         img = self.view.convert("RGBA")
-        s = self.scale
+        s, u = self.scale, self.ui
         x0, y0 = self.view_origin
 
         def screen(pts):
@@ -541,8 +943,8 @@ class LabelViewer:
             for i, (cls, pts) in enumerate(self.polys):
                 color, sp = COLORS[cls % len(COLORS)], screen(pts)
                 selected = i == self.selected
-                d.line(sp + sp[:1], fill=color, width=3 if selected else 2)
-                r = 4 if selected else 2
+                d.line(sp + sp[:1], fill=color, width=round((3 if selected else 2) * u))
+                r = (4 if selected else 2) * u
                 for x, y in sp:
                     d.rectangle(
                         (x - r, y - r, x + r, y + r),
@@ -550,24 +952,33 @@ class LabelViewer:
                         outline=color,
                     )
                 if selected:  # midpoint dots (drag to add a corner)
+                    r = 3 * u
                     for j in range(len(sp)):
                         (ax, ay), (bx, by) = sp[j], sp[(j + 1) % len(sp)]
                         mx, my = (ax + bx) / 2, (ay + by) / 2
-                        d.ellipse((mx - 3, my - 3, mx + 3, my + 3), outline=(255, 255, 255))
+                        d.ellipse((mx - r, my - r, mx + r, my + r), outline=(255, 255, 255))
                 tx, ty = min(sp, key=lambda p: p[1])
-                d.text((tx + 4, ty - 18), self.class_name(cls), fill=color, font=self.font)
+                d.text(
+                    (tx + 4 * u, ty - 18 * u),
+                    self.class_name(cls),
+                    fill=color,
+                    font=self.font,
+                    **self.text_stroke,
+                )
 
         if self.drawing is not None:
             d = ImageDraw.Draw(img)
             color = COLORS[self.current_class % len(COLORS)]
             sp = screen(self.drawing + [list(self.mouse)])
             if len(sp) >= 2:
-                d.line(sp, fill=color, width=2)
+                d.line(sp, fill=color, width=round(2 * u))
+            r = 3 * u
             for x, y in sp[:-1]:
-                d.rectangle((x - 3, y - 3, x + 3, y + 3), fill=color)
+                d.rectangle((x - r, y - r, x + r, y + r), fill=color)
             if len(self.drawing) >= 3:  # ring on the first corner: click it to finish
                 x, y = sp[0]
-                d.ellipse((x - 8, y - 8, x + 8, y + 8), outline=(255, 255, 255), width=2)
+                r = 8 * u
+                d.ellipse((x - r, y - r, x + r, y + r), outline=(255, 255, 255), width=round(2 * u))
         return img
 
     def redraw(self) -> None:
@@ -584,15 +995,15 @@ class LabelViewer:
         else:
             label = f"{len(self.polys)} polygon(s)"
         state = "unsaved changes" if self.dirty else "saved"
-        cls = self.current_class
-        text = (
-            f"{self.index + 1}/{len(self.images)}   {path.name}   |   {label}   |   "
-            f"new polygons: {cls} {self.class_name(cls)}   |   {state}"
+        self.status.configure(
+            text=f"{self.index + 1} / {len(self.images)}    {path.name}    ·    {label}    ·    "
+            f"{state}    ·    zoom {self.scale:.0%}",
+            fg=UNSAVED if self.dirty else FG,
         )
-        if self.message:
-            text += f"   |   {self.message}"
-            self.message = ""
-        self.status.configure(text=text)
+        badge, hint = self.hint()
+        self.badge.configure(text=badge, bg=BADGES.get(badge.split()[0], ACCENT))
+        self.hint_label.configure(text=hint)
+        self.update_controls()
 
 
 def main(
@@ -605,10 +1016,9 @@ def main(
         "folder", nargs="?", type=Path, help="image set folder (popup if not given)"
     )
     folder = parser.parse_args().folder
+    enable_dpi_awareness()
     root = tk.Tk()
     if folder is None:
-        from tkinter import filedialog
-
         root.withdraw()
         start = IMAGE_SETS_DIR if IMAGE_SETS_DIR.is_dir() else Path.cwd()
         name = filedialog.askdirectory(parent=root, title="Pick an image set", initialdir=start)

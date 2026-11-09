@@ -6,26 +6,19 @@ Usage:
     python auto_labeler.py                 # pick a set folder in a popup
     python auto_labeler.py "<set folder>"
 
-The label viewer (all its tools and keys) plus auto-labeling:
-    G               auto-labeling on/off (off = normal editing)
-    click           a fish: it is outlined in cyan (click each fish)
-    Shift+click     more of the same fish (a fin or color it missed)
-    right-click     something that is not fish (table, shadow)
-    Enter           add the outlines as labels (current class, 0-9 to change)
-    Esc             clear this image's clicks
-    E               engine: SAM or Color
+The label viewer plus auto-labeling. Switch to "Auto-label" (G), click each
+fish, check the cyan outlines, press Enter to add them as labels, go to the next
+image (Right). Labeling over an existing label replaces it. Every button
+explains itself on hover; F1 lists all keys.
 
 Engines:
     SAM (default)   Segment Anything (segmentors/sam.py) outlines the clicked
-                    object. Works on any contrast; downloads the model
-                    (SAM_MODEL in segmentors/sam.py) on first use; fastest
-                    with a GPU.
+                    object on any background. Downloads the model (SAM_MODEL in
+                    segmentors/sam.py) on first use; fastest with a GPU.
     Color           matches the clicked colors (segmentors/color.py). Needs fish
                     and table colors to differ (e.g. dark fish, light table).
                     Colors carry over to the next image, so it can label every
-                    matching region without clicks ("Label all matching regions",
-                    "Label all unlabeled images"). [ ]: tolerance, M: enhanced
-                    view, C: forget colors.
+                    matching region without clicks, or every unlabeled image.
 
 Labels are plain YOLO polygon files, the same as Label Studio's YOLO export, so
 both tools can be used on the same set.
@@ -35,14 +28,14 @@ import dataclasses
 import sys
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # annotating/
-from label_viewer import LabelViewer, main
+from label_viewer import HELP, PANEL, LabelViewer, Tooltip, main
 from pipeline_common import find_label, label_index, mask_to_polygon, write_label
 from segmentors.color import (
     MAX_CLUSTERS,
@@ -59,9 +52,24 @@ MARK_COLORS = {"fish": (0, 255, 0), "same fish": (255, 255, 0), "not fish": (255
 DEBOUNCE_MS = 150  # recompute this long after the last click or slider move
 REPLACE_IOU = 0.5  # a new outline replaces existing labels it overlaps by more than this
 AUTO_HELP = (
-    "Auto-label (G): click a fish   Shift+click: more of the same fish   "
-    "Right-click: not fish   Enter: add outlines as labels   Esc: clear clicks   "
-    "E: engine (SAM / Color)   Color engine: [ ] tolerance, M enhanced view, C forget colors"
+    "Auto-label (G on/off)",
+    [
+        ("Click", "a fish: the engine outlines it in cyan (click each fish)"),
+        ("Shift+click", "more of the same fish (a fin or color it missed)"),
+        ("Right-click", "something that is not fish (table, shadow)"),
+        ("Enter", "add the outlines as labels of the current class (replaces overlapped labels)"),
+        ("Esc", "clear this image's clicks"),
+        ("E", "engine: SAM or Color"),
+        ("[ ]  M  C", "color engine: tolerance down / up, enhanced view, forget colors"),
+    ],
+)
+SAM_TIP = (
+    "Segment Anything: outlines the clicked object on any background. "
+    "Downloads the model on first use; fastest with a GPU."
+)
+COLOR_TIP = (
+    "Matches the clicked colors. Needs fish and table colors to differ "
+    "(dark fish, light table). Colors carry over to the next image."
 )
 
 
@@ -83,6 +91,8 @@ def polygon_iou(a: list[list[float]], b: list[list[float]]) -> float:
 
 
 class AutoLabeler(LabelViewer):
+    TITLE = "Auto labeler"
+
     def __init__(self, root: tk.Misc, folder: Path):
         # Set before LabelViewer.__init__, which loads the first image.
         self.auto = False
@@ -101,11 +111,6 @@ class AutoLabeler(LabelViewer):
         self.pending = None
         super().__init__(root, folder)
 
-        root.title(f"Auto labeler - {folder.name}")
-        self.build_toolbar()
-        tk.Label(
-            root, text=AUTO_HELP, fg="#7fd8d8", bg="#2b2b2b", anchor="w", justify="left", padx=8
-        ).pack(fill="x")
         keys = {
             "<Key-g>": lambda e: self.set_auto(not self.auto),
             "<Key-e>": lambda e: self.set_engine("color" if self.engine == "sam" else "sam"),
@@ -121,78 +126,164 @@ class AutoLabeler(LabelViewer):
 
     # --- toolbar ------------------------------------------------------------
     def build_toolbar(self) -> None:
-        look = {"bg": "#2b2b2b", "fg": "#e8e8e8", "highlightthickness": 0}
-        check = {**look, "selectcolor": "#3c3c3c", "activebackground": "#2b2b2b"}
-        button = {"bg": "#3c3c4c", "fg": "#e8e8e8", "relief": "flat", "padx": 8}
-        rows = []
-        for _ in range(2):
-            row = tk.Frame(self.root, bg="#2b2b2b", padx=6, pady=2)
-            row.pack(side="top", fill="x", before=self.canvas)
-            rows.append(row)
-
-        def checkbox(row, text, value, command):
-            var = tk.BooleanVar(value=value)
-            tk.Checkbutton(row, text=text, variable=var, command=command, **check).pack(
-                side="left", padx=4
-            )
-            return var
-
-        def slider(row, text, value, low, high, step):
-            tk.Label(row, text=text, **look).pack(side="left", padx=(10, 2))
-            var = tk.DoubleVar(value=value)
-            tk.Scale(
-                row,
-                from_=low,
-                to=high,
-                resolution=step,
-                orient="horizontal",
-                length=130,
-                variable=var,
-                command=lambda _: self.on_setting(),
-                troughcolor="#444",
-                **look,
-            ).pack(side="left")
-            return var
-
-        top, color = rows
-        self.auto_var = checkbox(
-            top, "Auto-label (G)", self.auto, lambda: self.set_auto(self.auto_var.get())
+        super().build_toolbar()
+        self.auto_row = row = self.toolbar_row()
+        self.label(row, "Mode", padx=(2, 4))
+        self.mode_var = tk.StringVar(value="edit")
+        self.choice(
+            row,
+            self.mode_var,
+            [
+                ("edit", "Edit", "Select polygons and fix them by hand."),
+                ("auto", "Auto-label", "Click each fish; the engine outlines it."),
+            ],
+            lambda: self.set_auto(self.mode_var.get() == "auto"),
+            "G switches between them.",
         )
-        tk.Label(top, text="Engine (E):", **look).pack(side="left", padx=(10, 2))
+        self.gap(row)
+        self.label(row, "Engine", padx=(2, 4))
         self.engine_var = tk.StringVar(value=self.engine)
-        for value, text in (("sam", "SAM"), ("color", "Color")):
-            tk.Radiobutton(
-                top,
-                text=text,
-                value=value,
-                variable=self.engine_var,
-                command=lambda: self.set_engine(self.engine_var.get()),
-                **check,
-            ).pack(side="left")
-        self.error_var = slider(
-            top, "Max corner error (px)", self.settings.max_error_px, 0.5, 4.0, 0.25
+        self.choice(
+            row,
+            self.engine_var,
+            [("sam", "SAM", SAM_TIP), ("color", "Color", COLOR_TIP)],
+            lambda: self.set_engine(self.engine_var.get()),
+            "E switches between them.",
+        )
+        self.gap(row)
+        self.error_var = self.slider(
+            row,
+            "Max corner error",
+            self.settings.max_error_px,
+            0.5,
+            4.0,
+            0.25,
+            "How far (image px) the outline may cut corners off the fish: higher = fewer "
+            "corners, lower = a closer fit.",
+        )
+        self.gap(row)
+        self.add_button = self.button(
+            row,
+            "Add as labels",
+            self.on_enter,
+            "Add the cyan outlines as labels of the current class (Enter). An outline over "
+            "an existing label replaces it; Ctrl+Z brings it back.",
+        )
+        self.clear_button = self.button(
+            row, "Clear clicks", self.on_escape, "Forget this image's clicks (Esc)"
         )
 
-        tk.Label(color, text="Color engine:", **look).pack(side="left")
-        self.tolerance_var = slider(color, "Tolerance", self.settings.tolerance, 1.0, 10.0, 0.25)
-        self.all_var = checkbox(
-            color, "Label all matching regions", self.settings.keep_all, self.on_setting
+        self.color_row = row = self.toolbar_row()  # shown for the color engine only
+        self.label(row, "Color engine", padx=(2, 4)).configure(style="Heading.TLabel")
+        self.tolerance_var = self.slider(
+            row,
+            "Tolerance",
+            self.settings.tolerance,
+            1.0,
+            10.0,
+            0.25,
+            "How different a pixel may be from the clicked colors and still count as fish "
+            "([ and ] change it).",
         )
-        self.refine_var = checkbox(
-            color, "Refine edges", self.settings.refine_edges, self.on_setting
+        self.all_var = self.check(
+            row,
+            "All matching regions",
+            self.settings.keep_all,
+            self.on_setting,
+            "Outline every region that matches the fish colors, not only the clicked ones.",
         )
-        tk.Button(color, text="Forget colors (C)", command=self.forget_colors, **button).pack(
-            side="left", padx=4
+        self.refine_var = self.check(
+            row,
+            "Refine edges",
+            self.settings.refine_edges,
+            self.on_setting,
+            "Snap the outlines to the image edges (GrabCut). A bit slower.",
         )
-        tk.Button(
-            color, text="Label all unlabeled images", command=self.label_all_unlabeled, **button
-        ).pack(side="left", padx=4)
-        self.swatches = tk.Canvas(color, height=18, width=300, bg="#2b2b2b", highlightthickness=0)
+        self.enhanced_var = self.check(
+            row,
+            "Enhanced view",
+            False,
+            self.toggle_enhanced,
+            "Show how fish-like each pixel is: white = fish color (M).",
+        )
+        self.button(
+            row, "Forget colors", self.forget_colors, "Forget the sampled colors and start over (C)"
+        )
+        self.button(
+            row,
+            "Label all unlabeled images",
+            self.label_all_unlabeled,
+            "Label every image of the set that has no label yet, with all regions matching "
+            "the sampled colors. Labeled images are not changed.",
+        )
+        self.swatches = tk.Canvas(
+            row, height=int(18 * self.ui), width=1, bg=PANEL, highlightthickness=0
+        )
         self.swatches.pack(side="left", padx=8)
+        Tooltip(
+            self.swatches,
+            f"Sampled colors: green frame = fish, red = not fish (the newest {MAX_CLUSTERS} "
+            "of each are kept).",
+        )
+        self.show_color_row()
+
+    def slider(self, row, text, value, low, high, step, tip) -> tk.DoubleVar:
+        self.label(row, text, padx=(2, 4))
+        var = tk.DoubleVar(value=value)
+        shown = ttk.Label(row, width=5)
+        var.trace_add("write", lambda *_: shown.configure(text=f"{var.get():.2f}"))
+
+        def moved(_value):
+            snapped = round(round(var.get() / step) * step, 4)
+            if snapped != var.get():
+                var.set(snapped)
+            self.on_setting()
+
+        scale = ttk.Scale(
+            row,
+            from_=low,
+            to=high,
+            variable=var,
+            command=moved,
+            length=int(110 * self.ui),
+            takefocus=False,
+        )
+        scale.pack(side="left")
+        shown.pack(side="left", padx=(4, 0))
+        shown.configure(text=f"{value:.2f}")
+        Tooltip(scale, tip)
+        return var
+
+    def show_color_row(self) -> None:
+        if self.engine == "color":
+            self.color_row.pack(side="top", fill="x", pady=(0, 4), after=self.auto_row)
+        else:
+            self.color_row.pack_forget()
+
+    def update_controls(self) -> None:
+        super().update_controls()
+        clicks = self.auto and bool(self.objects or self.negatives)
+        self.add_button.state(["!disabled"] if self.auto and self.preview else ["disabled"])
+        self.clear_button.state(["!disabled"] if clicks else ["disabled"])
+
+    def help_sections(self) -> list[tuple[str, list[tuple[str, str]]]]:
+        return [AUTO_HELP, *HELP]
+
+    def hint(self) -> tuple[str, str]:
+        if not self.auto or self.drawing is not None:
+            badge, hint = super().hint()
+            return badge, hint + "  G: auto-label." if badge == "EDIT" else hint
+        if self.engine == "sam":
+            return "AUTO-LABEL · SAM", (
+                "Click a fish.  Shift+click: more of it.  Right-click: not fish.  "
+                "Enter: add as labels.  Esc: clear clicks.  G: back to editing."
+            )
+        return "AUTO-LABEL · COLOR", (
+            "Click a fish to sample its colors.  Shift+click: another color of it.  "
+            "Right-click: not fish.  Enter: add as labels.  [ ]: tolerance."
+        )
 
     def read_settings(self) -> None:
-        if not hasattr(self, "tolerance_var"):
-            return  # toolbar not built yet (first image)
         self.settings = dataclasses.replace(
             self.settings,
             tolerance=self.tolerance_var.get(),
@@ -212,30 +303,33 @@ class AutoLabeler(LabelViewer):
     def update_swatches(self) -> None:
         """One square per sampled color: green frame = fish, red = not fish."""
         self.swatches.delete("all")
-        x = 2
+        u = self.ui
+        x = 2 * u
         for clusters, outline in ((self.fish_colors, "#00ff00"), (self.not_fish_colors, "#ff3c3c")):
             for c in clusters:
                 fill = "#{:02x}{:02x}{:02x}".format(*lab_to_rgb(c.mean))
                 self.swatches.create_rectangle(
-                    x, 2, x + 14, 16, fill=fill, outline=outline, width=2
+                    x, 2 * u, x + 14 * u, 16 * u, fill=fill, outline=outline, width=round(2 * u)
                 )
-                x += 18
+                x += 18 * u
+        self.swatches.configure(width=max(int(x), 1))
 
     # --- modes -----------------------------------------------------------------
     def set_auto(self, on: bool) -> None:
         if self.drawing is not None:
             self.say("Finish (Enter) or cancel (Esc) the polygon first")
-            self.auto_var.set(self.auto)
+            self.mode_var.set("auto" if self.auto else "edit")
             return
         self.auto = on
-        self.auto_var.set(on)
+        self.mode_var.set("auto" if on else "edit")
         self.canvas.focus_set()
         if on:
             self.selected = None
             self.say(f"Auto-label on ({self.engine_name()}): click a fish")
             self.schedule()
         else:
-            self.preview, self.show_enhanced = [], False
+            self.preview = []
+            self.set_enhanced(False)
             self.update_view()
             self.say("Auto-label off: editing")
 
@@ -244,9 +338,10 @@ class AutoLabeler(LabelViewer):
         self.engine_var.set(engine)
         self.canvas.focus_set()
         self.objects, self.negatives, self.preview = [], [], []  # clicks mean different things
-        self.show_enhanced = False
+        self.set_enhanced(False)
         if engine != "sam":
             self.release_sam()
+        self.show_color_row()
         self.update_view()
         self.say(f"Engine: {self.engine_name()}")
 
@@ -267,9 +362,7 @@ class AutoLabeler(LabelViewer):
     def get_sam(self) -> SamSegmentor | None:
         try:
             if self.sam is None:
-                self.status.configure(
-                    text="Loading SAM (first use downloads it; the first click can take ~15 s)..."
-                )
+                self.say("Loading SAM (the first use downloads it, ~15 s)...")
                 self.root.update_idletasks()
                 self.sam = SamSegmentor()
             self.sam.set_image(self.image_bgr(), str(self.images[self.index]))
@@ -286,9 +379,7 @@ class AutoLabeler(LabelViewer):
             return
         colors = self.fish_colors if fish else self.not_fish_colors
         colors.append(Cluster(pixels))
-        if len(colors) > MAX_CLUSTERS:
-            del colors[0]
-            self.message = f"Oldest color dropped (keeps {MAX_CLUSTERS})"
+        del colors[:-MAX_CLUSTERS]  # the swatches show which are kept
         self.update_swatches()
 
     def inside(self, x: float, y: float) -> bool:
@@ -414,16 +505,22 @@ class AutoLabeler(LabelViewer):
     def forget_colors(self) -> None:
         self.canvas.focus_set()
         self.fish_colors, self.not_fish_colors = [], []
-        self.preview, self.show_enhanced, self.enhanced_image = [], False, None
+        self.preview, self.enhanced_image = [], None
+        self.set_enhanced(False)
         self.update_swatches()
         self.update_view()
         self.say("Colors forgotten")
 
+    def set_enhanced(self, on: bool) -> None:
+        self.show_enhanced = on
+        self.enhanced_var.set(on)
+
     def toggle_enhanced(self) -> None:
         if not (self.auto and self.engine == "color" and self.fish_colors):
-            self.say("Enhanced view: color engine, after sampling a fish color")
+            self.set_enhanced(False)
+            self.say("Enhanced view: in auto-label mode, after clicking a fish")
             return
-        self.show_enhanced = not self.show_enhanced
+        self.set_enhanced(not self.show_enhanced)
         if self.show_enhanced:
             self.make_enhanced()
         else:
@@ -439,7 +536,7 @@ class AutoLabeler(LabelViewer):
     def label_all_unlabeled(self) -> None:
         self.canvas.focus_set()
         if not self.fish_colors:
-            self.say("Batch labeling uses the color engine: sample fish colors first (E, G, click)")
+            self.say("Uses the color engine: click a fish in auto-label mode first")
             return
         labels = label_index(self.label_dir)
         todo = [p for p in self.images if find_label(p, labels) is None]
@@ -458,7 +555,7 @@ class AutoLabeler(LabelViewer):
         settings = dataclasses.replace(self.settings, keep_all=True)
         labeled = 0
         for i, path in enumerate(todo, 1):
-            self.status.configure(text=f"Auto-labeling {i}/{len(todo)}: {path.name}")
+            self.message_label.configure(text=f"Auto-labeling {i}/{len(todo)}: {path.name}")
             self.root.update_idletasks()  # redraw only; no input events mid-batch
             with Image.open(path) as im:
                 rgb = np.asarray(ImageOps.exif_transpose(im).convert("RGB"))
@@ -502,7 +599,7 @@ class AutoLabeler(LabelViewer):
         img = super().render()
         if not self.auto:
             return img
-        s, (x0, y0), (w, h) = self.scale, self.view_origin, self.base.size
+        s, u, (x0, y0), (w, h) = self.scale, self.ui, self.view_origin, self.base.size
 
         def screen(points):
             return [((x * w - x0) * s, (y * h - y0) * s) for x, y in points]
@@ -515,20 +612,22 @@ class AutoLabeler(LabelViewer):
         d = ImageDraw.Draw(img)
         for points in self.preview:
             sp = screen(points)
-            d.line(sp + sp[:1], fill=PREVIEW_COLOR, width=2)
+            d.line(sp + sp[:1], fill=PREVIEW_COLOR, width=round(2 * u))
+            r = 2 * u
             for x, y in sp:
-                d.rectangle((x - 2, y - 2, x + 2, y + 2), fill=PREVIEW_COLOR)
+                d.rectangle((x - r, y - r, x + r, y + r), fill=PREVIEW_COLOR)
         marks = [
             (x, y, "fish" if i == 0 else "same fish")
             for pts in self.objects
             for i, (x, y) in enumerate(pts)
         ]
         marks += [(x, y, "not fish") for x, y in self.negatives]
-        for x, y, kind in marks:  # a cross per click
+        r = 7 * u
+        for x, y, kind in marks:  # a cross per click, outlined in black
             sx, sy = (x - x0) * s, (y - y0) * s
-            for width, color in ((4, (0, 0, 0)), (2, MARK_COLORS[kind])):
-                d.line((sx - 6, sy, sx + 6, sy), fill=color, width=width)
-                d.line((sx, sy - 6, sx, sy + 6), fill=color, width=width)
+            for width, color in ((round(4 * u), (0, 0, 0)), (round(2 * u), MARK_COLORS[kind])):
+                d.line((sx - r, sy, sx + r, sy), fill=color, width=width)
+                d.line((sx, sy - r, sx, sy + r), fill=color, width=width)
         return img
 
 
