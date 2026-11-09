@@ -21,7 +21,6 @@ vision = [
     "opencv-python",
     "pyrealsense2>=2.51.1",
     "ultralytics>=8.4",
-    "imagehash",
     "mlflow",
     "albumentations>=2.0",  # data/annotating/augment_images.py
     "pillow",               # data/annotating/label_viewer.py

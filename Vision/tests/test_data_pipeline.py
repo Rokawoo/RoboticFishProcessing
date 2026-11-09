@@ -3,6 +3,7 @@
 import importlib.util
 import itertools
 import os
+import re
 import sys
 import time
 from collections import Counter
@@ -96,6 +97,25 @@ def test_mask_to_polygon_uses_few_corners_and_keeps_the_shape():
     cv2.fillPoly(back, [np.round(np.array(points) * [600, 400]).astype(np.int32)], 1)
     assert iou(mask, back) >= 0.98
     assert len(points) < contour_px / 15
+
+
+def requirement_names(lines) -> set[str]:
+    names = set()
+    for line in lines:
+        line = line.split("#")[0].strip()
+        if line and not line.startswith("-"):
+            names.add(re.split(r"[<>=!~\[; ]", line, maxsplit=1)[0].lower().replace("_", "-"))
+    return names
+
+
+def test_requirements_txt_covers_every_pyproject_extra():
+    root = DATA_DIR.parents[1]
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+    section = pyproject.split("[project.optional-dependencies]")[1].split("\n[")[0]
+    extras = requirement_names(re.findall(r'"([^"]+)"', section))
+    requirements = (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    missing = extras - requirement_names(requirements)
+    assert not missing, f"in pyproject.toml but not requirements.txt: {sorted(missing)}"
 
 
 # ---------------------------------------------------------------------------

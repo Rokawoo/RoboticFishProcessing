@@ -1,17 +1,37 @@
-# Development packages: Vision data pipeline and training, the rfp_* packages, tests, lint.
-#   pip install -r requirements.txt       (Python 3.10, from the repo root)
+# Every Python package for developing RoboticFishProcessing (Python 3.10).
+#   pip install -r requirements.txt       (from the repo root)
 #   conda env create -f environment.yml   (the same, in a new conda env)
-# The package list is in pyproject.toml's extras; this file picks them and pins PyTorch.
-#
-# PyPI's Windows torch is CPU-only, so torch comes from the PyTorch CUDA 13.0 index
-# (NVIDIA driver 580+, RTX 50-series and older). Exact versions make pip prefer the
-# index's "+cu130" build over a newer CPU build on PyPI.
-# Older driver: use the cu128 index with torch==2.11.0 and torchvision==0.26.0.
-# Check: python -c "import torch; print(torch.cuda.is_available())"
-#
-# Not here: ROS 2, MoveIt 2, frcobot_ros2, librealsense and vLLM (system installs on the
-# robot PC), and Label Studio (its own env: it pins numpy<2).
+# pyproject.toml lists the same packages per subsystem (extras) for partial installs,
+# e.g. pip install -e ".[arm]"; a test checks that this file covers them all.
+
+# PyTorch with CUDA. PyPI's Windows torch is CPU-only, so it comes from the PyTorch
+# CUDA 13.0 index (NVIDIA driver 580+). Exact versions make pip take the "+cu130"
+# builds. Older driver: cu128 index with torch==2.11.0 and torchvision==0.26.0.
 --extra-index-url https://download.pytorch.org/whl/cu130
 torch==2.14.1
 torchvision==0.29.1
--e .[vision,arm,control,analysis,dev]
+
+# Vision
+ultralytics>=8.4        # YOLO and SAM (from ultralytics import YOLO, SAM)
+opencv-python           # cv2
+numpy
+pillow                  # PIL: label viewer and auto labeler
+pyyaml
+pyrealsense2>=2.51.1    # RealSense recordings (.bag, .db3)
+albumentations>=2.0     # augment_images.py
+mlflow                  # training run tracking
+
+# Control
+openai                  # VLM client (vLLM's OpenAI-compatible API)
+
+# Analysis
+pandas
+matplotlib
+
+# Development
+pytest
+ruff>=0.17,<0.18
+pre-commit
+
+# The rfp_* packages themselves
+-e .

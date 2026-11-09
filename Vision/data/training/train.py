@@ -298,6 +298,8 @@ def main() -> None:
     # folder; keep them here. Every path above is already absolute.
     os.chdir(TRAINING_DIR)
 
+    # Imported here, not at the top: loading Ultralytics/PyTorch takes seconds,
+    # which --help and config errors shouldn't wait for.
     from ultralytics import YOLO
 
     status = "FAILED"
