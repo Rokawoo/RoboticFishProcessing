@@ -7,6 +7,8 @@
 *.mp4
 *.mov
 *.mp3
+# ...but not the README images
+!docs/*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
