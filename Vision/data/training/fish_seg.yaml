@@ -8,18 +8,21 @@ data: ../dataset/train/data.yaml  # written by the splitter
 project: ../../trained_cv_models  # run folder: <name>_<model>_<date>_<time>/
 name: fish_seg                    # also the MLflow experiment name
 
-epochs: 300                  # upper limit; early stopping ends sooner
-patience: 50
+# On the test fish (750 train images), val mask mAP50-95 plateaus by epoch ~40 and box
+# mAP by ~70; 100 epochs take ~15 min on an RTX 5090. Run them all: stopping early skips
+# the learning-rate decay and the close_mosaic epochs. best.pt is still the best epoch.
+epochs: 100
+patience: 100
 imgsz: 640                   # long side of the 1280x720 D405 frames; try 960 if mask edges are coarse
-batch: -1                    # auto: largest batch in ~60% of GPU memory
-cache: disk                  # .npy next to the images; 'ram' is faster but not exactly repeatable
+batch: 16                    # fixed, so runs match across GPUs (gradients add up to 64)
+cache: ram                  # 'disk' .npy next to the images; 'ram' is faster but not exactly repeatable
 workers: 8
 
 # Augmentation for a top-down camera at a fixed pose: fish at any heading, several per image.
 degrees: 180                 # any heading is real
 fliplr: 0.5                  # a mirrored left-side fish looks like a right-side fish
 flipud: 0.5                  # top-down: no "up"
-scale: 0.3                   # fixed camera height (default 0.5)
+scale: 0.5                   # fish sizes vary between recordings
 translate: 0.1
 shear: 0.0
 perspective: 0.0             # fixed camera pose
