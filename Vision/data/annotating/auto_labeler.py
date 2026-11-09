@@ -6,22 +6,19 @@ Usage:
     python auto_labeler.py                 # pick a set folder in a popup
     python auto_labeler.py "<set folder>"
 
-The label viewer plus auto-labeling. Switch to "Auto-label" (G), click each
-fish, check the cyan outlines, press Enter to add them as labels, go to the next
-image (Right). Labeling over an existing label replaces it. Every button
-explains itself on hover; F1 lists all keys.
+The label viewer plus auto-labeling: switch to Auto-label (G), click each fish,
+check the cyan outline, Enter adds it, Right goes to the next image (B: no fish).
+A new outline replaces the labels it overlaps. Buttons explain themselves on hover;
+F1 lists every key.
 
 Engines:
-    SAM (default)   Segment Anything (segmentors/sam.py) outlines the clicked
-                    object on any background. Downloads the model (SAM_MODEL in
-                    segmentors/sam.py) on first use; fastest with a GPU.
-    Color           matches the clicked colors (segmentors/color.py). Needs fish
-                    and table colors to differ (e.g. dark fish, light table).
-                    Colors carry over to the next image, so it can label every
-                    matching region without clicks, or every unlabeled image.
+    SAM (default)   outlines the clicked object on any background (segmentors/sam.py;
+                    the model downloads on first use; fastest on a GPU)
+    Color           matches the clicked colors (segmentors/color.py); needs fish/table
+                    color contrast; colors carry over, so it can label whole sets
 
-Labels are plain YOLO polygon files, the same as Label Studio's YOLO export, so
-both tools can be used on the same set.
+Labels are YOLO polygon files, like Label Studio's YOLO export: both tools work on
+the same set.
 """
 
 import dataclasses

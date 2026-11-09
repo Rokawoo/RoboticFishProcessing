@@ -1,12 +1,8 @@
 """
-Click-to-segment with SAM 2 (Segment Anything) through Ultralytics, for auto_labeler.py.
-
-Each fish's clicks are positive points and the right-clicks negative points; SAM
-returns that fish's mask. Unlike color thresholds, SAM separates a white fish
-from a reflective gray table. The image is encoded once (set_image) and reused
-for every click. With sam2.1_t: ~0.1 s per click, ~10 ms per new image on a GPU
-(~1 s on a CPU); larger models are slower. The first prompt on a GPU takes ~15 s
-(CUDA warm-up).
+Click-to-segment with SAM 2 (Ultralytics) for auto_labeler.py: a fish's clicks are
+positive points, right-clicks negative; SAM returns that fish's mask. The image is
+encoded once (set_image) for all its clicks. On a GPU: ~0.1 s (sam2.1_t) to ~0.5 s
+(sam2.1_l) per click; the first use takes ~15 s (CUDA warm-up).
 """
 
 import gc

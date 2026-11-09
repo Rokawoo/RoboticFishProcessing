@@ -1,19 +1,15 @@
 """
-Color segmentor for auto_labeler.py: sampled colors -> object outlines.
+Color segmentor for auto_labeler.py: sampled colors -> outlines. Needs fish and table
+colors to differ; on the current footage (white fish, gray table) use SAM.
 
-1. Colors are compared in CIELAB. HSV hue is unreliable here: it turns to noise
-   at low saturation, and catfish are dark, low-saturation gray-olive.
-2. Each click adds a Gaussian color cluster (mean + covariance of a small patch),
-   so objects with several colors (dark back, light belly) get several clusters.
-   Right-clicks build a second set of clusters for colors that are not the object.
-3. A pixel is object if its Mahalanobis distance to the nearest object cluster is
-   within the tolerance and, if background colors were sampled, it is more likely
-   object than background (Gaussian log-likelihood).
-4. Clean-up: remove speckles, close gaps, fill holes; keep the clicked regions
-   (or all matching ones). A region with several clicks is split between them
+1. CIELAB, not HSV: hue is noise at low saturation (catfish are dark gray-olive).
+2. Each click adds a Gaussian cluster (patch mean + covariance): a dark back and a
+   light belly get one each. Right-clicks add not-fish clusters.
+3. Fish pixel: Mahalanobis distance to the nearest fish cluster <= tolerance and,
+   if not-fish colors were sampled, more likely fish than not-fish.
+4. Clean-up, keep the clicked regions (or all), split a region with several clicks
    at its narrowest points (touching fish).
-5. Optional GrabCut refinement of a narrow band around each edge.
-6. Outlines -> polygons with pipeline_common.mask_to_polygon.
+5. Optional GrabCut on a band around each edge, then mask_to_polygon.
 """
 
 import sys
@@ -179,14 +175,12 @@ class ColorSegmentor:
 
     def _split(self, region: np.ndarray, seeds: list[tuple[int, int]]) -> list[np.ndarray]:
         """
-        Split a region between several clicks at its narrowest points.
-
-        Pixels deeper than t (distance to the edge) form cores; as t grows, cores
-        separate first where touching fish meet. The smallest t that gives each
-        click its own core is used, then every pixel joins the nearest core. With
-        no such t (fish side by side), pixels join the nearest click. Color edges
-        aren't used: a fish's own belly edge is often stronger than the seam.
-        (cv2.watershed can't do this: it floods by neighbor color differences.)
+        Split a region between several clicks at its narrowest points: pixels deeper
+        than t (distance to the edge) form cores, which separate first where touching
+        fish meet. The smallest t giving each click its own core wins, then every pixel
+        joins the nearest core (no such t: the nearest click). Not color edges: a belly
+        edge is often stronger than the seam. Not cv2.watershed: it floods by neighbor
+        color differences, not depth.
         """
         x, y, w, h = cv2.boundingRect(region)
         crop = region[y : y + h, x : x + w]

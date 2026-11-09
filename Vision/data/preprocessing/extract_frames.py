@@ -15,9 +15,8 @@ Dropped unless --keep-duplicates / --keep-blurry:
     near duplicates  almost nothing changed since the last saved frame
     blurry           much less sharp than the video's median frame (arm motion)
 
-Reads video files with OpenCV, and RealSense recordings (.bag; newer
-librealsense such as 2.59 writes .db3; color stream) with pyrealsense2. Extract either the
-recording or the .mp4 of a clip: both map to the same folder.
+Videos are read with OpenCV, RealSense recordings (.bag, .db3) with pyrealsense2
+(color stream). A clip's recording and its .mp4 map to the same folder: extract one.
 """
 
 import argparse

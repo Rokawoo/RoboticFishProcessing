@@ -6,12 +6,11 @@ Usage:
     python label_viewer.py                 # pick a set folder in a popup
     python label_viewer.py "<set folder>"
 
-Every button explains itself when you hover over it; F1 (or ?) lists all mouse
-actions and keys. Changes are saved when you change image or set, or close the
-window (Ctrl+S saves now).
+Buttons explain themselves on hover; F1 lists every key. Labels save when you
+change image or set, or close the window (Ctrl+S: now).
 
-An image whose polygons are all deleted keeps an empty label file: YOLO reads
-that as "no fish" (background), unlike an image without a label file.
+An empty label file (all polygons deleted, or No fish / B) = background image for
+YOLO; an image without a label file is skipped.
 """
 
 import argparse

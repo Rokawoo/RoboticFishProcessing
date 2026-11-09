@@ -34,9 +34,7 @@ TRAINED_MODELS_DIR = VISION_DIR / "trained_cv_models"
 # ---------------------------------------------------------------------------
 IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"})
 VIDEO_EXTS = frozenset({".mp4", ".avi", ".mov", ".mkv", ".webm", ".bag", ".db3"})
-REALSENSE_EXTS = frozenset(
-    {".bag", ".db3"}
-)  # RealSense recordings: .bag (older librealsense), .db3 (newer, e.g. 2.59)
+REALSENSE_EXTS = frozenset({".bag", ".db3"})  # .db3: librealsense 2.59+
 LABEL_EXT = ".txt"
 SET_CLASSES_NAME = "classes.txt"  # a set's own class list (Label Studio export)
 TRASH_DIR_NAME = "_deleted"  # inside a set: where the label viewer moves deleted pairs
@@ -49,8 +47,8 @@ _AUGMENTED_STEM = re.compile(r"^(?P<source>.+)__aug\d+(?:-[a-z_]+)?$")
 _LABEL_STUDIO_PREFIX = re.compile(r"^[0-9a-f]{8}-(?P<name>.+)$")
 
 
-def augmented_stem(source_stem: str, index: int, recipe: str) -> str:
-    return f"{source_stem}__aug{index}-{recipe}"
+def augmented_stem(source_stem: str, index: int, effect: str) -> str:
+    return f"{source_stem}__aug{index}-{effect}"
 
 
 def source_of_augmented(stem: str) -> str | None:
@@ -252,11 +250,7 @@ _popup_root = None
 
 
 def enable_dpi_awareness() -> None:
-    """
-    Draw Tk windows at the screen's real resolution on Windows. Without it,
-    Windows renders them small and stretches them at display scaling > 100%,
-    which makes text and images blurry. Call before creating the Tk root.
-    """
+    """Sharp Tk windows on Windows at display scaling > 100%. Call before creating Tk."""
     if sys.platform != "win32":
         return
     import ctypes
