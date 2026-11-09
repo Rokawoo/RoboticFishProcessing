@@ -272,7 +272,9 @@ Vision/trained_cv_models/*
 Vision/data/training/mlflow/
 
 # Editors and OS
-.vscode/
+# VS Code: personal settings stay local; the extension recommendations are shared.
+.vscode/*
+!.vscode/extensions.json
 .idea/
 *.swp
 .DS_Store

@@ -1,0 +1,20 @@
+# Ruff and the light tests on every push and pull request. Only the dev extra is
+# installed, so tests needing OpenCV, PyTorch, a display or hardware skip here.
+name: checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest

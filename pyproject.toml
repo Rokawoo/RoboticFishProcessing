@@ -40,7 +40,8 @@ analysis = [
 ]
 dev = [
     "pytest",
-    "ruff>=0.17",  # older versions check a smaller default rule set
+    "ruff>=0.17,<0.18",  # the default rules change between minor versions
+    "pre-commit",
 ]
 
 [project.urls]
@@ -56,3 +57,6 @@ testpaths = ["Vision/tests", "Arm/tests", "ControlSys/tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+extend-select = ["E501"]  # enforce line-length (not in the default rules)

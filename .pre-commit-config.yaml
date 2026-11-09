@@ -1,0 +1,9 @@
+# Runs ruff on the files you commit (lint with auto-fix, then format).
+# One-time setup per clone: pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4  # keep within the ruff range pinned in pyproject.toml (dev extra)
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
