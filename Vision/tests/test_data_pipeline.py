@@ -801,3 +801,48 @@ def test_auto_labeler_sam_engine(auto_labeler, sam_weights, monkeypatch):
     sam = app.sam
     app.release_sam()  # also runs on close
     assert app.sam is None and sam.predictor is None
+
+
+def test_export_zips_data_and_models_in_the_repo_layout(tmp_path, monkeypatch):
+    import zipfile
+
+    module = load_script("export_data.py")
+    repo = tmp_path / "RoboticFishProcessing"
+    dataset, models = repo / "Vision" / "data" / "dataset", repo / "Vision" / "trained_cv_models"
+    files = {
+        dataset / "classes.txt": "catfish\n",  # in Git: left out
+        dataset / "image_sets" / ".gitkeep": "",
+        dataset / "image_sets" / "fishA" / "fishA_000000.jpg": "jpg",
+        dataset / "image_sets" / "fishA" / "fishA_000000.txt": "0 0.1 0.1 0.5 0.1 0.5 0.5\n",
+        dataset / "image_sets" / ".fishA (augmented).partial" / "x.jpg": "unfinished",
+        dataset / "video_set_raw" / "fishA.mp4": "mp4",
+        dataset / "train" / "images" / "train" / "fishA_000000.jpg": "split",
+        dataset / "train" / "images" / "train" / "fishA_000000.npy": "cache",
+        models / "run" / "weights" / "best.pt": "weights",
+    }
+    for path, text in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    (dataset / "image_sets" / "empty set").mkdir()
+    for name, value in (("DATASET_DIR", dataset), ("SPLIT_DIR", dataset / "train")):
+        monkeypatch.setattr(module, name, value)
+    monkeypatch.setattr(module, "TRAINED_MODELS_DIR", models)
+    monkeypatch.setattr(module, "REPO_DIR", repo)
+
+    def names(zip_path):
+        with zipfile.ZipFile(zip_path) as z:
+            return sorted(z.namelist())
+
+    prefix = "RoboticFishProcessing/Vision/"
+    assert names(module.export(tmp_path)) == [
+        prefix + "data/dataset/image_sets/empty set/",
+        prefix + "data/dataset/image_sets/fishA/fishA_000000.jpg",
+        prefix + "data/dataset/image_sets/fishA/fishA_000000.txt",
+        prefix + "data/dataset/video_set_raw/fishA.mp4",
+        prefix + "trained_cv_models/run/weights/best.pt",
+    ]
+    out = tmp_path / "with split"
+    out.mkdir()
+    assert prefix + "data/dataset/train/images/train/fishA_000000.jpg" in names(
+        module.export(out, with_split=True)
+    )
