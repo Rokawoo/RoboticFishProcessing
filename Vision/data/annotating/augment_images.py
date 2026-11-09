@@ -40,7 +40,7 @@ from pipeline_common import (
     IMAGE_SETS_DIR,
     Polygon,
     ask_folder,
-    ask_number,
+    ask_integer,
     ask_yes_no,
     augmented_stem,
     find_label,
@@ -51,6 +51,7 @@ from pipeline_common import (
     label_index,
     list_images,
     mask_to_polygon,
+    positive_int,
     read_label,
     set_dirs,
     write_label,
@@ -267,7 +268,9 @@ def main() -> None:
     parser.add_argument(
         "folder", nargs="?", type=Path, help="set folder in image_sets (popup if not given)"
     )
-    parser.add_argument("--copies", type=int, help=f"copies per image (default {DEFAULT_COPIES})")
+    parser.add_argument(
+        "--copies", type=positive_int, help=f"copies per image (default {DEFAULT_COPIES})"
+    )
     parser.add_argument("--seed", type=int, default=SEED, help=f"random seed (default {SEED})")
     parser.add_argument(
         "-y", "--yes", action="store_true", help="replace an old augmented set without asking"
@@ -287,14 +290,11 @@ def main() -> None:
         if args.folder is not None:
             copies = DEFAULT_COPIES
         else:
-            value = ask_number(
+            copies = ask_integer(
                 "Copies", f"Augmented copies per image of '{folder.name}':", DEFAULT_COPIES, 1, 50
             )
-            if value is None:
+            if copies is None:
                 sys.exit("Cancelled.")
-            copies = int(value)
-    if copies < 1:
-        sys.exit("❌ --copies must be at least 1")
 
     augment_set(folder.resolve(), copies, args.seed, args.yes)
 

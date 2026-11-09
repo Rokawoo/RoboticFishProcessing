@@ -9,7 +9,7 @@ Usage:
 
 Frames are named <video name>_<frame number:06d>.jpg. Re-extracting a video only
 adds missing frames, so existing frames and their labels stay matched. Name
-videos by fish ID and view (fish012_left.mp4) so the splitter can group by fish.
+videos by fish ID and view (fish012_left.mp4).
 
 Dropped unless --keep-duplicates / --keep-blurry:
     near duplicates  almost nothing changed since the last saved frame
@@ -38,12 +38,13 @@ from pipeline_common import (
     VIDEO_EXTS,
     VIDEOS_DIR,
     ask_files,
-    ask_number,
+    ask_integer,
     fix_console,
     imwrite,
+    positive_int,
 )
 
-DEFAULT_FPS = 2.0
+DEFAULT_FPS = 2
 JPEG_QUALITY = 95
 
 # Near duplicate: fewer than DUPLICATE_MAX_CHANGED of the pixels (compared at
@@ -58,7 +59,7 @@ BLUR_RATIO = 0.4
 # ---------------------------------------------------------------------------
 # Reading videos
 # ---------------------------------------------------------------------------
-def read_opencv(path: Path, fps: float) -> Iterator[tuple[int, np.ndarray]]:
+def read_opencv(path: Path, fps: int) -> Iterator[tuple[int, np.ndarray]]:
     """Yield (frame number, BGR frame) at about `fps`."""
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
@@ -83,7 +84,7 @@ def read_opencv(path: Path, fps: float) -> Iterator[tuple[int, np.ndarray]]:
         cap.release()
 
 
-def read_realsense(path: Path, fps: float) -> Iterator[tuple[int, np.ndarray]]:
+def read_realsense(path: Path, fps: int) -> Iterator[tuple[int, np.ndarray]]:
     """Yield (color frame number, BGR frame) from a RealSense recording at about `fps`."""
     try:
         import pyrealsense2 as rs
@@ -161,7 +162,7 @@ def sharpness(frame: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 def extract(
     video: Path,
-    fps: float,
+    fps: int,
     out_root: Path = IMAGE_SETS_DIR,
     keep_blurry: bool = False,
     keep_duplicates: bool = False,
@@ -218,7 +219,9 @@ def extract(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract video frames into image_sets/.")
     parser.add_argument("videos", nargs="*", type=Path, help="video files (popup if none)")
-    parser.add_argument("--fps", type=float, help="frames per second to save (popup if not set)")
+    parser.add_argument(
+        "--fps", type=positive_int, help="frames per second to save, 1 or more (popup if not set)"
+    )
     parser.add_argument("--keep-blurry", action="store_true", help="don't drop blurry frames")
     parser.add_argument(
         "--keep-duplicates", action="store_true", help="don't drop near-duplicate frames"
@@ -240,20 +243,18 @@ def main() -> None:
 
     fps = args.fps
     if fps is None:
-        fps = ask_number(
+        fps = ask_integer(
             "Frame rate",
-            f"Frames per second to extract ({len(videos)} video(s)):",
+            f"Frames per second to extract from {len(videos)} video(s) (whole number, 1 or more):",
             DEFAULT_FPS,
-            0.01,
-            240.0,
+            1,
+            240,
         )
         if fps is None:
             sys.exit("Cancelled.")
-    if fps <= 0:
-        sys.exit("❌ --fps must be more than 0")
 
     print("=" * 60)
-    print(f"FRAME EXTRACTION at {fps:g} fps -> {IMAGE_SETS_DIR}")
+    print(f"FRAME EXTRACTION at {fps} fps -> {IMAGE_SETS_DIR}")
     print("=" * 60)
     start = time.perf_counter()
     total, failed = 0, []

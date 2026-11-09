@@ -287,10 +287,11 @@ def ask_folder(title: str, initial_dir: Path) -> Path | None:
     return Path(name) if name else None
 
 
-def ask_number(title: str, prompt: str, default: float, low: float, high: float) -> float | None:
+def ask_integer(title: str, prompt: str, default: int, low: int, high: int) -> int | None:
+    """Whole number between low and high; the dialog rejects anything else. None if cancelled."""
     from tkinter import simpledialog
 
-    return simpledialog.askfloat(
+    return simpledialog.askinteger(
         title, prompt, parent=_hidden_root(), initialvalue=default, minvalue=low, maxvalue=high
     )
 
@@ -299,6 +300,19 @@ def ask_yes_no(title: str, message: str) -> bool:
     from tkinter import messagebox
 
     return messagebox.askyesno(title, message, parent=_hidden_root())
+
+
+def positive_int(text: str) -> int:
+    """argparse type: a whole number > 0."""
+    import argparse
+
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{text}' is not a whole number") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or more, got {value}")
+    return value
 
 
 def fix_console() -> None:
