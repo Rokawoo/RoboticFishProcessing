@@ -30,7 +30,7 @@ Requirement IDs (Requirement Spec, Confluence) use these prefixes in code, docst
 | 2 | `annotating/auto_labeler.py` (SAM or color engine) and/or Label Studio | `.txt` labels next to the images |
 | 3 | `annotating/augment_images.py` (pixel-only effects) | `dataset/image_sets/<set> (augmented)/` |
 | 4 | `annotating/label_viewer.py` | fixed labels; deleted pairs go to `<set>/_deleted/` |
-| 5 | `dataset/train/train_val_data_splitter.py` | `dataset/train/` (train/val/test) and `data.yaml` |
+| 5 | `preprocessing/train_val_data_splitter.py` | `dataset/train/` (train/val/test) and `data.yaml` |
 | 6 | `training/train.py` (settings: `training/fish_seg.yaml`) | `Vision/trained_cv_models/<name>_<model>_<date>_<time>/` |
 
 Rules the code depends on:

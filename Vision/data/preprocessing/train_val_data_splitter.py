@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Step 5: split every labeled image in ../image_sets into YOLO train/val(/test).
+Step 5: split every labeled image in dataset/image_sets into YOLO train/val(/test).
 
 Usage:
     python train_val_data_splitter.py            # scan, show the split, ask, then build
@@ -9,8 +9,8 @@ Usage:
 
 Reads image_sets/<set>/ (images with labels next to them, or a Label Studio
 export with images/ and labels/). Sets starting with "." or "_" are skipped;
-images without a label are skipped. Writes images/ and labels/ with train, val
-(and test) folders plus data.yaml here, after deleting the previous split.
+images without a label are skipped. Writes dataset/train/: images/ and labels/ with
+train, val (and test) folders plus data.yaml, after deleting the previous split.
 
 Split rules:
     - Each set is cut into CHUNKS_PER_SET blocks of consecutive frames, and whole
@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NamedTuple
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # Vision/data
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Vision/data
 from pipeline_common import (
     CLASSES_FILE,
     IMAGE_EXTS,
@@ -412,7 +412,7 @@ def main() -> None:
 
     write_yaml(class_names, everything, with_test=bool(test))
     print(f"📝 Wrote {YAML_PATH.name}")
-    print(f"\n✅ Done in {time.perf_counter() - start:.1f} s. Next: python ../../training/train.py")
+    print(f"\n✅ Done in {time.perf_counter() - start:.1f} s. Next: training/train.py")
 
 
 if __name__ == "__main__":

@@ -149,7 +149,7 @@ def test_requirements_txt_covers_every_pyproject_extra():
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def splitter():
-    return load_script("dataset/train/train_val_data_splitter.py")
+    return load_script("preprocessing/train_val_data_splitter.py")
 
 
 def frames(splitter, set_name: str, n: int) -> list:

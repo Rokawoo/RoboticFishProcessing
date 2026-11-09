@@ -37,11 +37,11 @@ from types import ModuleType
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Vision/data
-from pipeline_common import IMAGE_EXTS, SPLIT_DIR, TRAINED_MODELS_DIR, fix_console
+from pipeline_common import DATA_DIR, IMAGE_EXTS, TRAINED_MODELS_DIR, fix_console
 
 TRAINING_DIR = Path(__file__).parent.resolve()
 DEFAULT_CONFIG = TRAINING_DIR / "fish_seg.yaml"
-SPLITTER = SPLIT_DIR / "train_val_data_splitter.py"
+SPLITTER = DATA_DIR / "preprocessing" / "train_val_data_splitter.py"
 MLFLOW_DIR = TRAINING_DIR / "mlflow"
 
 PATH_KEYS = ("model", "data", "project")

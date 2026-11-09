@@ -6,7 +6,7 @@ Dataset and training tools; Requirement Spec **Section 2.3 (VD)**. How to run th
 |---|---|---|
 | `preprocessing/` | Frames from recordings, named by fish and view, minus blurry and near-duplicate frames | VD-10 to VD-37, Appendix C.1 |
 | `annotating/` | Labeling (auto labeler and/or Label Studio), augmentation, label review | VD-40 to VD-65, Appendix C.2 |
-| `dataset/train/`, `training/` | Train/val/test split, YOLO26 training with MLflow tracking, evaluation | VD-70 to VD-94, Appendix C.3 and C.10 |
+| `preprocessing/train_val_data_splitter.py`, `training/` | Train/val/test split, YOLO26 training with MLflow tracking, evaluation | VD-70 to VD-94, Appendix C.3 and C.10 |
 
 ```
 Vision/

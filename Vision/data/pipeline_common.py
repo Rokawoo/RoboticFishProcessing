@@ -6,7 +6,7 @@ Pipeline:
     2. annotating/auto_labeler.py or Label Studio   labels (.txt) next to the images
     3. annotating/augment_images.py                 image_sets/<set> (augmented)/
     4. annotating/label_viewer.py                   review and fix labels
-    5. dataset/train/train_val_data_splitter.py     image_sets/* -> dataset/train/
+    5. preprocessing/train_val_data_splitter.py     image_sets/* -> dataset/train/
     6. training/train.py                            -> Vision/trained_cv_models/<run>/
 
 Labels are YOLO segmentation polygons, one object per line, normalized to 0-1:
