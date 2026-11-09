@@ -46,6 +46,6 @@ All labeling tools read and write the same YOLO polygon files. Fix labels in the
 - **Image acquisition (VS-10):** aligned color and depth from the RealSense D405 through realsense2_camera
 - **Detection and segmentation (VS-20):** YOLO26 segmentation model
 - **Keypoints (VS-30):** YOLO26 pose model
-- **Pose and geometry (VS-40):** position and heading in {B} from depth and the hand-eye calibration
+- **Pose and geometry (VS-40):** position and heading in {B} from depth and the hand-eye calibration; head direction from the mask's shape, kept while the head is out of frame (`fish_heading.py`, requirements only so far)
 - **Output (VS-50, IF-20):** fish list topic to ControlSys
 - **Failure flagging (VS-60):** checks that mark unreliable detections
