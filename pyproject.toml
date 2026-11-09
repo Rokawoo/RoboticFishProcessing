@@ -24,7 +24,7 @@ vision = [
     "imagehash",
     "mlflow",
     "albumentations>=2.0",  # data/annotating/augment_images.py
-    "pillow",               # data/annotating/label_editor.py
+    "pillow",               # data/annotating/label_viewer.py
     "pyyaml",
 ]
 arm = [

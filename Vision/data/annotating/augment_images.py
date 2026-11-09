@@ -258,7 +258,7 @@ def augment_set(folder: Path, copies: int, seed: int = SEED, assume_yes: bool = 
         print(f"   ⚠️  Skipped {len(skipped)} image(s):")
         for s in skipped[:10]:
             print(f"      - {s}")
-    print("Next: check them with annotating/label_editor.py")
+    print("Next: check them with annotating/label_viewer.py")
     return out_dir
 
 

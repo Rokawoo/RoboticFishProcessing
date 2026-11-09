@@ -3,8 +3,8 @@
 Step 4: view, fix and delete labels.
 
 Usage:
-    python label_editor.py                 # pick a set folder in a popup
-    python label_editor.py "<set folder>"
+    python label_viewer.py                 # pick a set folder in a popup
+    python label_viewer.py "<set folder>"
 
 Changes are saved when you change image or close the window (Ctrl+S saves now).
 
@@ -100,7 +100,7 @@ def point_in_polygon(x: float, y: float, pts: list[list[float]]) -> bool:
     return inside
 
 
-class LabelEditor:
+class LabelViewer:
     def __init__(self, root: tk.Misc, folder: Path):
         self.root = root
         self.folder = folder
@@ -138,7 +138,7 @@ class LabelEditor:
         self.pan_start = None
         self.photo = None
 
-        root.title(f"Label editor - {folder.name}")
+        root.title(f"Label viewer - {folder.name}")
         w, h = root.winfo_screenwidth(), root.winfo_screenheight()
         root.geometry(f"{int(w * 0.85)}x{int(h * 0.85)}+{int(w * 0.05)}+{int(h * 0.03)}")
         root.configure(bg="#1e1e1e")
@@ -265,7 +265,7 @@ class LabelEditor:
         del self.images[self.index]
         self.dirty = False
         if not self.images:
-            messagebox.showinfo("Label editor", "No images left in this folder.", parent=self.root)
+            messagebox.showinfo("Label viewer", "No images left in this folder.", parent=self.root)
             self.root.destroy()
             return
         self.load(min(self.index, len(self.images) - 1))
@@ -596,7 +596,7 @@ class LabelEditor:
 
 
 def main(
-    editor_class: type[LabelEditor] = LabelEditor,
+    viewer_class: type[LabelViewer] = LabelViewer,
     description: str = "View, fix and delete the labels of an image set.",
 ) -> None:
     fix_console()
@@ -620,7 +620,7 @@ def main(
         sys.exit(f"❌ Not a folder: {folder}")
     if not list_images(set_dirs(folder)[0]):
         sys.exit(f"❌ No images in {folder}")
-    editor_class(root, folder.resolve())
+    viewer_class(root, folder.resolve())
     root.mainloop()
 
 

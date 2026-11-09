@@ -6,7 +6,7 @@ Usage:
     python auto_labeler.py                 # pick a set folder in a popup
     python auto_labeler.py "<set folder>"
 
-The label editor (all its tools and keys) plus auto-labeling:
+The label viewer (all its tools and keys) plus auto-labeling:
     G               auto-labeling on/off (off = normal editing)
     click           a fish: it is outlined in cyan (click each fish)
     Shift+click     more of the same fish (a fin or color it missed)
@@ -16,10 +16,11 @@ The label editor (all its tools and keys) plus auto-labeling:
     E               engine: SAM or Color
 
 Engines:
-    SAM (default)   Segment Anything (sam_segmenter.py) outlines the clicked
-                    object. Works on any contrast; downloads a 75 MB model on
-                    first use; fastest with a GPU.
-    Color           matches the clicked colors (color_segmenter.py). Needs fish
+    SAM (default)   Segment Anything (segmentors/sam.py) outlines the clicked
+                    object. Works on any contrast; downloads the model
+                    (SAM_MODEL in segmentors/sam.py) on first use; fastest
+                    with a GPU.
+    Color           matches the clicked colors (segmentors/color.py). Needs fish
                     and table colors to differ (e.g. dark fish, light table).
                     Colors carry over to the next image, so it can label every
                     matching region without clicks ("Label all matching regions",
@@ -40,17 +41,17 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # annotating/
-from color_segmenter import (
+from label_viewer import LabelViewer, main
+from pipeline_common import find_label, label_index, mask_to_polygon, write_label
+from segmentors.color import (
     MAX_CLUSTERS,
     Cluster,
-    ColorSegmenter,
+    ColorSegmentor,
     Settings,
     lab_to_rgb,
     sample_patch,
 )
-from label_editor import LabelEditor, main
-from pipeline_common import find_label, label_index, mask_to_polygon, write_label
-from sam_segmenter import SamSegmenter
+from segmentors.sam import SamSegmentor
 
 PREVIEW_COLOR = (0, 255, 255)
 MARK_COLORS = {"fish": (0, 255, 0), "same fish": (255, 255, 0), "not fish": (255, 60, 60)}
@@ -62,9 +63,9 @@ AUTO_HELP = (
 )
 
 
-class AutoLabeler(LabelEditor):
+class AutoLabeler(LabelViewer):
     def __init__(self, root: tk.Misc, folder: Path):
-        # Set before LabelEditor.__init__, which loads the first image.
+        # Set before LabelViewer.__init__, which loads the first image.
         self.auto = False
         self.engine = "sam"
         self.settings = Settings()
@@ -72,8 +73,8 @@ class AutoLabeler(LabelEditor):
         self.negatives: list[tuple[float, float]] = []  # this image: not-fish points
         self.fish_colors: list[Cluster] = []  # color engine, kept across images
         self.not_fish_colors: list[Cluster] = []
-        self.segmenter: ColorSegmenter | None = None  # color engine, per image
-        self.sam: SamSegmenter | None = None
+        self.color_segmentor: ColorSegmentor | None = None  # color engine, per image
+        self.sam: SamSegmentor | None = None
         self.bgr: np.ndarray | None = None
         self.preview: list[list[tuple[float, float]]] = []  # normalized outlines
         self.show_enhanced = False
@@ -237,19 +238,19 @@ class AutoLabeler(LabelEditor):
             self.bgr = np.ascontiguousarray(np.asarray(self.base)[:, :, ::-1])
         return self.bgr
 
-    def get_color_segmenter(self) -> ColorSegmenter:
-        if self.segmenter is None:
-            self.segmenter = ColorSegmenter(self.image_bgr())
-        return self.segmenter
+    def get_color_segmentor(self) -> ColorSegmentor:
+        if self.color_segmentor is None:
+            self.color_segmentor = ColorSegmentor(self.image_bgr())
+        return self.color_segmentor
 
-    def get_sam(self) -> SamSegmenter | None:
+    def get_sam(self) -> SamSegmentor | None:
         try:
             if self.sam is None:
                 self.status.configure(
                     text="Loading SAM (first use downloads it; the first click can take ~15 s)..."
                 )
                 self.root.update_idletasks()
-                self.sam = SamSegmenter()
+                self.sam = SamSegmentor()
             self.sam.set_image(self.image_bgr(), str(self.images[self.index]))
         except Exception as e:  # noqa: BLE001 - e.g. no ultralytics or no internet: fall back
             self.sam = None
@@ -259,7 +260,7 @@ class AutoLabeler(LabelEditor):
         return self.sam
 
     def add_color(self, x: float, y: float, fish: bool) -> None:
-        pixels = sample_patch(self.get_color_segmenter().lab, x, y)
+        pixels = sample_patch(self.get_color_segmentor().lab, x, y)
         if pixels is None:
             return
         colors = self.fish_colors if fish else self.not_fish_colors
@@ -342,7 +343,7 @@ class AutoLabeler(LabelEditor):
             if not self.fish_colors:
                 self.say("Click a fish to sample its colors")
                 return
-            seg = self.get_color_segmenter()
+            seg = self.get_color_segmentor()
             seeds = [points[0] for points in self.objects]
             regions = seg.segment(self.fish_colors, self.not_fish_colors, seeds, self.settings)
             self.preview = self.outlines(regions)
@@ -405,7 +406,7 @@ class AutoLabeler(LabelEditor):
             self.update_view()
 
     def make_enhanced(self) -> None:
-        gray = self.get_color_segmenter().enhanced(
+        gray = self.get_color_segmentor().enhanced(
             self.fish_colors, self.not_fish_colors, self.settings.tolerance
         )
         self.enhanced_image = Image.fromarray(gray).convert("RGB")
@@ -437,7 +438,7 @@ class AutoLabeler(LabelEditor):
             self.root.update_idletasks()  # redraw only; no input events mid-batch
             with Image.open(path) as im:
                 rgb = np.asarray(ImageOps.exif_transpose(im).convert("RGB"))
-            seg = ColorSegmenter(np.ascontiguousarray(rgb[:, :, ::-1]))
+            seg = ColorSegmentor(np.ascontiguousarray(rgb[:, :, ::-1]))
             regions = seg.segment(self.fish_colors, self.not_fish_colors, [], settings)
             outlines = seg.polygons(regions, settings)
             if outlines:  # no match: leave unlabeled, don't mark it as background
@@ -455,7 +456,7 @@ class AutoLabeler(LabelEditor):
 
     def load(self, index: int) -> None:
         self.objects, self.negatives, self.preview = [], [], []  # clicks are per image
-        self.segmenter, self.bgr, self.enhanced_image = None, None, None
+        self.color_segmentor, self.bgr, self.enhanced_image = None, None, None
         super().load(index)
         if self.auto and self.engine == "color" and self.fish_colors:
             self.schedule()  # sampled colors carry over

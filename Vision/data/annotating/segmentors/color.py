@@ -1,5 +1,5 @@
 """
-Color segmentation for auto_labeler.py: sampled colors -> object outlines.
+Color segmentor for auto_labeler.py: sampled colors -> object outlines.
 
 1. Colors are compared in CIELAB. HSV hue is unreliable here: it turns to noise
    at low saturation, and catfish are dark, low-saturation gray-olive.
@@ -23,7 +23,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Vision/data
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # Vision/data
 from pipeline_common import mask_to_polygon
 
 SAMPLE_RADIUS = 4  # px around a click
@@ -83,7 +83,7 @@ def lab_to_rgb(color_lab: np.ndarray) -> tuple[int, int, int]:
     return tuple(int(v) for v in np.clip(rgb.reshape(3) * 255, 0, 255))
 
 
-class ColorSegmenter:
+class ColorSegmentor:
     """Segments one image; make one per image. Clusters are passed in."""
 
     def __init__(self, image_bgr: np.ndarray):

@@ -4,19 +4,20 @@ Click-to-segment with SAM 2 (Segment Anything) through Ultralytics, for auto_lab
 Each fish's clicks are positive points and the right-clicks negative points; SAM
 returns that fish's mask. Unlike color thresholds, SAM separates a white fish
 from a reflective gray table. The image is encoded once (set_image) and reused
-for every click: ~0.1 s per click; a new image costs ~10 ms on a GPU, ~1 s on a
-CPU. The first prompt on a GPU takes ~15 s (CUDA warm-up).
+for every click. With sam2.1_t: ~0.1 s per click, ~10 ms per new image on a GPU
+(~1 s on a CPU); larger models are slower. The first prompt on a GPU takes ~15 s
+(CUDA warm-up).
 """
 
 from pathlib import Path
 
 import numpy as np
 
-SAM_MODEL = "sam2.1_t.pt"  # tiny, 75 MB; sam2.1_b.pt is slower and slightly finer
+SAM_MODEL = "sam2.1_l.pt"  # sam2.1_x.pt {x = t, s, b, l} smallest to largest
 MODEL_PATH = Path(__file__).resolve().parent / SAM_MODEL  # downloaded here on first use
 
 
-class SamSegmenter:
+class SamSegmentor:
     def __init__(self, model_path: Path | None = None):
         from ultralytics.models.sam import SAM2Predictor
 

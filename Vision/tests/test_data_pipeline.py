@@ -368,11 +368,11 @@ def fish_scene(fish, shadows=False, w=640, h=400):
 @pytest.fixture(scope="module")
 def segmenter_module():
     pytest.importorskip("cv2")
-    return load_script("annotating/color_segmenter.py")
+    return load_script("annotating/segmentors/color.py")
 
 
 def outline(seg_mod, image, fish_clicks, belly_clicks=(), not_fish=(), seeds=None, **settings):
-    seg = seg_mod.ColorSegmenter(image)
+    seg = seg_mod.ColorSegmentor(image)
     fish = [
         seg_mod.Cluster(seg_mod.sample_patch(seg.lab, x, y))
         for x, y in [*fish_clicks, *belly_clicks]
@@ -414,7 +414,7 @@ def test_touching_fish_are_split_between_clicks(segmenter_module):
 
 def test_label_all_matching_regions_needs_no_clicks(segmenter_module):
     image, _ = fish_scene([(170, 120, 110, 35, 20), (450, 280, 120, 38, -15)])
-    seg = segmenter_module.ColorSegmenter(image)
+    seg = segmenter_module.ColorSegmentor(image)
     fish = [
         segmenter_module.Cluster(segmenter_module.sample_patch(seg.lab, x, y))
         for x, y in [(170, 110), (175, 130)]
@@ -452,7 +452,7 @@ def editor(tmp_path, monkeypatch, tk_root):
     pytest.importorskip("PIL")
     from PIL import Image
 
-    module = load_script("annotating/label_editor.py")
+    module = load_script("annotating/label_viewer.py")
     folder = tmp_path / "fishA"
     folder.mkdir()
     for i in range(3):
@@ -461,7 +461,7 @@ def editor(tmp_path, monkeypatch, tk_root):
         folder / "fishA_000000.txt", [(0, [(0.1, 0.1), (0.4, 0.1), (0.4, 0.5), (0.1, 0.5)])]
     )
     window = tk.Toplevel(tk_root)
-    ed = module.LabelEditor(window, folder)
+    ed = module.LabelViewer(window, folder)
     window.update()
     ed.fit()
     monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: True)
@@ -589,18 +589,18 @@ def test_auto_labeler_color_engine_click_enter_next_image_and_label_the_rest(aut
 def sam_weights():
     pytest.importorskip("ultralytics")
     sys.path.insert(0, str(DATA_DIR / "annotating"))
-    import sam_segmenter
+    from segmentors import sam
 
-    path = Path(os.environ.get("RFP_SAM_WEIGHTS", sam_segmenter.MODEL_PATH))
+    path = Path(os.environ.get("RFP_SAM_WEIGHTS", sam.MODEL_PATH))
     if not path.is_file():
         pytest.skip(f"SAM weights not found: {path}")
     return path
 
 
 def test_sam_outlines_one_fish_and_separates_touching_fish(sam_weights):
-    import sam_segmenter
+    from segmentors.sam import SamSegmentor
 
-    sam = sam_segmenter.SamSegmenter(sam_weights)
+    sam = SamSegmentor(sam_weights)
     image, truth = fish_scene([(320, 200, 160, 45, 10)])
     sam.set_image(image, "one")
     mask = sam.segment([[(320, 185)]], [])[0]
@@ -614,7 +614,7 @@ def test_sam_outlines_one_fish_and_separates_touching_fish(sam_weights):
 
 
 def test_auto_labeler_sam_engine(auto_labeler, sam_weights, monkeypatch):
-    monkeypatch.setattr(sys.modules["sam_segmenter"], "MODEL_PATH", sam_weights)
+    monkeypatch.setattr(sys.modules["segmentors.sam"], "MODEL_PATH", sam_weights)
     app = auto_labeler
     assert app.engine == "sam"
     app.set_auto(True)

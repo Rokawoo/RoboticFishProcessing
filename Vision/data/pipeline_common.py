@@ -5,7 +5,7 @@ Pipeline:
     1. preprocessing/extract_frames.py              video -> image_sets/<video name>/
     2. annotating/auto_labeler.py or Label Studio   labels (.txt) next to the images
     3. annotating/augment_images.py                 image_sets/<set> (augmented)/
-    4. annotating/label_editor.py                   review and fix labels
+    4. annotating/label_viewer.py                   review and fix labels
     5. dataset/train/train_val_data_splitter.py     image_sets/* -> dataset/train/
     6. training/train.py                            -> Vision/trained_cv_models/<run>/
 
