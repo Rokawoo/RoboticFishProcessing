@@ -116,6 +116,15 @@ def test_mask_to_polygon_uses_few_corners_and_keeps_the_shape():
     assert len(points) < contour_px / 15
 
 
+def test_train_takes_overrides_before_and_after_options(monkeypatch):
+    pytest.importorskip("yaml")
+    train = load_script("training/train.py")
+    monkeypatch.setattr(sys, "argv", ["train.py", "epochs=3", "--no-mlflow", "batch=8"])
+    args = train.parse_args()
+    assert args.overrides == {"epochs": 3, "batch": 8} and args.no_mlflow
+    assert args.config == train.DEFAULT_CONFIG
+
+
 def requirement_names(lines) -> set[str]:
     names = set()
     for line in lines:

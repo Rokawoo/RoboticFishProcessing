@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
         "--resume", metavar="LAST_PT", type=Path, help="continue from weights/last.pt"
     )
     parser.add_argument("--no-mlflow", action="store_true", help="don't log this run to MLflow")
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()  # key=value overrides before and after --options
 
     args.config, args.overrides = DEFAULT_CONFIG, {}
     for item in args.items:
