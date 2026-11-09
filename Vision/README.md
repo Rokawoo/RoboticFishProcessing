@@ -37,6 +37,7 @@ flowchart TD
 | 4. Review | `python annotating/label_viewer.py` | Step through any set: drag corners, delete bad polygons or images (same as the auto labeler's Edit mode). | Fixed labels; deleted images in `<set>/_deleted/` |
 | 5. Split | `python preprocessing/train_val_data_splitter.py` | Check the split it shows, confirm. | `dataset/train/` (80/10/10 train/val/test), `data.yaml` |
 | 6. Train | `python training/train.py` | Settings: `training/fish_seg.yaml`; override on the command line (`epochs=5`). | `trained_cv_models/<name>_<model>_<date>_<time>/`, scored on train/val/test |
+| Preview | `python ../tests/model_viewer.py` | Pick a trained model and a raw video; every frame goes through the model in order, like a live feed. | `Vision/tests/model_previews/<video> - <model>.mp4` with outlines, boxes, confidences and the model's speed |
 
 All labeling tools read and write the same YOLO polygon files. Fix labels in the original set, then re-run step 3 (it replaces the copies). Step 5 rebuilds `dataset/train/` from scratch: re-run it after labeling.
 

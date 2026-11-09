@@ -361,6 +361,51 @@ def ask_yes_no(title: str, message: str) -> bool:
     return messagebox.askyesno(title, message, parent=_hidden_root())
 
 
+def ask_choice(title: str, prompt: str, options: list[str]) -> int | None:
+    """Index of the option picked from a list (double-click or Enter), None if cancelled."""
+    import tkinter as tk
+
+    window = tk.Toplevel(_hidden_root())
+    window.title(title)
+    window.attributes("-topmost", True)
+    tk.Label(window, text=prompt, anchor="w", justify="left").pack(fill="x", padx=10, pady=(10, 4))
+    frame = tk.Frame(window)
+    frame.pack(fill="both", expand=True, padx=10)
+    scroll = tk.Scrollbar(frame)
+    scroll.pack(side="right", fill="y")
+    box = tk.Listbox(
+        frame,
+        width=min(max(len(o) for o in options) + 4, 110),
+        height=min(len(options), 15),
+        exportselection=False,
+        yscrollcommand=scroll.set,
+    )
+    scroll.configure(command=box.yview)
+    box.pack(side="left", fill="both", expand=True)
+    for option in options:
+        box.insert("end", option)
+    box.selection_set(0)
+    picked: list[int] = []
+
+    def ok(_event=None):
+        if box.curselection():
+            picked.append(box.curselection()[0])
+            window.destroy()
+
+    buttons = tk.Frame(window)
+    buttons.pack(fill="x", padx=10, pady=10)
+    tk.Button(buttons, text="Cancel", width=10, command=window.destroy).pack(side="right")
+    tk.Button(buttons, text="OK", width=10, command=ok).pack(side="right", padx=6)
+    box.bind("<Double-Button-1>", ok)
+    window.bind("<Return>", ok)
+    window.bind("<Escape>", lambda _event: window.destroy())
+    window.lift()
+    window.focus_force()  # keys work without clicking the dialog first
+    box.focus_set()
+    window.wait_window()
+    return picked[0] if picked else None
+
+
 MIN_ULTRALYTICS = (8, 4)  # YOLO26
 
 

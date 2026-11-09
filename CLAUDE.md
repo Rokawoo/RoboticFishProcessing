@@ -32,6 +32,7 @@ Requirement IDs (Requirement Spec, Confluence) use these prefixes in code, docst
 | 4 | `annotating/label_viewer.py` | fixed labels; deleted pairs go to `<set>/_deleted/` |
 | 5 | `preprocessing/train_val_data_splitter.py` | `dataset/train/` (train/val/test) and `data.yaml` |
 | 6 | `training/train.py` (settings: `training/fish_seg.yaml`) | `Vision/trained_cv_models/<name>_<model>_<date>_<time>/` |
+| Preview | `Vision/tests/model_viewer.py` | `Vision/tests/model_previews/<video> - <model>.mp4` (git-ignored) |
 
 Rules the code depends on:
 

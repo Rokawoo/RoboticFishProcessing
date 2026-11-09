@@ -259,6 +259,8 @@ Vision/data/dataset/**
 !Vision/data/dataset/**/*.py
 # The class list defines what each class id means, so it is shared.
 !Vision/data/dataset/classes.txt
+# Model previews (rendered videos)
+Vision/tests/model_previews/
 
 # Model weights and training runs
 *.pt
