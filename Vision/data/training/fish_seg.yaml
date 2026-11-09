@@ -3,7 +3,7 @@
 # omitted ones use Ultralytics' defaults. Relative paths are relative to this file.
 # Override on the command line: python train.py epochs=5 batch=8
 
-model: yolo26m-seg.pt             # downloaded here on first use; sizes n < s < m < l < x
+model: yolo26m-seg.pt             # downloaded for the run, deleted after; n < s < m < l < x
 data: ../dataset/train/data.yaml  # written by the splitter
 project: ../../trained_cv_models  # run folder: <name>_<model>_<date>_<time>/
 name: fish_seg                    # also the MLflow experiment name

@@ -123,6 +123,7 @@ def test_train_takes_overrides_before_and_after_options(monkeypatch):
     args = train.parse_args()
     assert args.overrides == {"epochs": 3, "batch": 8} and args.no_mlflow
     assert args.config == train.DEFAULT_CONFIG
+    assert pc.version_tuple("8.3.219") < pc.MIN_ULTRALYTICS <= pc.version_tuple("8.4.0rc1")
 
 
 def requirement_names(lines) -> set[str]:

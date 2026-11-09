@@ -361,6 +361,33 @@ def ask_yes_no(title: str, message: str) -> bool:
     return messagebox.askyesno(title, message, parent=_hidden_root())
 
 
+MIN_ULTRALYTICS = (8, 4)  # YOLO26
+
+
+def version_tuple(version: str) -> tuple[int, ...]:
+    """'8.4.208' -> (8, 4, 208); stops at the first non-number part ('8.4.0rc1' -> (8, 4))."""
+    parts = []
+    for part in version.split("."):
+        if not part.isdigit():
+            break
+        parts.append(int(part))
+    return tuple(parts)
+
+
+def require_ultralytics() -> None:
+    """Exit with a clear message if Ultralytics is missing or too old for YOLO26."""
+    try:
+        import ultralytics
+    except ImportError:
+        sys.exit("❌ Ultralytics isn't installed. Use the rfp environment: conda activate rfp")
+    if version_tuple(ultralytics.__version__) < MIN_ULTRALYTICS:
+        sys.exit(
+            f"❌ Ultralytics {ultralytics.__version__} is too old for YOLO26 (needs "
+            f"{'.'.join(map(str, MIN_ULTRALYTICS))}+). Use the rfp environment "
+            "(conda activate rfp) or: pip install -U ultralytics"
+        )
+
+
 def positive_int(text: str) -> int:
     """argparse type: a whole number > 0."""
     import argparse

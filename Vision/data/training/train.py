@@ -37,7 +37,13 @@ from types import ModuleType
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Vision/data
-from pipeline_common import DATA_DIR, IMAGE_EXTS, TRAINED_MODELS_DIR, fix_console
+from pipeline_common import (
+    DATA_DIR,
+    IMAGE_EXTS,
+    TRAINED_MODELS_DIR,
+    fix_console,
+    require_ultralytics,
+)
 
 TRAINING_DIR = Path(__file__).parent.resolve()
 DEFAULT_CONFIG = TRAINING_DIR / "fish_seg.yaml"
@@ -291,14 +297,16 @@ def main() -> None:
         cfg.setdefault("project", str(TRAINED_MODELS_DIR))
 
     print_hardware()
+    require_ultralytics()  # late: --help and config errors don't wait for PyTorch
+    from ultralytics import YOLO
+
     mlflow = None if args.no_mlflow else start_mlflow(experiment, run_name)
     previous_setting = set_ultralytics_mlflow(mlflow is not None)
 
-    # Ultralytics downloads some files (e.g. the AMP-check model) into the current
-    # folder; keep them here. Every path above is already absolute.
+    # Ultralytics downloads the pretrained model (and its AMP-check model) into the
+    # current folder: here, and deleted after the run. Every path above is absolute.
     os.chdir(TRAINING_DIR)
-
-    from ultralytics import YOLO  # late: --help and config errors don't wait for PyTorch
+    weights_before = set(TRAINING_DIR.glob("*.pt"))
 
     status = "FAILED"
     model = None
@@ -347,6 +355,9 @@ def main() -> None:
         if mlflow and mlflow.active_run():
             mlflow.end_run(status=status)
         set_ultralytics_mlflow(previous_setting)
+        for downloaded in set(TRAINING_DIR.glob("*.pt")) - weights_before:
+            downloaded.unlink(missing_ok=True)  # the run folder has the trained weights
+            print(f"🧹 Deleted the downloaded {downloaded.name}")
 
     print("\n" + "=" * 60)
     print("NEXT STEPS")
