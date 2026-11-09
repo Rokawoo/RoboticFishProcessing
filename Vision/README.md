@@ -34,7 +34,7 @@ flowchart TD
 |---|---|---|---|
 | 1. Frames | `python preprocessing/extract_frames.py` | Pick videos (`.mp4`, or RealSense `.bag`/`.db3`) and frames per second. Name videos by fish and view, e.g. `fish012_left.mp4`. | `dataset/image_sets/<video name>/`, blurry and near-duplicate frames dropped |
 | 2. Label | `python annotating/auto_labeler.py` | Pick a set. Switch to **Auto-label** (G), click each fish, check the cyan outline, press Enter, go to the next image (Right). Or label in Label Studio and export YOLO labels next to the images. | A `.txt` label next to each image |
-| 3. Augment | `python annotating/augment_images.py` | Pick a labeled set and how many copies per image (lighting, blur, noise, shadow, camera shift, ...). | `dataset/image_sets/<set> (augmented)/` |
+| 3. Augment | `python annotating/augment_images.py` | Pick a labeled set and copies per image. Effects: lighting, white balance, motion blur, noise, shadow (pixels only: labels are copied unchanged). | `dataset/image_sets/<set> (augmented)/` |
 | 4. Review | `python annotating/label_viewer.py` | Pick any set and step through it: drag corners, delete bad polygons or images. The auto labeler's Edit mode does the same. | Fixed labels; deleted images go to `<set>/_deleted/` |
 | 5. Split | `python dataset/train/train_val_data_splitter.py` | Check the split it shows, confirm. | `dataset/train/` (80% train, 10% val, 10% test) and `data.yaml` |
 | 6. Train | `python training/train.py` | Settings in `training/fish_seg.yaml`; override any on the command line (`epochs=5`). | `trained_cv_models/<name>_<model>_<date>_<time>/`, scored on train, val and test |

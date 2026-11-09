@@ -160,7 +160,7 @@ def test_augmented_images_follow_their_original_into_train_only(splitter):
     train, val, test = splitter.split_pairs(originals, 0.8, 0.1, 42)
     augmented = [
         splitter.Pair(
-            Path(pc.augmented_stem(p.image.stem, 1, "jpeg") + ".jpg"),
+            Path(pc.augmented_stem(p.image.stem, 1, "shadow") + ".jpg"),
             Path("x.txt"),
             "tank (augmented)",
             Counter(),
@@ -168,7 +168,7 @@ def test_augmented_images_follow_their_original_into_train_only(splitter):
         for p in originals
     ]
     augmented.append(
-        splitter.Pair(Path("gone__aug1-jpeg.jpg"), Path("y.txt"), "tank (augmented)", Counter())
+        splitter.Pair(Path("gone__aug1-shadow.jpg"), Path("y.txt"), "tank (augmented)", Counter())
     )
     keep, elsewhere, orphans = splitter.place_augmented(augmented, train, originals)
     assert {pc.source_of_augmented(p.image.stem) for p in keep} == {p.image.stem for p in train}
@@ -185,31 +185,23 @@ def augmenter():
     return load_script("annotating/augment_images.py")
 
 
-def test_polygon_survives_mask_round_trip(augmenter):
-    polygon = [(0, [(0.2, 0.2), (0.6, 0.25), (0.7, 0.6), (0.3, 0.7)])]
-    mask = augmenter.polygons_to_masks(polygon, 640, 480)[0]
-    back = augmenter.polygons_to_masks([(0, augmenter.mask_to_points(mask))], 640, 480)[0]
-    assert iou(mask, back) > 0.97
-
-
-def test_every_effect_keeps_the_label_on_the_object(augmenter):
+def test_effects_change_pixels_but_never_move_the_fish(augmenter):
     import albumentations as A
     import cv2
     import numpy as np
 
-    # Green fish on a gray table: detected by color (G - R), so lighting effects
-    # and the gray borders of spatial effects can't be mistaken for it.
+    # Green fish on a gray table, found by color (G - R) after the effect.
     image = np.full((240, 320, 3), 60, np.uint8)
     corners = np.array([[80, 70], [230, 90], [250, 160], [100, 170]])
     cv2.fillPoly(image, [corners], (0, 230, 0))
-    polygon = [(0, [(x / 320, y / 240) for x, y in corners])]
-    for name, transforms in augmenter.build_recipes().items():
-        for seed in range(5):
-            out, moved = augmenter.augment_one(image, polygon, A.Compose(transforms, seed=seed))
-            assert len(moved) == 1, name
-            label = augmenter.polygons_to_masks(moved, 320, 240)[0].astype(bool)
+    truth = image[:, :, 1] > 200
+    for name, effect in augmenter.build_effects().items():
+        pipeline = A.Compose([effect], seed=0)
+        for _ in range(5):
+            out = pipeline(image=image)["image"]
+            assert out.shape == image.shape and (out != image).any(), name
             fish = out[:, :, 1].astype(int) - out[:, :, 2].astype(int) > 60
-            assert iou(label, fish) > 0.85, f"{name} (seed {seed})"
+            assert iou(truth, fish) > 0.85, name
 
 
 def test_label_studio_export_layout_is_understood(augmenter, tmp_path):
@@ -227,7 +219,7 @@ def test_label_studio_export_layout_is_understood(augmenter, tmp_path):
     assert len(pc.list_images(out)) == 1
 
 
-def test_augment_set_writes_labeled_copies_next_to_the_set(augmenter, tmp_path):
+def test_augment_set_copies_labels_unchanged_and_replaces_safely(augmenter, tmp_path, monkeypatch):
     import numpy as np
 
     folder = tmp_path / "fishA"
@@ -235,13 +227,26 @@ def test_augment_set_writes_labeled_copies_next_to_the_set(augmenter, tmp_path):
     for i in range(3):
         pc.imwrite(folder / f"fishA_{i:06d}.jpg", np.full((60, 80, 3), 100, np.uint8))
     pc.write_label(folder / "fishA_000000.txt", [(0, [(0.1, 0.1), (0.5, 0.1), (0.5, 0.5)])])
-    pc.write_label(folder / "fishA_000001.txt", [])  # background image: still augmented
+    pc.write_label(folder / "fishA_000001.txt", [])  # no fish: still augmented
     out = augmenter.augment_set(folder, copies=2, assume_yes=True)
     assert out.name == "fishA (augmented)"
     images = pc.list_images(out)
     assert len(images) == 4  # 2 labeled images x 2 copies; the unlabeled one is skipped
-    assert all(pc.find_label(img) is not None for img in images)
-    assert {pc.source_of_augmented(img.stem) for img in images} == {"fishA_000000", "fishA_000001"}
+    for img in images:
+        original = folder / f"{pc.source_of_augmented(img.stem)}.txt"
+        assert pc.find_label(img).read_bytes() == original.read_bytes()
+
+    def broken_imwrite(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(augmenter, "imwrite", broken_imwrite)
+    with pytest.raises(OSError):
+        augmenter.augment_set(folder, copies=3, assume_yes=True)
+    assert len(pc.list_images(out)) == 4  # a failed run leaves the previous set as it was
+    monkeypatch.undo()
+    augmenter.augment_set(folder, copies=1, assume_yes=True)  # and the next run cleans up
+    assert len(pc.list_images(out)) == 2
+    assert [p.name for p in tmp_path.iterdir()] == ["fishA", "fishA (augmented)"]
 
 
 # ---------------------------------------------------------------------------

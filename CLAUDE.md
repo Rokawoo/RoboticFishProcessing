@@ -28,7 +28,7 @@ Requirement IDs (Requirement Spec, Confluence) use these prefixes in code, docst
 |---|---|---|
 | 1 | `preprocessing/extract_frames.py` | `dataset/image_sets/<video name>/` |
 | 2 | `annotating/auto_labeler.py` (SAM or color engine) and/or Label Studio | `.txt` labels next to the images |
-| 3 | `annotating/augment_images.py` | `dataset/image_sets/<set> (augmented)/` |
+| 3 | `annotating/augment_images.py` (pixel-only effects) | `dataset/image_sets/<set> (augmented)/` |
 | 4 | `annotating/label_viewer.py` | fixed labels; deleted pairs go to `<set>/_deleted/` |
 | 5 | `dataset/train/train_val_data_splitter.py` | `dataset/train/` (train/val/test) and `data.yaml` |
 | 6 | `training/train.py` (settings: `training/fish_seg.yaml`) | `Vision/trained_cv_models/<name>_<model>_<date>_<time>/` |
@@ -62,7 +62,7 @@ Rules the code depends on:
 - `cv2.imread`/`imwrite` fail on non-ASCII paths on Windows: use `pipeline_common.imread`/`imwrite`.
 - A second `tk.Tk()` after destroying one can fail on Windows ("Can't find a usable init.tcl"): reuse one root.
 - Tk on Windows is blurry at display scaling > 100% unless the process is DPI aware. ttk's clam theme gives buttons a minimum width of 11 characters (`width=0` fixes it). Tk deletes a `tkfont.Font` when Python collects it: keep a reference.
-- Spatial augmentations must fill borders with a constant (`BORDER_CONSTANT`, `fill_mask=0`): mirrored borders create unlabeled fish. Albumentations' `PlanckianJitter` default range reaches 15000 K (strong blue); we use 4000-7500 K.
+- Offline augmentation is pixel-only on purpose: labels are copied byte for byte and can't drift; geometry (flips, rotation, scale, mosaic) is Ultralytics' job at training time. A spatial effect would need constant borders (`BORDER_CONSTANT`, `fill_mask=0`), since mirrored borders create unlabeled fish. Albumentations' `PlanckianJitter` default range reaches 15000 K (strong blue); we use 4000-7500 K.
 - Ultralytics: `settings` is one file per user shared by all projects (`train.py` restores the mlflow setting); downloads land in the working directory (`train.py` changes into `training/`); `cache="ram"` isn't deterministic (we use `"disk"`); YOLO26 needs 8.4+.
 - MLflow 3 refuses the plain-folder store: use SQLite (needs the full `mlflow` package, not `mlflow-skinny`).
 - PyPI's Windows torch is CPU-only, and pip prefers PyPI when it has a newer version than the CUDA index: keep torch/torchvision pinned to versions on the chosen index.
