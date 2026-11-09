@@ -114,6 +114,19 @@ def find_label(image: Path, index: dict[str, Path] | None = None) -> Path | None
     return index.get(image.stem.casefold())
 
 
+def parse_polygon(line: str) -> Polygon | None:
+    """A polygon label line, or None for anything else (boxes, keypoints, junk)."""
+    parts = line.split()
+    try:
+        cls = int(parts[0])
+        values = [float(v) for v in parts[1:]]
+    except (IndexError, ValueError):
+        return None
+    if cls < 0 or len(values) < 6 or len(values) % 2:
+        return None
+    return cls, list(zip(values[0::2], values[1::2]))
+
+
 def read_label(path: Path | None) -> tuple[list[Polygon], list[str]]:
     """
     (polygons, other lines). Lines that aren't polygons (e.g. boxes) come back
@@ -124,32 +137,64 @@ def read_label(path: Path | None) -> tuple[list[Polygon], list[str]]:
     if path is None or not path.is_file():
         return polygons, other
     for line in path.read_text(encoding="utf-8").splitlines():
-        parts = line.split()
-        if not parts:
-            continue
-        try:
-            cls = int(parts[0])
-            values = [float(v) for v in parts[1:]]
-        except ValueError:
-            other.append(line.strip())
-            continue
-        if cls >= 0 and len(values) >= 6 and len(values) % 2 == 0:
-            polygons.append((cls, list(zip(values[0::2], values[1::2]))))
-        else:
-            other.append(line.strip())
+        if line.strip():
+            polygon = parse_polygon(line)
+            if polygon:
+                polygons.append(polygon)
+            else:
+                other.append(line.strip())
     return polygons, other
 
 
+def inside_image(points: list[tuple[float, float]]) -> bool:
+    return all(0.0 <= v <= 1.0 for point in points for v in point)
+
+
+def clip_polygon(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """
+    The part of a normalized polygon inside the image (Sutherland-Hodgman): the
+    outline is cut where it leaves the image and the two crossing points are
+    joined along the edge. Unchanged if fully inside; [] if nothing is left.
+    (YOLO skips images whose labels go past 0-1.)
+    """
+    pts = [(float(x), float(y)) for x, y in points]
+    edges = ((0, 0.0, False), (0, 1.0, True), (1, 0.0, False), (1, 1.0, True))
+    for axis, limit, keep_below in edges:
+
+        def inside(p, axis=axis, limit=limit, keep_below=keep_below):
+            return p[axis] <= limit if keep_below else p[axis] >= limit
+
+        def crossing(a, b, axis=axis, limit=limit):
+            t = (limit - a[axis]) / (b[axis] - a[axis])
+            p = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]
+            p[axis] = limit
+            return p[0], p[1]
+
+        out = []
+        for i, current in enumerate(pts):
+            previous = pts[i - 1]
+            if inside(current):
+                if not inside(previous):
+                    out.append(crossing(previous, current))
+                out.append(current)
+            elif inside(previous):
+                out.append(crossing(previous, current))
+        pts = out
+    kept = [p for i, p in enumerate(pts) if p != pts[i - 1]]  # no repeated points
+    area2 = sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(kept, kept[1:] + kept[:1]))
+    return kept if len(kept) >= 3 and abs(area2) > 1e-12 else []
+
+
+def polygon_line(cls: int, points: list[tuple[float, float]]) -> str:
+    """Label line; the clamp only stops float noise from printing as -0.000000."""
+    return f"{cls} " + " ".join(
+        f"{min(max(x, 0.0), 1.0):.6f} {min(max(y, 0.0), 1.0):.6f}" for x, y in points
+    )
+
+
 def write_label(path: Path, polygons: list[Polygon], other: list[str] = ()) -> None:
-    """Write polygons (clipped to 0-1) followed by any `other` lines."""
-
-    def clip(v: float) -> float:
-        return min(max(v, 0.0), 1.0)
-
-    lines = [
-        f"{cls} " + " ".join(f"{clip(x):.6f} {clip(y):.6f}" for x, y in points)
-        for cls, points in polygons
-    ]
+    """Polygons, cut at the image edge (clip_polygon), then the `other` lines unchanged."""
+    lines = [polygon_line(cls, kept) for cls, points in polygons if (kept := clip_polygon(points))]
     lines += list(other)
     path.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
 

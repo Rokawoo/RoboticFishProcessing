@@ -38,12 +38,29 @@ def breaks(numbers: list[int]) -> int:
 # ---------------------------------------------------------------------------
 # pipeline_common
 # ---------------------------------------------------------------------------
-def test_label_round_trip_keeps_other_lines_and_clips(tmp_path):
+def test_label_round_trip_keeps_other_lines_and_cuts_at_the_edge(tmp_path):
     path = tmp_path / "a.txt"
     pc.write_label(path, [(0, [(0.1, 0.2), (0.3, 0.4), (0.5, 1.2)])], ["1 0.5 0.5 0.2 0.2"])
     polygons, other = pc.read_label(path)
-    assert polygons == [(0, [(0.1, 0.2), (0.3, 0.4), (0.5, 1.0)])]
+    points = polygons[0][1]
+    start = points.index((0.1, 0.2))  # same outline, maybe starting at another corner
+    assert points[start:] + points[:start] == [(0.1, 0.2), (0.3, 0.4), (0.45, 1.0), (0.42, 1.0)]
     assert other == ["1 0.5 0.5 0.2 0.2"]
+
+
+def test_clip_polygon_cuts_at_the_edge_and_joins_the_two_crossings():
+    def rounded(points):
+        return [(round(x, 9), round(y, 9)) for x, y in points]
+
+    inside = [(0.2, 0.2), (0.4, 0.2), (0.4, 0.4)]
+    assert pc.clip_polygon(inside) == inside
+    # A tip past the right edge: cut where the outline crosses x = 1, joined along the edge.
+    tip = [(0.6, 0.4), (1.4, 0.5), (0.6, 0.6)]
+    assert rounded(pc.clip_polygon(tip)) == [(0.6, 0.4), (1.0, 0.45), (1.0, 0.55), (0.6, 0.6)]
+    # Past a corner: the corner itself becomes a vertex.
+    corner = [(0.9, 0.9), (1.1, 0.9), (1.1, 1.1), (0.9, 1.1)]
+    assert set(rounded(pc.clip_polygon(corner))) == {(0.9, 0.9), (1.0, 0.9), (1.0, 1.0), (0.9, 1.0)}
+    assert pc.clip_polygon([(1.1, 0.2), (1.5, 0.2), (1.5, 0.6)]) == []  # fully outside
 
 
 def test_read_label_missing_file_and_blank_lines(tmp_path):
