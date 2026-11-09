@@ -37,6 +37,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
@@ -56,11 +57,29 @@ from segmentors.sam import SamSegmentor
 PREVIEW_COLOR = (0, 255, 255)
 MARK_COLORS = {"fish": (0, 255, 0), "same fish": (255, 255, 0), "not fish": (255, 60, 60)}
 DEBOUNCE_MS = 150  # recompute this long after the last click or slider move
+REPLACE_IOU = 0.5  # a new outline replaces existing labels it overlaps by more than this
 AUTO_HELP = (
     "Auto-label (G): click a fish   Shift+click: more of the same fish   "
     "Right-click: not fish   Enter: add outlines as labels   Esc: clear clicks   "
     "E: engine (SAM / Color)   Color engine: [ ] tolerance, M enhanced view, C forget colors"
 )
+
+
+def polygon_iou(a: list[list[float]], b: list[list[float]]) -> float:
+    """Intersection over union of two pixel polygons (rasterized around both)."""
+    pa, pb = np.round(np.array(a)).astype(np.int32), np.round(np.array(b)).astype(np.int32)
+    lo = np.minimum(pa.min(axis=0), pb.min(axis=0))
+    hi = np.maximum(pa.max(axis=0), pb.max(axis=0))
+    if (
+        np.maximum(pa.min(axis=0), pb.min(axis=0)) > np.minimum(pa.max(axis=0), pb.max(axis=0))
+    ).any():
+        return 0.0  # bounding boxes don't touch
+    w, h = (hi - lo + 1).tolist()
+    ma, mb = np.zeros((h, w), np.uint8), np.zeros((h, w), np.uint8)
+    cv2.fillPoly(ma, [pa - lo], 1)
+    cv2.fillPoly(mb, [pb - lo], 1)
+    union = np.count_nonzero(ma | mb)
+    return np.count_nonzero(ma & mb) / union if union else 0.0
 
 
 class AutoLabeler(LabelViewer):
@@ -226,6 +245,8 @@ class AutoLabeler(LabelViewer):
         self.canvas.focus_set()
         self.objects, self.negatives, self.preview = [], [], []  # clicks mean different things
         self.show_enhanced = False
+        if engine != "sam":
+            self.release_sam()
         self.update_view()
         self.say(f"Engine: {self.engine_name()}")
 
@@ -372,11 +393,14 @@ class AutoLabeler(LabelViewer):
             return
         self.push_undo()
         w, h = self.base.size
-        for points in self.preview:
-            self.polys.append([self.current_class, [[x * w, y * h] for x, y in points]])
-        added = len(self.preview)
+        new = [[[x * w, y * h] for x, y in points] for points in self.preview]
+        # Labeling over an existing outline replaces it (Ctrl+Z brings it back).
+        kept = [p for p in self.polys if all(polygon_iou(p[1], n) <= REPLACE_IOU for n in new)]
+        replaced = len(self.polys) - len(kept)
+        self.polys = kept + [[self.current_class, n] for n in new]
         self.objects, self.negatives, self.preview, self.dirty = [], [], [], True
-        self.say(f"Added {added} label(s). Next image: Right or D")
+        note = f", replaced {replaced} old one(s)" if replaced else ""
+        self.say(f"Added {len(new)} label(s){note}. Next image: Right or D")
 
     def on_escape(self) -> None:
         if self.auto and self.drawing is None and (self.objects or self.negatives):
@@ -461,10 +485,17 @@ class AutoLabeler(LabelViewer):
         if self.auto and self.engine == "color" and self.fish_colors:
             self.schedule()  # sampled colors carry over
 
+    def release_sam(self) -> None:
+        """Free SAM and its GPU memory (reloaded on the next SAM click)."""
+        if self.sam is not None:
+            self.sam.close()
+            self.sam = None
+
     def close(self) -> None:
         if self.pending is not None:
             self.root.after_cancel(self.pending)
             self.pending = None
+        self.release_sam()
         super().close()
 
     def render(self) -> Image.Image:

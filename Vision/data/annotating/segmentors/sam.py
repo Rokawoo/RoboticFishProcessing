@@ -9,6 +9,7 @@ for every click. With sam2.1_t: ~0.1 s per click, ~10 ms per new image on a GPU
 (CUDA warm-up).
 """
 
+import gc
 from pathlib import Path
 
 import numpy as np
@@ -57,3 +58,15 @@ class SamSegmentor:
             if result.masks is not None and len(result.masks.data):
                 masks.append(result.masks.data[0].cpu().numpy().astype(np.uint8))
         return masks
+
+    def close(self) -> None:
+        """Release the model and its GPU memory."""
+        self.predictor = None
+        self.image_key = None
+        gc.collect()
+        try:
+            import torch
+        except ImportError:
+            return
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

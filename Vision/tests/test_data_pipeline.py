@@ -554,6 +554,16 @@ def test_zoom_keeps_the_point_under_the_mouse(editor):
     assert ed.zoom == 1.0
 
 
+def test_polygon_iou():
+    pytest.importorskip("cv2")
+    module = load_script("annotating/auto_labeler.py")
+    square = [[0, 0], [10, 0], [10, 10], [0, 10]]
+    assert module.polygon_iou(square, square) == pytest.approx(1.0)
+    assert module.polygon_iou(square, [[50, 50], [60, 50], [60, 60]]) == 0.0
+    half = [[5, 0], [15, 0], [15, 10], [5, 10]]
+    assert module.polygon_iou(square, half) == pytest.approx(1 / 3, abs=0.05)
+
+
 @pytest.fixture
 def auto_labeler(tmp_path, monkeypatch, tk_root):
     import tkinter as tk
@@ -586,6 +596,9 @@ def test_auto_labeler_color_engine_click_enter_next_image_and_label_the_rest(aut
     assert len(app.objects) == 1 and len(app.objects[0]) == 2
     app.on_enter()
     assert len(app.polys) == 1 and app.dirty and not app.preview
+    app.on_press(click(app, 320, 180))  # label the same fish again: replaces the old outline
+    app.on_enter()
+    assert len(app.polys) == 1
     app.toggle_enhanced()
     assert app.display_image() is app.enhanced_image
     app.render()
@@ -643,3 +656,9 @@ def test_auto_labeler_sam_engine(auto_labeler, sam_weights, monkeypatch):
     assert len(app.preview) == 1
     app.on_enter()
     assert len(app.polys) == 1 and app.dirty
+    app.on_press(click(app, 320, 185))  # again: replaces, doesn't duplicate
+    app.on_enter()
+    assert len(app.polys) == 1
+    sam = app.sam
+    app.release_sam()  # also runs on close
+    assert app.sam is None and sam.predictor is None
