@@ -58,7 +58,8 @@ AUTO_HELP = (
         ("Shift+click", "more of the same fish (a fin or color it missed)"),
         ("Right-click", "something that is not fish (table, shadow)"),
         ("Enter", "add the outlines as labels of the current class (replaces overlapped labels)"),
-        ("Esc", "clear this image's clicks"),
+        ("Backspace / Esc", "undo the last click / clear this image's clicks"),
+        ("B", "no fish in this image: save an empty label"),
         ("E", "engine: SAM or Color"),
         ("[ ]  M  C", "color engine: tolerance down / up, enhanced view, forget colors"),
     ],
@@ -109,6 +110,8 @@ class AutoLabeler(LabelViewer):
         self.show_enhanced = False
         self.enhanced_image: Image.Image | None = None
         self.pending = None
+        self.warmup = None
+        self.clicks: list[tuple[str, bool]] = []  # (kind, sampled a color), for undo
         super().__init__(root, folder)
 
         keys = {
@@ -118,6 +121,7 @@ class AutoLabeler(LabelViewer):
             "<Key-c>": lambda e: self.forget_colors(),
             "<Return>": lambda e: self.on_enter(),
             "<Escape>": lambda e: self.on_escape(),
+            "<BackSpace>": lambda e: self.on_backspace(),
             "<bracketleft>": lambda e: self.nudge_tolerance(-0.25),
             "<bracketright>": lambda e: self.nudge_tolerance(0.25),
         }
@@ -127,11 +131,12 @@ class AutoLabeler(LabelViewer):
     # --- toolbar ------------------------------------------------------------
     def build_toolbar(self) -> None:
         super().build_toolbar()
-        self.auto_row = row = self.toolbar_row()
-        self.label(row, "Mode", padx=(2, 4))
+        mode = ttk.Frame(self.tools_row)
+        mode.pack(side="left", before=self.edit_tools)
+        self.label(mode, "Mode", padx=(2, 4))
         self.mode_var = tk.StringVar(value="edit")
         self.choice(
-            row,
+            mode,
             self.mode_var,
             [
                 ("edit", "Edit", "Select polygons and fix them by hand."),
@@ -140,7 +145,9 @@ class AutoLabeler(LabelViewer):
             lambda: self.set_auto(self.mode_var.get() == "auto"),
             "G switches between them.",
         )
-        self.gap(row)
+        self.gap(mode)
+
+        self.auto_tools = row = ttk.Frame(self.tools_row)  # shown in auto-label mode
         self.label(row, "Engine", padx=(2, 4))
         self.engine_var = tk.StringVar(value=self.engine)
         self.choice(
@@ -169,11 +176,15 @@ class AutoLabeler(LabelViewer):
             "Add the cyan outlines as labels of the current class (Enter). An outline over "
             "an existing label replaces it; Ctrl+Z brings it back.",
         )
-        self.clear_button = self.button(
-            row, "Clear clicks", self.on_escape, "Forget this image's clicks (Esc)"
+        self.undo_click_button = self.button(
+            row, "Undo click", self.undo_click, "Remove the last click (Backspace)"
         )
+        self.clear_button = self.button(
+            row, "Clear clicks", self.on_escape, "Remove all clicks on this image (Esc)"
+        )
+        self.no_fish_button(row)
 
-        self.color_row = row = self.toolbar_row()  # shown for the color engine only
+        self.color_row = row = self.toolbar_row()  # auto-label mode with the color engine
         self.label(row, "Color engine", padx=(2, 4)).configure(style="Heading.TLabel")
         self.tolerance_var = self.slider(
             row,
@@ -225,7 +236,7 @@ class AutoLabeler(LabelViewer):
             f"Sampled colors: green frame = fish, red = not fish (the newest {MAX_CLUSTERS} "
             "of each are kept).",
         )
-        self.show_color_row()
+        self.show_tools()
 
     def slider(self, row, text, value, low, high, step, tip) -> tk.DoubleVar:
         self.label(row, text, padx=(2, 4))
@@ -254,17 +265,26 @@ class AutoLabeler(LabelViewer):
         Tooltip(scale, tip)
         return var
 
-    def show_color_row(self) -> None:
-        if self.engine == "color":
-            self.color_row.pack(side="top", fill="x", pady=(0, 4), after=self.auto_row)
+    def show_tools(self) -> None:
+        """Only the current mode's tools."""
+        shown, hidden = (
+            (self.auto_tools, self.edit_tools) if self.auto else (self.edit_tools, self.auto_tools)
+        )
+        hidden.pack_forget()
+        shown.pack(side="left")
+        if self.auto and self.engine == "color":
+            self.color_row.pack(side="top", fill="x", pady=(0, 4), after=self.tools_row)
         else:
             self.color_row.pack_forget()
 
     def update_controls(self) -> None:
         super().update_controls()
-        clicks = self.auto and bool(self.objects or self.negatives)
-        self.add_button.state(["!disabled"] if self.auto and self.preview else ["disabled"])
-        self.clear_button.state(["!disabled"] if clicks else ["disabled"])
+        for button, usable in (
+            (self.add_button, bool(self.preview)),
+            (self.undo_click_button, bool(self.clicks)),
+            (self.clear_button, bool(self.clicks)),
+        ):
+            button.state(["!disabled"] if usable else ["disabled"])
 
     def help_sections(self) -> list[tuple[str, list[tuple[str, str]]]]:
         return [AUTO_HELP, *HELP]
@@ -273,14 +293,26 @@ class AutoLabeler(LabelViewer):
         if not self.auto or self.drawing is not None:
             badge, hint = super().hint()
             return badge, hint + "  G: auto-label." if badge == "EDIT" else hint
-        if self.engine == "sam":
-            return "AUTO-LABEL · SAM", (
-                "Click a fish.  Shift+click: more of it.  Right-click: not fish.  "
-                "Enter: add as labels.  Esc: clear clicks.  G: back to editing."
+        badge = f"AUTO-LABEL · {self.engine_name().upper()}"
+        color = self.engine == "color"
+        if self.preview:
+            return badge, (
+                "Check the cyan outline.  Enter: add it as a label.  Shift+click: more of the "
+                "same fish.  Right-click: not fish.  Backspace: undo the click."
             )
-        return "AUTO-LABEL · COLOR", (
-            "Click a fish to sample its colors.  Shift+click: another color of it.  "
-            "Right-click: not fish.  Enter: add as labels.  [ ]: tolerance."
+        if self.clicks:
+            more = "Shift+click more of the fish" + (" or raise the tolerance" if color else "")
+            return badge, f"Nothing outlined yet: {more}.  Backspace: undo the click."
+        if color:
+            return badge, (
+                "Click a fish to sample its colors (they carry over to the next images).  "
+                "Right-click: not fish.  G: back to editing."
+            )
+        if self.polys:
+            return badge, "Click another fish, or Right / D: next image.  Ctrl+Z: undo."
+        return badge, (
+            "Click each fish once; its outline appears in cyan.  No fish here? B.  "
+            "G: back to editing."
         )
 
     def read_settings(self) -> None:
@@ -323,10 +355,12 @@ class AutoLabeler(LabelViewer):
         self.auto = on
         self.mode_var.set("auto" if on else "edit")
         self.canvas.focus_set()
+        self.show_tools()
         if on:
             self.selected = None
-            self.say(f"Auto-label on ({self.engine_name()}): click a fish")
+            self.say(f"Auto-label on ({self.engine_name()})")
             self.schedule()
+            self.warm_up_sam()
         else:
             self.preview = []
             self.set_enhanced(False)
@@ -337,16 +371,28 @@ class AutoLabeler(LabelViewer):
         self.engine = engine
         self.engine_var.set(engine)
         self.canvas.focus_set()
-        self.objects, self.negatives, self.preview = [], [], []  # clicks mean different things
+        self.clear_clicks()  # clicks mean different things per engine
+        self.preview = []
         self.set_enhanced(False)
         if engine != "sam":
             self.release_sam()
-        self.show_color_row()
+        self.show_tools()
         self.update_view()
         self.say(f"Engine: {self.engine_name()}")
+        self.warm_up_sam()
 
     def engine_name(self) -> str:
         return "SAM" if self.engine == "sam" else "Color"
+
+    def warm_up_sam(self) -> None:
+        """Load SAM and encode the image soon, so the first click is fast."""
+        if self.warmup is None and self.auto and self.engine == "sam":
+            self.warmup = self.root.after(200, self._warm_up)
+
+    def _warm_up(self) -> None:
+        self.warmup = None
+        if self.auto and self.engine == "sam" and self.canvas.winfo_exists():
+            self.get_sam()
 
     # --- clicks -----------------------------------------------------------------
     def image_bgr(self) -> np.ndarray:
@@ -365,6 +411,10 @@ class AutoLabeler(LabelViewer):
                 self.say("Loading SAM (the first use downloads it, ~15 s)...")
                 self.root.update_idletasks()
                 self.sam = SamSegmentor()
+                self.sam.set_image(self.image_bgr(), str(self.images[self.index]))
+                device = str(getattr(self.sam.predictor, "device", "?"))
+                slow = " (no GPU: slow)" if device == "cpu" else ""
+                self.say(f"SAM ready on {device}{slow}: click a fish")
             self.sam.set_image(self.image_bgr(), str(self.images[self.index]))
         except Exception as e:  # noqa: BLE001 - e.g. no ultralytics or no internet: fall back
             self.sam = None
@@ -373,14 +423,15 @@ class AutoLabeler(LabelViewer):
             return None
         return self.sam
 
-    def add_color(self, x: float, y: float, fish: bool) -> None:
+    def add_color(self, x: float, y: float, fish: bool) -> bool:
         pixels = sample_patch(self.get_color_segmentor().lab, x, y)
         if pixels is None:
-            return
+            return False
         colors = self.fish_colors if fish else self.not_fish_colors
         colors.append(Cluster(pixels))
         del colors[:-MAX_CLUSTERS]  # the swatches show which are kept
         self.update_swatches()
+        return True
 
     def inside(self, x: float, y: float) -> bool:
         w, h = self.base.size
@@ -398,8 +449,8 @@ class AutoLabeler(LabelViewer):
             self.objects[-1].append((x, y))
         else:
             self.objects.append([(x, y)])
-        if self.engine == "color":
-            self.add_color(x, y, fish=True)
+        sampled = self.engine == "color" and self.add_color(x, y, fish=True)
+        self.clicks.append(("fish", sampled))
         self.schedule()
 
     def on_right_click(self, event) -> None:
@@ -410,9 +461,34 @@ class AutoLabeler(LabelViewer):
         if not self.inside(x, y):
             return
         self.negatives.append((x, y))
-        if self.engine == "color":
-            self.add_color(x, y, fish=False)
+        sampled = self.engine == "color" and self.add_color(x, y, fish=False)
+        self.clicks.append(("not fish", sampled))
         self.schedule()
+
+    def undo_click(self) -> None:
+        if not self.clicks:
+            self.say("No clicks to undo")
+            return
+        kind, sampled = self.clicks.pop()
+        if kind == "not fish":
+            self.negatives.pop()
+        else:
+            self.objects[-1].pop()
+            if not self.objects[-1]:
+                self.objects.pop()
+        if sampled:
+            (self.fish_colors if kind == "fish" else self.not_fish_colors).pop()
+            self.update_swatches()
+        self.schedule()
+
+    def clear_clicks(self) -> None:
+        self.objects, self.negatives, self.clicks = [], [], []
+
+    def on_backspace(self) -> None:
+        if self.auto and self.drawing is None:
+            self.undo_click()
+        else:
+            self.remove_last_corner()
 
     # --- preview -----------------------------------------------------------------
     def schedule(self) -> None:
@@ -489,13 +565,14 @@ class AutoLabeler(LabelViewer):
         kept = [p for p in self.polys if all(polygon_iou(p[1], n) <= REPLACE_IOU for n in new)]
         replaced = len(self.polys) - len(kept)
         self.polys = kept + [[self.current_class, n] for n in new]
-        self.objects, self.negatives, self.preview, self.dirty = [], [], [], True
+        self.clear_clicks()
+        self.preview, self.dirty = [], True
         note = f", replaced {replaced} old one(s)" if replaced else ""
         self.say(f"Added {len(new)} label(s){note}. Next image: Right or D")
 
     def on_escape(self) -> None:
-        if self.auto and self.drawing is None and (self.objects or self.negatives):
-            self.objects, self.negatives = [], []
+        if self.auto and self.drawing is None and self.clicks:
+            self.clear_clicks()
             self.schedule()
             self.say("Clicks cleared")
         else:
@@ -576,11 +653,21 @@ class AutoLabeler(LabelViewer):
         return self.base
 
     def load(self, index: int) -> None:
-        self.objects, self.negatives, self.preview = [], [], []  # clicks are per image
+        self.clear_clicks()  # clicks are per image
+        self.preview = []
         self.color_segmentor, self.bgr, self.enhanced_image = None, None, None
         super().load(index)
         if self.auto and self.engine == "color" and self.fish_colors:
             self.schedule()  # sampled colors carry over
+        self.warm_up_sam()  # encode the new image before the first click
+
+    def mark_no_fish(self) -> bool:
+        done = super().mark_no_fish()
+        if done:
+            self.clear_clicks()
+            self.preview = []
+            self.redraw()
+        return done
 
     def release_sam(self) -> None:
         """Free SAM and its GPU memory (reloaded on the next SAM click)."""
@@ -589,9 +676,10 @@ class AutoLabeler(LabelViewer):
             self.sam = None
 
     def close(self) -> None:
-        if self.pending is not None:
-            self.root.after_cancel(self.pending)
-            self.pending = None
+        for job in (self.pending, self.warmup):
+            if job is not None:
+                self.root.after_cancel(job)
+        self.pending = self.warmup = None
         self.release_sam()
         super().close()
 

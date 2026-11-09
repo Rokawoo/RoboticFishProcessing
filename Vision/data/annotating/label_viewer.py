@@ -91,6 +91,7 @@ HELP = [
             ("N", "new polygon: click its corners, then Enter or click the first corner"),
             ("Backspace / Esc", "while drawing: remove the last corner / cancel"),
             ("Delete", "delete the selected polygon"),
+            ("B", "no fish in this image: save an empty label (background)"),
             ("0-9", "class of the selected polygon and of new ones"),
             ("Ctrl+Z / Ctrl+S", "undo / save"),
             ("Ctrl+Delete", f"delete the image and its label (moved to <set>/{TRASH_DIR_NAME}/)"),
@@ -269,6 +270,7 @@ class LabelViewer:
         self.other: list[str] = []  # non-polygon label lines, written back unchanged
         self.label_path: Path | None = None
         self.dirty = False
+        self.labeled = 0  # images of the set with a label file
         self.undo: list[list] = []
         self.selected: int | None = None
         self.drag: tuple[int, int] | None = None  # (polygon, corner)
@@ -302,8 +304,8 @@ class LabelViewer:
         self.status.pack(side="left")
         self.message_label = tk.Label(status, bg=PANEL, fg="#7fd8d8", anchor="e", padx=8)
         self.message_label.pack(side="right")
-        hint = tk.Frame(root, bg=CANVAS_BG)
-        hint.pack(side="bottom", fill="x")
+        hint = tk.Frame(root, bg=CANVAS_BG)  # mode and what to do now, under the toolbar
+        hint.pack(side="top", fill="x")
         self.badge = tk.Label(hint, fg="#ffffff", font=self.fonts["bold"], padx=8, pady=2)
         self.badge.pack(side="left", padx=(6, 0), pady=3)
         self.hint_label = tk.Label(hint, bg=CANVAS_BG, fg=DIM, anchor="w", padx=8)
@@ -335,6 +337,7 @@ class LabelViewer:
             "<Escape>": lambda e: self.escape(),
             "<BackSpace>": lambda e: self.remove_last_corner(),
             "<Delete>": lambda e: self.delete_polygon(),
+            "<Key-b>": lambda e: self.mark_no_fish(),
             "<Control-Delete>": lambda e: self.delete_image(),
             "<Control-z>": lambda e: self.undo_last(),
             "<Control-s>": lambda e: self.save(announce=True),
@@ -421,16 +424,6 @@ class LabelViewer:
         )
         self.button(bar, "Next unlabeled", self.next_unlabeled, "Next image without a label (U)")
         self.gap(bar)
-        self.button(
-            bar,
-            "New polygon",
-            self.start_drawing,
-            "Draw a polygon by hand (N): click its corners, then Enter or click the first "
-            "corner. Backspace removes the last corner, Esc cancels.",
-        )
-        self.delete_button = self.button(
-            bar, "Delete polygon", self.delete_polygon, "Delete the selected polygon (Delete)"
-        )
         self.undo_button = self.button(
             bar, "Undo", self.undo_last, "Undo the last change to this image (Ctrl+Z)"
         )
@@ -477,6 +470,33 @@ class LabelViewer:
             f"Delete this image and its label (Ctrl+Delete). They are moved to "
             f"{TRASH_DIR_NAME}/ in the set, not erased.",
             side="right",
+        )
+
+        self.tools_row = self.toolbar_row()  # the current mode's tools
+        self.edit_tools = ttk.Frame(self.tools_row)
+        self.edit_tools.pack(side="left")
+        self.button(
+            self.edit_tools,
+            "New polygon",
+            self.start_drawing,
+            "Draw a polygon by hand (N): click its corners, then Enter or click the first "
+            "corner. Backspace removes the last corner, Esc cancels.",
+        )
+        self.delete_button = self.button(
+            self.edit_tools,
+            "Delete polygon",
+            self.delete_polygon,
+            "Delete the selected polygon (Delete)",
+        )
+        self.no_fish_button(self.edit_tools)
+
+    def no_fish_button(self, row) -> ttk.Button:
+        return self.button(
+            row,
+            "No fish",
+            self.mark_no_fish,
+            "This image has no fish (B): save an empty label. YOLO trains on it as background, "
+            "and Next unlabeled skips it.",
         )
 
     def class_choices(self) -> list[str]:
@@ -541,7 +561,9 @@ class LabelViewer:
         # `with` releases the file (so it can be moved); exif_transpose matches OpenCV/YOLO.
         with Image.open(path) as im:
             self.base = ImageOps.exif_transpose(im).convert("RGB")
-        self.label_path = find_label(path, label_index(self.label_dir))
+        labels = label_index(self.label_dir)
+        self.labeled = sum(find_label(image, labels) is not None for image in self.images)
+        self.label_path = find_label(path, labels)
         polygons, self.other = read_label(self.label_path)
         w, h = self.base.size
         self.polys = [[cls, [[x * w, y * h] for x, y in pts]] for cls, pts in polygons]
@@ -561,6 +583,8 @@ class LabelViewer:
         w, h = self.base.size
         polygons = [(cls, [(x / w, y / h) for x, y in pts]) for cls, pts in self.polys]
         write_label(target, polygons, self.other)
+        if self.label_path is None:
+            self.labeled += 1
         self.label_path, self.dirty = target, False
         if announce:
             self.say(f"Saved {target.name}")
@@ -687,6 +711,19 @@ class LabelViewer:
         else:
             self.selected = None
             self.redraw()
+
+    def mark_no_fish(self) -> bool:
+        if self.drawing is not None:
+            self.say("Finish (Enter) or cancel (Esc) the polygon first")
+            return False
+        question = f"This image has no fish? Its {len(self.polys)} polygon(s) are deleted."
+        if self.polys and not messagebox.askyesno("No fish", question, parent=self.root):
+            return False
+        self.push_undo()
+        self.polys, self.selected, self.dirty = [], None, True
+        self.save()
+        self.say("No fish: saved an empty label (background image)")
+        return True
 
     def delete_polygon(self) -> None:
         if self.selected is None:
@@ -911,15 +948,20 @@ class LabelViewer:
             self.message_label.configure(text="")
 
     def hint(self) -> tuple[str, str]:
-        """(mode badge, what the mouse does now) for the bar under the image."""
+        """(mode badge, what to do now) for the bar under the toolbar."""
         if self.drawing is not None:
             return "DRAWING", (
                 "Click the corners.  Enter or click the first corner: finish.  "
                 "Backspace: remove the last corner.  Esc: cancel."
             )
+        if self.selected is not None:
+            return "EDIT", (
+                "Drag a corner to move it, a mid-edge dot to add one.  Right-click a corner: "
+                "remove it.  Delete: remove the polygon.  0-9: its class."
+            )
         return "EDIT", (
-            "Click a polygon to select it, drag its corners.  N: draw a new one.  "
-            "Wheel: zoom.  F1: all keys."
+            "Click a polygon to select it.  N: draw a new one.  B: no fish here.  "
+            "Right / D: next image.  F1: all keys."
         )
 
     def render(self) -> Image.Image:
@@ -995,9 +1037,10 @@ class LabelViewer:
         else:
             label = f"{len(self.polys)} polygon(s)"
         state = "unsaved changes" if self.dirty else "saved"
+        n = len(self.images)
         self.status.configure(
-            text=f"{self.index + 1} / {len(self.images)}    {path.name}    ·    {label}    ·    "
-            f"{state}    ·    zoom {self.scale:.0%}",
+            text=f"{self.index + 1} / {n}    {path.name}    ·    {label}    ·    {state}    ·    "
+            f"{self.labeled} of {n} labeled    ·    zoom {self.scale:.0%}",
             fg=UNSAVED if self.dirty else FG,
         )
         badge, hint = self.hint()

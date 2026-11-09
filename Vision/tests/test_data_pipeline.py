@@ -573,6 +573,20 @@ def test_toolbar_state_help_tooltip_and_open_another_set(editor, tmp_path, monke
     assert ed.folder == other.resolve() and len(ed.images) == 2 and not ed.polys
 
 
+def test_no_fish_saves_an_empty_label_and_counts_as_labeled(editor):
+    ed = editor
+    assert ed.labeled == 1
+    ed.go(1)
+    ed.mark_no_fish()
+    assert pc.read_label(ed.folder / "fishA_000001.txt") == ([], [])
+    assert ed.labeled == 2
+    ed.go(0)
+    ed.mark_no_fish()  # asks before deleting the polygon (answered yes)
+    assert pc.read_label(ed.folder / "fishA_000000.txt") == ([], [])
+    ed.undo_last()
+    assert len(ed.polys) == 1
+
+
 def test_zoom_keeps_the_point_under_the_mouse(editor):
     ed = editor
     point = (200.0, 100.0)
@@ -623,13 +637,18 @@ def auto_labeler(tmp_path, monkeypatch, tk_root):
 
 def test_auto_labeler_color_engine_click_enter_next_image_and_label_the_rest(auto_labeler):
     app = auto_labeler
-    assert not app.color_row.winfo_manager()  # color controls hidden for SAM
+    shown = lambda widget: widget.winfo_manager() == "pack"
+    assert shown(app.edit_tools) and not shown(app.auto_tools) and not shown(app.color_row)
     app.set_engine("color")
+    assert not shown(app.color_row)  # color tools only in auto-label mode
     app.set_auto(True)
-    assert app.color_row.winfo_manager() == "pack"
+    assert shown(app.auto_tools) and shown(app.color_row) and not shown(app.edit_tools)
     assert app.badge.cget("text") == "AUTO-LABEL · COLOR"
     assert app.add_button.instate(["disabled"])  # nothing outlined yet
     app.on_press(click(app, 320, 180))  # the fish's back
+    app.on_press(click(app, 50, 50))  # a mistake...
+    app.undo_click()  # ...undone, with its sampled color
+    assert len(app.objects) == 1 and len(app.fish_colors) == 1
     app.on_press(click(app, 325, 225, shift=True))  # its belly: same fish, another color
     app.update_preview()
     assert len(app.preview) == 1 and len(app.fish_colors) == 2
