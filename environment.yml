@@ -1,6 +1,6 @@
 # Conda dev environment.
 #   conda env create -f environment.yml           create (from the repo root)
-#   conda env update -f environment.yml --prune   after pyproject.toml changes
+#   conda env update -f environment.yml --prune   after dependency changes
 #   conda activate rfp                            and pick "rfp" as the VS Code interpreter
 # Python 3.10 matches ROS 2 Humble (Ubuntu 22.04). conda-forge's Python includes
 # tkinter (popups and label tools). Packages come from requirements.txt.

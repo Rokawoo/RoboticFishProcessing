@@ -446,7 +446,7 @@ def test_label_all_matching_regions_needs_no_clicks(segmenter_module):
 
 
 # ---------------------------------------------------------------------------
-# GUI: label editor and auto labeler (need a display)
+# GUI: label viewer and auto labeler (need a display)
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="session")
 def tk_root():

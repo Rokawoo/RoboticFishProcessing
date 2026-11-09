@@ -122,7 +122,7 @@ class AutoLabeler(LabelViewer):
             "<bracketright>": lambda e: self.nudge_tolerance(0.25),
         }
         for key, handler in keys.items():
-            root.bind(key, handler)  # replaces the editor's binding
+            root.bind(key, handler)  # replaces the label viewer's binding
 
     # --- toolbar ------------------------------------------------------------
     def build_toolbar(self) -> None:
@@ -569,7 +569,7 @@ class AutoLabeler(LabelViewer):
         self.load(self.index)
         self.say(f"Labeled {labeled} of {len(todo)} image(s). Check them; U finds the rest")
 
-    # --- editor hooks -----------------------------------------------------------
+    # --- label viewer hooks --------------------------------------------------
     def display_image(self) -> Image.Image:
         if self.auto and self.show_enhanced and self.enhanced_image is not None:
             return self.enhanced_image

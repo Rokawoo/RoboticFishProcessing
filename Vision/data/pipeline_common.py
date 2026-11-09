@@ -39,7 +39,7 @@ REALSENSE_EXTS = frozenset(
 )  # RealSense recordings: .bag (older librealsense), .db3 (newer, e.g. 2.59)
 LABEL_EXT = ".txt"
 SET_CLASSES_NAME = "classes.txt"  # a set's own class list (Label Studio export)
-TRASH_DIR_NAME = "_deleted"  # inside a set: where the label editor moves deleted pairs
+TRASH_DIR_NAME = "_deleted"  # inside a set: where the label viewer moves deleted pairs
 
 # Augmented copies: "<set> (augmented)/<original name>__aug<n>-<effect>.<ext>"
 AUGMENTED_SUFFIX = " (augmented)"
