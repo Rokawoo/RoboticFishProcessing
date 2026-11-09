@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-How to work on this repository. README.md describes the project; each subsystem folder has a README with what it owns and which Requirement Spec sections it implements.
+How to work on this repo. Overview: README.md; each subsystem README lists what it owns and its Requirement Spec sections.
 
 ## Project
 
-A FAIRINO FR5 arm with a suction gripper picks whole catfish off a table and places them with a uniform heading. **Vision** (RealSense D405, YOLO26 segmentation + pose) finds each fish's pose; **ControlSys** runs the cycle (Qwen3-VL picks the fish, fixed code validates every answer and owns every limit); **Arm** moves (MoveIt 2 with Pilz, frcobot_ros2). Fall 2026 is the design term: `rfp_vision`, `rfp_arm` and `rfp_controlsys` are mostly skeleton, and the most complete code is the Vision data pipeline in `Vision/data/`.
+A FAIRINO FR5 arm with a suction gripper picks whole catfish off a table and places them with a uniform heading. **Vision** (RealSense D405, YOLO26 segmentation + pose) finds each fish's pose; **ControlSys** runs the cycle (Qwen3-VL picks the fish, fixed code validates every answer and owns every limit); **Arm** moves (MoveIt 2 with Pilz, frcobot_ros2). Fall 2026 is the design term: `rfp_vision`, `rfp_arm` and `rfp_controlsys` are skeletons; the working code is the Vision data pipeline in `Vision/data/`.
 
 Requirement IDs (Requirement Spec, Confluence) use these prefixes in code, docstrings and commits: SY system, VS vision, VD vision data and models, CS control, AS arm, SF safety, IF interfaces, HW/SW platform, HC hardware constraints.
 
@@ -19,7 +19,7 @@ Requirement IDs (Requirement Spec, Confluence) use these prefixes in code, docst
 ## Commands
 
 - `pytest` from the repo root. GUI tests skip without a display, the RealSense test without pyrealsense2, SAM tests without the SAM weights (`RFP_SAM_WEIGHTS` points at a `sam2.1_t.pt`). `test_rfp_*.py` needs the repo installed (`pip install -e .`; the conda env does it).
-- `ruff check .` and `ruff format .`: ruff is pinned to 0.17.x in the `dev` extra (default rules change between minor versions), line length 100 enforced (E501). A pre-commit hook (`.pre-commit-config.yaml`, rev must match the pin) runs both on commit; `.github/workflows/checks.yml` runs ruff and the light tests (dev extra only) on push.
+- `ruff check .` and `ruff format .`: ruff pinned to 0.17.x (`dev` extra; default rules change between minor versions), line length 100 (E501). The pre-commit hook (rev must match the pin) runs both on commit; `.github/workflows/checks.yml` runs them and the light tests (dev extra only) on push.
 - Every pipeline script supports `--help`; without arguments it asks for its inputs in popups.
 
 ## Vision data pipeline (`Vision/data/`)
@@ -40,7 +40,7 @@ Rules the code depends on:
 - **Names carry meaning.** Frames: `<video name>_<frame number:06d>.jpg`; videos are named by fish ID and view (`fish012_left.mp4`). Augmented copies: `<original name>__aug<n>-<effect>`. Label Studio's `1a2b3c4d-` label prefix is matched.
 - **The split** is 80/10/10 train/val/test (`TRAIN_RATIO`, `TEST_RATIO`), each set cut in blocks of consecutive frames so near-duplicate neighbors don't leak across splits; augmented images go to train only, when their original is in train. The same fish may be in every split (the team decided against splitting by fish, despite VD-70's wording). Keep the block and augmented rules.
 - `Vision/data/dataset/classes.txt` is the class list (tracked); the splitter stops if a set's `classes.txt` disagrees.
-- **Auto labeler** (`annotating/auto_labeler.py`) = `LabelViewer` (`annotating/label_viewer.py`) plus click-to-label; engines in `annotating/segmentors/`. New outlines replace labels they overlap by IoU > `REPLACE_IOU`. SAM is released (GPU memory freed) on engine switch and on close.
+- **Auto labeler** = `LabelViewer` (`annotating/label_viewer.py`) + click-to-label (`annotating/auto_labeler.py`, engines in `annotating/segmentors/`). The second toolbar row shows the current mode's tools (`edit_tools` / `auto_tools`). New outlines replace labels they overlap by IoU > `REPLACE_IOU`. SAM is freed on engine switch and close.
 - **No data in Git.** `.gitignore` ignores `Vision/data/dataset/` except `.py`, `.gitkeep` and `classes.txt`, plus `Vision/trained_cv_models/*`, `Vision/data/training/mlflow/` and `*.pt`.
 - End-to-end checks: copy `Vision/` to a temp folder and run the scripts there (paths are relative to `pipeline_common.py`, so real data stays untouched).
 
@@ -62,7 +62,7 @@ Rules the code depends on:
 - `cv2.imread`/`imwrite` fail on non-ASCII paths on Windows: use `pipeline_common.imread`/`imwrite`.
 - A second `tk.Tk()` after destroying one can fail on Windows ("Can't find a usable init.tcl"): reuse one root.
 - Tk on Windows is blurry at display scaling > 100% unless the process is DPI aware. ttk's clam theme gives buttons a minimum width of 11 characters (`width=0` fixes it). Tk deletes a `tkfont.Font` when Python collects it: keep a reference.
-- Offline augmentation is pixel-only on purpose: labels are copied byte for byte and can't drift; geometry (flips, rotation, scale, mosaic) is Ultralytics' job at training time. A spatial effect would need constant borders (`BORDER_CONSTANT`, `fill_mask=0`), since mirrored borders create unlabeled fish. Albumentations' `PlanckianJitter` default range reaches 15000 K (strong blue); we use 4000-7500 K.
+- Augmentation is pixel-only on purpose: labels copy byte for byte; geometry is Ultralytics' job at training time. (A spatial effect would need `BORDER_CONSTANT`, `fill_mask=0`: mirrored borders create unlabeled fish.) `PlanckianJitter`'s default range reaches 15000 K (strong blue); we use 4000-7500 K.
 - Ultralytics: `settings` is one file per user shared by all projects (`train.py` restores the mlflow setting); downloads land in the working directory (`train.py` changes into `training/`); `cache="ram"` isn't deterministic (we use `"disk"`); YOLO26 needs 8.4+.
 - MLflow 3 refuses the plain-folder store: use SQLite (needs the full `mlflow` package, not `mlflow-skinny`).
 - PyPI's Windows torch is CPU-only, and pip prefers PyPI when it has a newer version than the CUDA index: keep torch/torchvision pinned to versions on the chosen index.

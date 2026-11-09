@@ -6,11 +6,9 @@
 
 <p align="center"><b>Vision-guided grasping and manipulation for automated fish processing.</b></p>
 
-A FAIRINO FR5 arm with a suction gripper picks whole catfish off a table, one at a time, and places each one with the same heading. A camera on the arm and YOLO models find each fish and its pose, a vision-language model (VLM) chooses which fish to pick next, and fixed code checks every decision and owns every motion, safety and retry limit.
+A FAIRINO FR5 arm with a suction gripper picks whole catfish off a table one at a time and places each with the same heading. A camera on the arm and YOLO models find each fish's pose, a vision-language model (VLM) picks which fish is next, and fixed code checks every decision and owns every motion, safety and retry limit.
 
-Fish are wet, slippery and never the same shape twice, which is why people still handle them on processing lines. This robot estimates each fish's pose and shape from the camera and plans the grasp from that, with no reprogramming per fish. It is evaluated on real hardware for grasp reliability, consistency and generalization to fish it has never seen.
-
-> **Status:** Fall 2026 is the requirements and design term. The Vision data pipeline (`Vision/data/`) works; the runtime packages `rfp_vision`, `rfp_arm` and `rfp_controlsys` are skeletons. Building, training and trials start next term.
+> **Status:** Fall 2026 is the design term. The Vision data pipeline (`Vision/data/`) works; `rfp_vision`, `rfp_arm` and `rfp_controlsys` are skeletons. Building, training and trials start next term.
 
 ## How the parts work together
 
@@ -35,17 +33,17 @@ flowchart LR
     DRV -->|"arm + gripper status"| CN
 ```
 
-One pick-and-place cycle:
+One cycle:
 
-1. **Observe:** the arm holds the camera over the table and captures aligned color and depth frames.
-2. **Find the fish:** YOLO26 segments each fish and finds its keypoints; depth and the hand-eye calibration turn them into each fish's position and heading. Unreliable detections are flagged.
-3. **Decide:** the VLM picks a fish from the candidates. Fixed code validates the answer and falls back to a fixed rule if the VLM fails.
-4. **Pick and place:** straight-line approach with the vacuum on, hold confirmed by the vacuum switch, lift, carry, set down with a uniform heading, blow-off release, retreat.
-5. **Log:** every cycle is recorded to measure grasp success, damage and generalization.
+1. **Observe:** camera over the table, aligned color + depth.
+2. **Find:** YOLO26 masks and keypoints; depth + hand-eye calibration give each fish's position and heading; unreliable detections are flagged.
+3. **Decide:** the VLM picks a candidate; fixed code validates it, with a fixed-rule fallback.
+4. **Pick and place:** straight approach with vacuum on, hold confirmed by the vacuum switch, carry, set down with a uniform heading, blow-off release.
+5. **Log:** every cycle, for grasp success, damage and generalization.
 
-No seal, a dropped fish or a bad VLM answer each have a defined response: retry, skip the fish, or pause for the operator.
+Every failure (no seal, dropped fish, bad VLM answer) has a defined response: retry, skip the fish, or pause for the operator.
 
-**Scope:** whole catfish lying on either side on a dry table, pick and place only. Not in scope: other species, live or frozen fish, tanks and conveyors, cycle-time targets, turning fish over, processing after placement. Fish sizes, accuracy targets and every other number are in the Requirement Spec.
+**Scope:** whole catfish on either side on a dry table, pick and place only. Not other species, live or frozen fish, conveyors, cycle-time targets, flipping fish or anything after placement. All numbers are in the Requirement Spec.
 
 ## Repository
 
@@ -55,7 +53,7 @@ No seal, a dropped fish or a bad VLM answer each have a defined response: retry,
 | [Arm/](Arm/README.md) | Motion, grasp sequence, suction gripper, placement, calibration, safety |
 | [ControlSys/](ControlSys/README.md) | Cycle state machine, VLM decisions, validation, failure handling, logging |
 
-The subsystems talk only through the interfaces in Requirement Spec Section 2.7, so each can be rebuilt without touching the others. At the root: `pyproject.toml` (packages, with one extra per subsystem), `requirements.txt` and `environment.yml` (the dev environment), `CLAUDE.md` (notes for AI coding assistants).
+Subsystems talk only through the interfaces in Requirement Spec Section 2.7. Root: `pyproject.toml` (packages, one extra per subsystem), `requirements.txt` / `environment.yml` (dev environment), `CLAUDE.md` (notes for AI assistants).
 
 ## Hardware and software
 
@@ -83,12 +81,12 @@ pre-commit install                    # once: ruff checks and formats every comm
 pytest
 ```
 
-- The environment has every Python package of the project, including PyTorch with CUDA 13.0 (NVIDIA driver 580 or newer; `requirements.txt` says how to use an older driver). Without conda: `pip install -r requirements.txt` in any Python 3.10 environment, or only some extras, e.g. `pip install -e ".[dev,arm]"`.
-- ROS 2 Humble, MoveIt 2, frcobot_ros2, librealsense and vLLM are system installs on the robot PC, not pip packages.
-- Code style is [ruff](https://docs.astral.sh/ruff/): `ruff check .` and `ruff format .`. The pre-commit hook runs both, and GitHub runs them with the tests on every push.
-- Label Studio needs its own environment (it pins `numpy<2`): `conda create -n label-studio python=3.11`, then `pip install label-studio`, or its Docker image `heartexlabs/label-studio`.
+- Includes PyTorch with CUDA 13.0 (NVIDIA driver 580+; `requirements.txt` has the older-driver option). Without conda: `pip install -r requirements.txt` (Python 3.10), or some extras: `pip install -e ".[dev,arm]"`.
+- ROS 2 Humble, MoveIt 2, frcobot_ros2, librealsense and vLLM are system installs on the robot PC.
+- Style: [ruff](https://docs.astral.sh/ruff/) (`ruff check .`, `ruff format .`), run by the pre-commit hook and by GitHub on every push.
+- Label Studio needs its own environment (it pins `numpy<2`): `conda create -n label-studio python=3.11`, `pip install label-studio`, or Docker `heartexlabs/label-studio`.
 
-To build the dataset and train a fish model, follow [the six steps in Vision/README.md](Vision/README.md#building-the-fish-model). Videos, frames, labels, model weights and logs are not stored in Git: they go on the team's dataset store, and `.gitignore` keeps them out.
+**Train a fish model:** [the six steps in Vision/README.md](Vision/README.md#building-the-fish-model). Videos, frames, labels, weights and logs stay out of Git (team dataset store).
 
 ## Documentation
 
@@ -104,4 +102,4 @@ Requirement IDs in code and commits use the spec's prefixes: SY system, VS visio
 
 ## License
 
-[MIT](LICENSE). Dependencies keep their own licenses; notably Ultralytics YOLO is AGPL-3.0, so a version of this system distributed or offered as a service with Ultralytics must meet the AGPL-3.0 terms (or use an Ultralytics Enterprise License).
+[MIT](LICENSE). Ultralytics YOLO is AGPL-3.0: distributing this system or offering it as a service with Ultralytics means meeting AGPL-3.0 (or an Ultralytics Enterprise License).

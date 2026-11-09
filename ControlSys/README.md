@@ -1,6 +1,6 @@
 # ControlSys
 
-Runs each pick-and-place cycle: checks the fish list from Vision, asks the VLM which fish to pick, validates the answer, commands the Arm, handles failures and logs every cycle.
+Runs each pick-and-place cycle: checks Vision's fish list, asks the VLM which fish to pick, validates the answer, commands the Arm, handles failures, logs the cycle.
 
 Implements Requirement Spec **Section 2.4 Control System (CS)** and owns the run and cycle behavior of **Section 2.1 System (SY)**; methods are in Appendix C.8 and C.9. The interfaces between the three subsystems are in Section 2.7.
 
@@ -11,7 +11,6 @@ Implements Requirement Spec **Section 2.4 Control System (CS)** and owns the run
 | `rfp_controlsys/` | Control node: state machine, input checks, VLM client, validation, failure handling, logging, operator interface |
 | `prompts/` | VLM prompt templates |
 | `configs/` | Fixed limits, timeouts, attempt limits and model configuration |
-| `tests/` | Tests |
 
 ## Responsibilities
 

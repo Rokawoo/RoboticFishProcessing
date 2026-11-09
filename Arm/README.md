@@ -1,6 +1,6 @@
 # Arm
 
-Moves the FAIRINO FR5, runs the suction gripper, places fish and keeps the arm safe. The control node in ControlSys decides when each step runs; this subsystem provides the steps and reports arm and gripper status back.
+Moves the FAIRINO FR5, runs the suction gripper, places fish and keeps the arm safe. ControlSys decides when each step runs; Arm provides the steps and reports arm and gripper status.
 
 Implements Requirement Spec **Section 2.5 Arm System (AS)** and **Section 2.6 Safety (SF)**; methods are in Appendix C.5 to C.7.
 
@@ -8,10 +8,9 @@ Implements Requirement Spec **Section 2.5 Arm System (AS)** and **Section 2.6 Sa
 
 | Folder | Contents |
 |---|---|
-| `rfp_arm/` | Motion, grasp sequence steps, gripper I/O, placement poses, failure detection and status |
+| `rfp_arm/` | Motion, grasp sequence steps, gripper I/O, placement poses, failure detection and status; `basic_move_demo.py` nods and swings the arm (moves the real arm: read its docstring first) |
 | `scripts/` | Calibration and gripper bench tools |
 | `configs/` | Workspace zones, motion limits, observation poses, placement slots, calibration results |
-| `tests/` | Tests |
 
 ## Responsibilities
 
@@ -25,4 +24,4 @@ Implements Requirement Spec **Section 2.5 Arm System (AS)** and **Section 2.6 Sa
 
 ## Before you run the arm
 
-Until the software limits are in place, the arm runs only at low speed with someone on the emergency stop. New motions run in simulation, then as a dry run with the vacuum off, before they run with vacuum or real fish.
+Until the software limits are in place: low speed only, someone on the emergency stop. New motions run in simulation, then as a dry run with the vacuum off, then with vacuum or real fish. Ctrl+C doesn't stop a trajectory the controller accepted: use the emergency stop.
