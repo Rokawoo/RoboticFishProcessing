@@ -12,22 +12,18 @@ export with images/ and labels/). Sets starting with "." or "_" are skipped;
 images without a label are skipped. Writes images/ and labels/ with train, val
 (and test) folders plus data.yaml here, after deleting the previous split.
 
-Split rules (they keep val and test honest):
-    - Images whose name has a fish ID (GROUP_BY, e.g. fish012_left_000150 ->
-      fish012) are split by fish: all images of a fish go to one split. With
-      fewer than 2 fish this falls back to blocks.
-    - Other images are split per set in CHUNKS_PER_SET blocks of consecutive
-      frames, because neighboring frames are near copies.
-    - TEST_RATIO > 0 holds out whole fish (or whole sets, for names without a
-      fish ID) as a test set of fish the model never sees.
+Split rules:
+    - Each set is cut into CHUNKS_PER_SET blocks of consecutive frames, and whole
+      blocks go to train, val or test: neighboring frames are near copies, so a
+      frame-by-frame split would put near copies of train images in val and test.
     - Augmented images go to train only, and only if their original is in train.
+The same fish can appear in every split.
 """
 
 import argparse
 import json
 import os
 import random
-import re
 import shutil
 import sys
 import time
@@ -55,10 +51,9 @@ from pipeline_common import (
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
-TRAIN_RATIO = 0.8  # share of the non-test images for train; val gets the rest
-TEST_RATIO = 0.0  # share of all images held out as test (0 = no test set)
+TRAIN_RATIO = 0.8  # train share; val and test share the rest
+TEST_RATIO = 0.1  # test share, taken out of val's (0 = no test set)
 SEED = 42  # same seed + same files = same split
-GROUP_BY: str | None = r"^(fish\d+)"  # fish ID in file names (first group); None = off
 CHUNKS_PER_SET = 10  # blocks of consecutive frames per set; 0 = image by image
 
 YAML_PATH = SPLIT_DIR / "data.yaml"
@@ -170,87 +165,45 @@ def read_class_names(set_folders: list[Path]) -> list[str]:
 # ---------------------------------------------------------------------------
 # Splitting
 # ---------------------------------------------------------------------------
-def fish_of(p: Pair, pattern: re.Pattern | None) -> str | None:
-    """Fish ID from the image name, or None."""
-    m = pattern.search(p.image.stem) if pattern else None
-    if not m:
-        return None
-    return m.group(1) if m.groups() else m.group(0)
-
-
-def hold_out_test(
-    pairs: list[Pair], ratio: float, seed: int, pattern: re.Pattern | None
-) -> tuple[list[Pair], list[Pair]]:
-    """
-    (test, rest): whole fish (whole sets for names without a fish ID), about
-    `ratio` of the images. At least 2 fish/sets stay for train and val, so
-    fewer than 3 gives no test set.
-    """
-    units: dict[str, list[Pair]] = defaultdict(list)
-    for p in pairs:
-        fish = fish_of(p, pattern)
-        units[f"fish:{fish}" if fish else f"set:{p.set_name}"].append(p)
-    if ratio <= 0 or len(units) < 3:
-        return [], pairs
-    keys = sorted(units)
-    random.Random(f"{seed}:test").shuffle(keys)
-    target = round(ratio * len(pairs))
-    test: list[Pair] = []
-    for key in keys[: len(keys) - 2]:
-        if len(test) >= target:
-            break
-        test += units[key]
-    in_test = {id(p) for p in test}
-    return test, [p for p in pairs if id(p) not in in_test]
-
-
 def split_pairs(
-    pairs: list[Pair], ratio: float, seed: int, pattern: re.Pattern | None = None
-) -> tuple[list[Pair], list[Pair]]:
+    pairs: list[Pair], train_ratio: float, test_ratio: float, seed: int
+) -> tuple[list[Pair], list[Pair], list[Pair]]:
     """
-    (train, val) of original images. Groups are whole fish (across all sets) or
-    blocks of consecutive frames (per set). Each stratum (all fish, or one set)
-    is shuffled with its own seed, so new sets don't reshuffle old ones, and
-    dealt to train until it reaches its share; the rounding error carries into
-    the next stratum, so the overall ratio holds even for many small sets.
+    (train, val, test) of original images. Each set's blocks of consecutive
+    frames are shuffled with the set's own seed (adding a set doesn't reshuffle
+    the others) and dealt to train, then test, then val until each has its
+    share. Rounding errors carry into the next set, so the overall ratios hold
+    even for many small sets.
     """
-    strata: dict[str, dict[str, list[Pair]]] = defaultdict(lambda: defaultdict(list))
     by_set: dict[str, list[Pair]] = defaultdict(list)
     for p in pairs:
-        fish = fish_of(p, pattern)
-        if fish is not None:
-            strata["fish"][fish].append(p)
-        else:
-            by_set[p.set_name].append(p)
-    for set_name, items in by_set.items():
-        items.sort(key=lambda p: p.image.name.casefold())  # frame order
-        n = len(items)
-        for i, p in enumerate(items):
-            chunk = i * CHUNKS_PER_SET // n if CHUNKS_PER_SET > 0 else i
-            strata[f"set:{set_name}"][f"{chunk:06d}"].append(p)
+        by_set[p.set_name].append(p)
 
-    train, val = [], []
+    train, val, test = [], [], []
     seen = 0
-    for name in sorted(strata):
-        groups = [strata[name][k] for k in sorted(strata[name])]
-        random.Random(f"{seed}:{name}").shuffle(groups)
-        seen += sum(len(g) for g in groups)
-        target = round(seen * ratio) - len(train)
-        taken = 0
-        for g in groups:
-            if taken < target:
-                train.extend(g)
-                taken += len(g)
-            else:
-                val.extend(g)
+    for set_name in sorted(by_set):
+        items = sorted(by_set[set_name], key=lambda p: p.image.name.casefold())  # frame order
+        n = len(items)
+        blocks: dict[int, list[Pair]] = defaultdict(list)
+        for i, p in enumerate(items):
+            blocks[i * CHUNKS_PER_SET // n if CHUNKS_PER_SET > 0 else i].append(p)
+        groups = [blocks[k] for k in sorted(blocks)]
+        random.Random(f"{seed}:{set_name}").shuffle(groups)
 
-    # With only a few fish, every fish can land in train; give val the smallest one.
-    fish_groups = list(strata.get("fish", {}).values())
-    if not val and len(fish_groups) >= 2:
-        smallest = {id(p) for p in min(fish_groups, key=len)}
-        val = [p for p in train if id(p) in smallest]
-        train = [p for p in train if id(p) not in smallest]
-    return train, val
+        seen += n
+        train_target = round(seen * train_ratio) - len(train)
+        test_target = round(seen * test_ratio) - len(test)
+        to_train = to_test = 0
+        for g in groups:
+            if to_train < train_target:
+                train += g
+                to_train += len(g)
+            elif to_test < test_target:
+                test += g
+                to_test += len(g)
+            else:
+                val += g
+    return train, val, test
 
 
 def place_augmented(
@@ -345,22 +298,21 @@ def main() -> None:
     args = parser.parse_args()
 
     start = time.perf_counter()
-    if not 0.0 < TRAIN_RATIO < 1.0 or not 0.0 <= TEST_RATIO < 1.0:
-        sys.exit("❌ TRAIN_RATIO must be in (0, 1) and TEST_RATIO in [0, 1)")
-    try:
-        pattern = re.compile(GROUP_BY) if GROUP_BY else None
-    except re.error as e:
-        sys.exit(f"❌ GROUP_BY is not a valid regex: {e}")
+    if not (0.0 < TRAIN_RATIO and 0.0 <= TEST_RATIO and TRAIN_RATIO + TEST_RATIO < 1.0):
+        sys.exit("❌ Need TRAIN_RATIO > 0, TEST_RATIO >= 0 and TRAIN_RATIO + TEST_RATIO < 1")
     if not IMAGE_SETS_DIR.is_dir():
         sys.exit(f"❌ Source folder not found: {IMAGE_SETS_DIR}")
 
     print("=" * 60)
-    print("YOLO TRAIN / VAL SPLITTER")
+    print("YOLO TRAIN / VAL / TEST SPLITTER")
     print("=" * 60)
     print(f"Source: {IMAGE_SETS_DIR}")
     print(f"Dest:   {SPLIT_DIR}")
-    test_note = f", {TEST_RATIO:.0%} test" if TEST_RATIO else ""
-    print(f"Split:  {TRAIN_RATIO:.0%} train / {1 - TRAIN_RATIO:.0%} val{test_note} (seed {SEED})")
+    val_ratio = 1.0 - TRAIN_RATIO - TEST_RATIO
+    print(
+        f"Split:  {TRAIN_RATIO:.0%} train / {val_ratio:.0%} val / {TEST_RATIO:.0%} test, "
+        f"{CHUNKS_PER_SET} blocks of frames per set (seed {SEED})"
+    )
 
     # --- 1. Scan and check (nothing changes yet) --------------------------
     set_folders = sorted(
@@ -389,29 +341,14 @@ def main() -> None:
             print(f"   ⚠️  Class ids {unknown} are used in labels but not in classes.txt")
 
     # --- 2. Split -----------------------------------------------------------
-    fish = {f for p in originals if (f := fish_of(p, pattern))}
-    without_id = sum(1 for p in originals if fish_of(p, pattern) is None)
-    if pattern and len(fish) < 2:
-        if fish:
-            print(f"   ⚠️  Only 1 fish ({next(iter(fish))}): splitting in blocks of frames, so")
-            print("      val shows the same fish as train. Record more fish for an honest val.")
-        pattern = None
-    elif pattern and without_id:
-        print(
-            f"   ⚠️  {without_id} image(s) have no fish ID in their name: split in blocks of frames"
-        )
-    grouping = f"{len(fish)} fish" if pattern else f"blocks of frames ({CHUNKS_PER_SET} per set)"
-    print(f"   Grouping: {grouping}")
-
-    test, rest = hold_out_test(originals, TEST_RATIO, SEED, pattern)
-    if TEST_RATIO and not test:
-        print("   ⚠️  No test set: it needs at least 3 fish (or sets).")
-    train, val = split_pairs(rest, TRAIN_RATIO, SEED, pattern)
+    train, val, test = split_pairs(originals, TRAIN_RATIO, TEST_RATIO, SEED)
     if not train or not val:
         sys.exit(
             f"❌ The {'train' if not train else 'val'} split would be empty "
-            f"({len(rest)} images). Add data or change TRAIN_RATIO."
+            f"({len(originals)} images). Add data or change the ratios."
         )
+    if TEST_RATIO and not test:
+        print("   ⚠️  No test images: too few images for TEST_RATIO.")
     if augmented:
         aug_train, elsewhere, orphans = place_augmented(augmented, train, originals)
         train += aug_train

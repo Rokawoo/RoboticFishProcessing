@@ -3,7 +3,6 @@
 import importlib.util
 import itertools
 import os
-import re
 import sys
 import time
 from collections import Counter
@@ -107,11 +106,6 @@ def splitter():
     return load_script("dataset/train/train_val_data_splitter.py")
 
 
-@pytest.fixture(scope="module")
-def fish_id(splitter):
-    return re.compile(splitter.GROUP_BY)
-
-
 def frames(splitter, set_name: str, n: int) -> list:
     return [
         splitter.Pair(
@@ -125,54 +119,25 @@ def frames(splitter, set_name: str, n: int) -> list:
 
 
 def test_split_keeps_blocks_of_consecutive_frames_together(splitter):
-    train, val = splitter.split_pairs(frames(splitter, "tank", 100), 0.8, 42)
-    assert (len(train), len(val)) == (80, 20)
-    assert breaks(sorted(int(p.image.stem[-6:]) for p in val)) <= 1  # at most 2 blocks of 10
+    train, val, test = splitter.split_pairs(frames(splitter, "tank", 100), 0.8, 0.1, 42)
+    assert (len(train), len(val), len(test)) == (80, 10, 10)
+    for split in (val, test):  # one block of 10 consecutive frames each
+        assert breaks(sorted(int(p.image.stem[-6:]) for p in split)) == 0
+    names = [{p.image.name for p in s} for s in (train, val, test)]
+    assert not (names[0] & names[1] or names[0] & names[2] or names[1] & names[2])
 
 
-def test_split_ratio_holds_over_many_small_sets(splitter):
+def test_split_ratios_hold_over_many_small_sets(splitter):
     pairs = [p for k in range(30) for p in frames(splitter, f"s{k:02d}", 2)]
-    train, val = splitter.split_pairs(pairs, 0.8, 42)
-    assert (len(train), len(val)) == (48, 12)
-
-
-def test_split_by_fish_keeps_each_fish_on_one_side(splitter, fish_id):
-    pairs = [p for k in range(10) for p in frames(splitter, f"fish{k:03d}_left", 20)]
-    train, val = splitter.split_pairs(pairs, 0.8, 42, fish_id)
-    fish_train = {splitter.fish_of(p, fish_id) for p in train}
-    fish_val = {splitter.fish_of(p, fish_id) for p in val}
-    assert (len(train), len(val)) == (160, 40)
-    assert not fish_train & fish_val
-
-
-def test_names_without_a_fish_id_are_split_in_blocks(splitter, fish_id):
-    pairs = frames(splitter, "fish001_left", 50) + frames(splitter, "fish002_top", 50)
-    pairs += frames(splitter, "tank", 50)
-    _, val = splitter.split_pairs(pairs, 0.8, 42, fish_id)
-    tank_val = sorted(int(p.image.stem[-6:]) for p in val if p.set_name == "tank")
-    assert tank_val and breaks(tank_val) < len(tank_val) // 2  # blocks, not single frames
-
-
-def test_two_fish_give_val_one_fish(splitter, fish_id):
-    pairs = frames(splitter, "fish001_left", 50) + frames(splitter, "fish002_left", 30)
-    train, val = splitter.split_pairs(pairs, 0.8, 42, fish_id)
-    assert {splitter.fish_of(p, fish_id) for p in val} == {"fish002"}
-    assert len(train) == 50
-
-
-def test_test_set_holds_out_whole_fish(splitter, fish_id):
-    pairs = [p for k in range(10) for p in frames(splitter, f"fish{k:03d}_left", 20)]
-    test, rest = splitter.hold_out_test(pairs, 0.2, 42, fish_id)
-    fish_test = {splitter.fish_of(p, fish_id) for p in test}
-    fish_rest = {splitter.fish_of(p, fish_id) for p in rest}
-    assert len(test) == 40 and len(rest) == 160
-    assert not fish_test & fish_rest
-    assert splitter.hold_out_test(pairs[:40], 0.2, 42, fish_id)[0] == []  # 2 fish: no test set
+    train, val, test = splitter.split_pairs(pairs, 0.8, 0.0, 42)
+    assert (len(train), len(val), len(test)) == (48, 12, 0)
+    train, val, test = splitter.split_pairs(pairs, 0.7, 0.1, 42)
+    assert (len(train), len(val), len(test)) == (42, 12, 6)
 
 
 def test_augmented_images_follow_their_original_into_train_only(splitter):
     originals = frames(splitter, "tank", 50)
-    train, val = splitter.split_pairs(originals, 0.8, 42)
+    train, val, test = splitter.split_pairs(originals, 0.8, 0.1, 42)
     augmented = [
         splitter.Pair(
             Path(pc.augmented_stem(p.image.stem, 1, "jpeg") + ".jpg"),
@@ -187,7 +152,7 @@ def test_augmented_images_follow_their_original_into_train_only(splitter):
     )
     keep, elsewhere, orphans = splitter.place_augmented(augmented, train, originals)
     assert {pc.source_of_augmented(p.image.stem) for p in keep} == {p.image.stem for p in train}
-    assert (elsewhere, orphans) == (len(val), 1)
+    assert (elsewhere, orphans) == (len(val) + len(test), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -483,8 +448,7 @@ def tk_root():
 def editor(tmp_path, monkeypatch, tk_root):
     import tkinter as tk
 
-    import numpy as np
-
+    np = pytest.importorskip("numpy")
     pytest.importorskip("PIL")
     from PIL import Image
 
