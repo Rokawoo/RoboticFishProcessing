@@ -1,0 +1,29 @@
+work_zone:
+  enabled: true
+  frame: base_link
+  dimensions: [2.0, 2.0, 2.0]
+  pose: {position: [0.0, 0.0, 0.95], quaternion: [0, 0, 0, 1]}
+  wall_thickness: 0.1
+
+exclusion_zones:
+  # Add `attach` only if the zone moves with a robot link (then `frame` must be that link).
+  - id: camera_flange
+    enabled: true
+    frame: shoulder_link
+    attach: {touch_links: [shoulder_link, base_link]}
+    dimensions: [0.1, 0.1, 0.1]
+    pose: {position: [0.0, 0.0, 0.3], quaternion: [0, 0, 0, 1]}
+    
+motion_limits:
+  max_linear_speed: 0.25
+  max_angular_speed: 0.8
+  max_linear_acceleration: 0.5
+  max_angular_acceleration: 1.5
+
+# <link name="base_link"
+# <link name="shoulder_link"
+# <link name="upperarm_link"
+# <link name="forearm_link"
+# <link name="wrist1_link"
+# <link name="wrist2_link"
+# <link name="wrist3_link"
