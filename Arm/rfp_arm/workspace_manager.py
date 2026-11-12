@@ -206,3 +206,22 @@ class WorkSpaceManager(Node):
       rclpy.spin_once(self, timeout_sec=0.1)
     self.get_logger().info("Connected to move_group planning scene subscriber.")
     return True
+  
+import os
+from rclpy.parameter import Parameter
+
+if __name__ == "__main__":
+  rclpy.init()
+  path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "configs", "workspace.yaml")
+  node = WorkSpaceManager(
+    parameter_overrides=[
+      Parameter("workspace_config_path", Parameter.Type.STRING, path)
+    ]
+  )
+  try:
+    rclpy.spin(node)
+  except KeyboardInterrupt:
+    pass
+  finally:
+    node.destroy_node()
+    rclpy.shutdown()
