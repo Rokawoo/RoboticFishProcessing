@@ -76,8 +76,4 @@ def load_workspace_config(path: str) -> WorkspaceConfig:
   except TypeError as e:
     raise ValueError(f"invalid motion_limits section: {e}") from e
   
-  return WorkspaceConfig(
-    work_zone=work_zone,
-    exclusion_zones=exclusion_zones,
-    motion_limits=motion_limits
-  )
+  return WorkspaceConfig(work_zone, exclusion_zones, motion_limits)

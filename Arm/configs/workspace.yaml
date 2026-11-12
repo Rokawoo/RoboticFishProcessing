@@ -1,8 +1,8 @@
 work_zone:
   enabled: true
   frame: base_link
-  dimensions: [2.0, 2.0, 2.0]
-  pose: {position: [0.0, 0.0, 0.95], quaternion: [0, 0, 0, 1]}
+  dimensions: [2.0, 2.0, 1.5]
+  pose: {position: [-0.75, 0.0, 0.7], quaternion: [0, 0, 0, 1]}
   wall_thickness: 0.1
 
 exclusion_zones:

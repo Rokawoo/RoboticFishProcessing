@@ -12,7 +12,6 @@ from std_msgs.msg import ColorRGBA
 
 from workspace_config import ExclusionZone, WorkZone, load_workspace_config
 
-# TODO: consider using service calls
 class WorkSpaceManager(Node):
   def __init__(self, *args, **kwargs) -> None:
     super().__init__('work_zone_manager', *args, **kwargs)
