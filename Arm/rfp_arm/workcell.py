@@ -159,6 +159,8 @@ class Workcell:
     observation_poses: list[ObservationPose]
     placement_heading: float  # rad (AS-52)
     slots: list[tuple[float, float]]
+    # How far the last joint may turn (rad): the vacuum tube must not wind up
+    wrist_range: tuple[float, float] = (math.radians(-170.0), math.radians(170.0))
     motion: MotionLimits = field(default_factory=MotionLimits)
     grasp: GraspSettings = field(default_factory=GraspSettings)
     gripper: GripperSettings = field(default_factory=GripperSettings)
@@ -238,6 +240,10 @@ class Workcell:
                 found.append(f"observation pose '{pose.name}': {problem}")
             if pose.joints is not None and len(pose.joints) != len(self.joints):
                 found.append(f"observation pose '{pose.name}' needs {len(self.joints)} joints")
+            elif pose.joints is not None and not (
+                self.wrist_range[0] <= pose.joints[-1] <= self.wrist_range[1]
+            ):
+                found.append(f"observation pose '{pose.name}' turns the wrist past its range")
         if self.work_zone.z[0] < self.table_z - 1e-9:
             found.append("the work zone starts below the table")
         limits = self.motion
@@ -313,6 +319,9 @@ def workcell_from_mapping(data: dict) -> Workcell:
         calibrated=bool(camera.get("calibrated", False)),
         calibration_version=str(camera.get("calibration_version", "")),
         tool_box=None if body is None else Box("tool", *(_range(body[k]) for k in "xyz")),
+        wrist_range=tuple(
+            math.radians(v) for v in _range(tool.get("wrist_range_deg", (-170.0, 170.0)))
+        ),
         table_z=table_z,
         table_clearance=float(table.get("clearance", 0.005)),
         work_zone=Box(

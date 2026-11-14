@@ -93,7 +93,17 @@ def check_trajectory(
             check.problem = f"{problem} ({times[i] - times[0]:.1f} s into the move)"
             return check
     max_travel = np.radians(workcell.motion.max_joint_travel_deg)
-    if travel > max_travel:
+    wrist = workcell.joints[-1]
+    low, high = workcell.wrist_range
+    turned = positions[:, joint_names.index(wrist)] if wrist in joint_names else positions[:0, 0]
+    past = np.maximum(turned - high, low - turned)  # > 0: beyond the range
+    # An arm left past the range may come back, but nothing may go further out.
+    if len(past) and past.max() > max(past[0], 0.0) + 1e-3:
+        check.problem = (
+            f"the wrist ({wrist}) would turn to {np.degrees(turned[int(past.argmax())]):.0f} deg: "
+            f"its range is {np.degrees(low):.0f} to {np.degrees(high):.0f} (vacuum tube)"
+        )
+    elif travel > max_travel:
         check.problem = (
             f"a joint would turn {np.degrees(travel):.0f} deg (limit "
             f"{workcell.motion.max_joint_travel_deg:.0f}): the arm would change its posture"

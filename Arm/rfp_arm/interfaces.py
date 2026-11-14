@@ -71,6 +71,10 @@ class Arm(Protocol):
     ) -> None:
         """Straight-line move of the TCP to a pose in {B} at up to `speed` m/s, `accel` m/s2."""
 
+    def wrist_angle(self, tcp_pose: np.ndarray | None = None) -> float | None:
+        """Angle of the last joint (rad): now, or what it would be with the tool pointing
+        down at `tcp_pose`. None if the arm can't tell."""
+
     def set_held_fish(self, length: float) -> None:
         """Tell the arm a fish of this length (m) hangs on the cups; 0 = nothing. From then
         on its checks keep both ends of the fish inside the work zone too (SF-10)."""

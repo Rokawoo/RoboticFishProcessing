@@ -23,6 +23,11 @@ tool:
   # TCP in the tip link frame (AS-65): center of the cup footprint, in the plane of the
   # uncompressed cup faces; z out of the cups, x along the footprint's long side.
   tcp: {xyz: [0.0, 0.0, 0.220], rpy_deg: [0, 0, 0]}
+  # How far the last joint (j6) may turn. The vacuum tube runs into the gripper, so the
+  # wrist must never wind a full turn: plans that leave this range are refused, each grasp
+  # takes the direction with the least twist, and the arm returns to its observation pose
+  # (and this joint to its angle there) after every fish. Put 0 where the tube hangs free.
+  wrist_range_deg: [-170, 170]
   # Cups, bracket and camera as one box in the tip link frame, for MoveIt's collision
   # checks. Keep its far end short of the cup faces, or reaching a fish counts as a hit.
   body: {x: [-0.08, 0.08], y: [-0.13, 0.06], z: [0.06, 0.20]}

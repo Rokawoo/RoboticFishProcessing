@@ -71,12 +71,15 @@ def plan_grasp(
     slot: tuple[float, float],
     tool_yaw: float,
     dry_run: bool = False,
+    wrist: Callable[[np.ndarray], float | None] | None = None,
 ) -> GraspPlan:
     """
     The poses of Table AS-1. `grasp_pose` is the fish's grasp pose from the fish list (on
     the fish, z = approach direction, x = along the body toward the head); `tool_yaw` is
-    the TCP's yaw now, at the observation pose. Raises ArmError(E_MOTION) if the fish or a
-    pose is outside the limits.
+    the TCP's yaw now, at the observation pose. `wrist` (Arm.wrist_angle) tells the last
+    joint's angle at a TCP pose; without it the wrist is taken to turn with the tool's yaw
+    from the middle of its range. Raises ArmError(E_MOTION) if the fish or a pose is
+    outside the limits.
     """
     g = workcell.grasp
     point = grasp_pose[:3, 3]
@@ -92,13 +95,6 @@ def plan_grasp(
     turn = wrap(workcell.placement_heading - heading)
     if not heading_known and abs(turn) > math.pi / 2:  # either end may be the head: turn less
         turn = wrap(turn + math.pi)
-    # The cups fit the body both ways round. The wrist turns from `tool_yaw` to the grasp
-    # and then by `turn` to the slot: take the way that keeps it nearest where it started,
-    # away from the limits of j6.
-    ways = [wrap(heading + flip - tool_yaw) for flip in (0.0, math.pi)]
-    wrist = min(ways, key=lambda offset: max(abs(offset), abs(offset + turn)))
-    grasp_yaw = wrap(tool_yaw + wrist)
-    place_yaw = wrap(grasp_yaw + turn)
 
     x, y, z = point
     table = workcell.table_z
@@ -106,6 +102,31 @@ def plan_grasp(
     lift_z = table + min(g.lift_length_share * fish_length + g.lift_margin, g.lift_height_max)
     lift_z = max(lift_z, z + g.lift_margin)
     release_z = table + max(thickness, 0.0) + g.release_clearance
+
+    # The cups fit the body both ways round. The wrist turns to the grasp and then with
+    # the fish to the slot: take the way that keeps it nearest the middle of its range,
+    # so the vacuum tube never winds up.
+    low, high = workcell.wrist_range
+    middle = (low + high) / 2
+    ways = []
+    for flip in (0.0, math.pi):
+        grasp_yaw = wrap(heading + flip)
+        place_yaw = wrap(grasp_yaw + turn)
+        at_grasp = tool_down((x, y, lift_z), grasp_yaw)
+        at_slot = tool_down((slot[0], slot[1], lift_z), place_yaw)
+        angles = [wrist(at_grasp), wrist(at_slot)] if wrist else [None]
+        if None in angles:  # the arm can't tell: the wrist turns as the tool's yaw does
+            start = wrap(grasp_yaw - tool_yaw)
+            angles = [middle + start, middle + start + turn]
+        ways.append((max(abs(a - middle) for a in angles), grasp_yaw, place_yaw, angles))
+    _, grasp_yaw, place_yaw, angles = min(ways, key=lambda way: way[0])
+    worst = max(angles, key=lambda a: abs(a - middle))
+    if not low <= worst <= high:
+        raise ArmError(
+            E_MOTION,
+            f"the wrist would turn to {math.degrees(worst):.0f} deg (range "
+            f"{math.degrees(low):.0f} to {math.degrees(high):.0f}: the vacuum tube)",
+        )
     plan = GraspPlan(
         pregrasp=tool_down((x, y, z + g.pregrasp_distance), grasp_yaw),
         approach_end=tool_down((x, y, end_z), grasp_yaw),

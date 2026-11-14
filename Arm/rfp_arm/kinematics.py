@@ -83,6 +83,41 @@ class Chain:
         return cls(tuple(reversed(joints)), base_link, tip_link, tuple(reversed(links)))
 
 
+def wrist_angle_at(chain: Chain, joints: Mapping[str, float], tip_pose: np.ndarray) -> float | None:
+    """
+    The angle the chain's last joint would have with the tip at `tip_pose`, for an arm
+    like the FR5 (first joint vertical, last joint along the tool) holding the tool
+    vertical in its present posture, given by `joints`. None if that doesn't hold.
+
+    With the tool vertical its yaw is the base angle plus or minus the last joint's, and
+    the tool axis keeps a fixed sideways offset from the plane the arm reaches in. Both
+    constants are read off the present posture, so no inverse kinematics is needed.
+    """
+    names = chain.joint_names
+    first, last = joints[names[0]], joints[names[-1]]
+    now = chain.fk(joints)
+    if abs(now[2, 2]) < 0.99 or abs(tip_pose[2, 2]) < 0.99 or now[2, 2] * tip_pose[2, 2] < 0:
+        return None
+
+    def yaw(pose: np.ndarray) -> float:
+        return float(np.arctan2(pose[1, 0], pose[0, 0]))
+
+    def wrapped(angle: float) -> float:
+        return float(np.arctan2(np.sin(angle), np.cos(angle)))
+
+    nudged = chain.fk({**joints, names[-1]: last + 0.01})
+    sign = 1.0 if wrapped(yaw(nudged) - yaw(now)) > 0 else -1.0
+    constant = yaw(now) - first - sign * last
+    offset = -now[0, 3] * np.sin(first) + now[1, 3] * np.cos(first)
+    x, y = tip_pose[0, 3], tip_pose[1, 3]
+    reach = float(np.hypot(x, y))
+    if reach <= abs(offset) + 1e-9:
+        return None
+    toward, lean = np.arctan2(y, x), np.arcsin(offset / reach)
+    base = min((toward - lean, toward - np.pi + lean), key=lambda a: abs(wrapped(a - first)))
+    return wrapped(sign * (yaw(tip_pose) - base - constant))
+
+
 def _numbers(text: str | None, default: Sequence[float]) -> list[float]:
     return [float(v) for v in text.split()] if text else list(default)
 

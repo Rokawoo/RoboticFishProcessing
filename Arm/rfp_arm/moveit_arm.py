@@ -27,7 +27,7 @@ from rfp_arm.interfaces import (
     MotionAborted,
     Tick,
 )
-from rfp_arm.kinematics import Chain
+from rfp_arm.kinematics import Chain, wrist_angle_at
 from rfp_arm.poses import quaternion, rotation_angle
 from rfp_arm.ros_link import RosLink
 from rfp_arm.safety import TrajectoryCheck, check_trajectory
@@ -253,6 +253,12 @@ class MoveItArm:
 
     def tcp_pose(self) -> np.ndarray:
         return self.workcell.tcp_of_tip(self._chain.fk(self.joints()))
+
+    def wrist_angle(self, tcp_pose: np.ndarray | None = None) -> float | None:
+        joints = self.joints()
+        if tcp_pose is None:
+            return joints[self.workcell.joints[-1]]
+        return wrist_angle_at(self._chain, joints, self.workcell.tip_of_tcp(tcp_pose))
 
     def set_held_fish(self, length: float) -> None:
         self._fish_length = length

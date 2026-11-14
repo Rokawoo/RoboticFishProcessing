@@ -390,7 +390,7 @@ class PickPlaceCycle:
         try:
             plan = plan_grasp(
                 cell, fish.grasp_pose, fish.heading_known, fish.total_length, fish.thickness,
-                cell.slots[self._slot], self._tool_yaw, self.dry_run,
+                cell.slots[self._slot], self._tool_yaw, self.dry_run, self.arm.wrist_angle,
             )  # fmt: skip
             self.sequence.run(plan)
         except ArmError as error:

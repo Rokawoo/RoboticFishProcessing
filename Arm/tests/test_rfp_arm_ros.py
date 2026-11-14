@@ -395,3 +395,20 @@ def test_no_seal_and_a_drop_are_reported_from_the_controller_inputs(ros):
     assert error.value.code == E_DROP and sequence.step == "carry" and robot.cancels == 1
     assert not robot.outputs[0] and not sequence.holding  # vacuum off (AS-72)
     assert np.linalg.norm(tcp(robot)[:2, 3] - plan.carry[:2, 3]) > 0.05  # stopped on the way
+
+
+def test_the_arm_knows_its_wrist_angle_and_where_it_would_be(ros):
+    robot, arm = connected(ros)
+    assert arm.wrist_angle() == pytest.approx(0.0, abs=1e-6)  # j6 of HOME
+    target = down(0.50, 0.10, 0.20, turn=1.0)
+    predicted = arm.wrist_angle(target)
+    arm.move_ptp(target)
+    assert arm.wrist_angle() == pytest.approx(predicted, abs=1e-3)  # what the planner assumed
+    assert robot.joints[5] == pytest.approx(predicted, abs=1e-3)
+    tight = make_workcell(lambda d: d["tool"].update(wrist_range_deg=[-20, 20]))
+    careful = MoveItArm(arm.link, tight, log=lambda text: None)
+    careful.connect(timeout=5.0)
+    with pytest.raises(ArmError, match="the wrist .j6. would turn to"):
+        careful.move_ptp(down(0.40, -0.10, 0.25, turn=-1.2))
+    careful.move_joints(HOME)  # back toward the range: allowed
+    assert robot.joints[5] == pytest.approx(0.0, abs=1e-6)

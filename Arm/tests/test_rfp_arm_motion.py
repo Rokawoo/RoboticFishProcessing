@@ -632,3 +632,79 @@ def test_simulated_arm_applies_the_limits():
     target[:3, 3] += (0.0, 0.2, -0.1)
     paced.move_lin(target, 0.1, 0.5)
     assert sum(naps) == pytest.approx(math.hypot(0.2, 0.1) / 0.1)  # the distance at 0.1 m/s
+
+
+# ---------------------------------------------------------------------------
+# The wrist and its vacuum tube
+# ---------------------------------------------------------------------------
+def test_wrist_angle_is_predicted_without_inverse_kinematics():
+    from rfp_arm.kinematics import wrist_angle_at
+
+    here = joints_for(0.40, -0.10, 0.36, yaw=1.2)
+    joints = dict(zip(FR5.joint_names, here))
+    for x, y, z, yaw in (
+        (0.30, -0.25, 0.20, 1.0),
+        (0.55, 0.10, 0.45, 1.6),
+        (0.38, 0.45, 0.20, 0.6),
+    ):
+        tip = CELL.tip_of_tcp(poses.tool_down((x, y, z), yaw))
+        there = solve_ik(tip, here)  # the same posture, by inverse kinematics
+        assert wrist_angle_at(FR5, joints, tip) == pytest.approx(there[5], abs=1e-4)
+    assert (
+        wrist_angle_at(FR5, joints, CELL.tip_of_tcp(poses.tool_down((0.0, 0.05, 0.3), 0.0))) is None
+    )
+    tilted = dict(zip(FR5.joint_names, [0.0] * 6))  # the tool isn't vertical here
+    assert (
+        wrist_angle_at(FR5, tilted, CELL.tip_of_tcp(poses.tool_down((0.4, 0.0, 0.3), 0.0))) is None
+    )
+
+
+def test_plans_that_wind_the_wrist_are_refused_but_unwinding_is_allowed():
+    names = FR5.joint_names
+    assert CELL.wrist_range == pytest.approx((math.radians(-170), math.radians(170)))
+    start = joints_for(0.40, -0.10, 0.30)
+    start[5] = 0.0
+    wound = start.copy()
+    wound[5] = math.radians(172)
+    winding = check_trajectory(CELL, FR5, names, *joint_path(start, wound, 30.0))
+    assert "the wrist (j6) would turn to 172 deg" in winding.problem and "tube" in winding.problem
+    assert check_trajectory(CELL, FR5, names, *joint_path(wound, start, 30.0)).ok  # coming back
+    tight = make_workcell(lambda d: d["tool"].update(wrist_range_deg=[-90, 90]))
+    half = start.copy()
+    half[5] = math.radians(100)
+    assert (
+        "would turn to 100 deg"
+        in check_trajectory(tight, FR5, names, *joint_path(start, half, 30.0)).problem
+    )
+    assert check_trajectory(CELL, FR5, names, *joint_path(start, half, 30.0)).ok
+    taught = workcell_data()
+    taught["observation"]["poses"] = [
+        {"name": "twisted", "joints_deg": [0, -90, -100, -80, 90, 175]}
+    ]
+    assert "turns the wrist past its range" in "; ".join(workcell_from_mapping(taught).problems())
+
+
+def test_grasp_takes_the_direction_with_the_least_wrist_twist():
+    fish = fish_pose(heading_deg=100.0)
+
+    def plan_with(wrist, cell=CELL):
+        return plan_grasp(cell, fish, True, 0.60, 0.10, SLOT, math.radians(90), wrist=wrist)
+
+    # an arm whose wrist is already at +80 deg when the tool's yaw is 100 deg: grasping
+    # the other way round (yaw -80) and turning to the slot stays nearer the middle
+    def offset_wrist(pose):
+        return poses.wrap(poses.yaw_of(pose) - math.radians(20))
+
+    assert round(math.degrees(poses.yaw_of(plan_with(None).pregrasp))) == 100
+    turned = plan_with(lambda pose: poses.wrap(poses.yaw_of(pose) + math.radians(150)))
+    assert round(math.degrees(poses.yaw_of(turned.pregrasp))) == -80
+    assert round(math.degrees(poses.yaw_of(plan_with(offset_wrist).pregrasp))) == 100
+    assert round(math.degrees(poses.yaw_of(plan_with(lambda pose: None).pregrasp))) == 100
+    tight = make_workcell(lambda d: d["tool"].update(wrist_range_deg=[-30, 30]))
+    with pytest.raises(ArmError, match="wrist would turn to .* vacuum tube"):
+        plan_with(None, tight)
+    arm = SimArm(CELL)
+    assert arm.wrist_angle() == pytest.approx(0.0)  # where it starts
+    assert arm.wrist_angle(
+        poses.tool_down((0.4, 0.0, 0.3), poses.yaw_of(arm.tcp_pose()) + 0.5)
+    ) == (pytest.approx(0.5))

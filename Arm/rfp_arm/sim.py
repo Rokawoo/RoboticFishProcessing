@@ -12,7 +12,7 @@ import numpy as np
 
 from rfp_arm.interfaces import E_MOTION, ArmError, MotionAborted, Tick
 from rfp_arm.kinematics import FR5, Chain
-from rfp_arm.poses import axis_rotation, from_parts, rotation_angle
+from rfp_arm.poses import axis_rotation, from_parts, rotation_angle, wrap, yaw_of
 from rfp_arm.workcell import Workcell
 
 STEP = 0.02  # m between simulated points
@@ -63,11 +63,17 @@ class SimArm:
                 else workcell.tcp_of_tip(chain.fk(first.joints))
             )
         self._tcp = np.array(start_tcp, float)
+        self._start_yaw = yaw_of(self._tcp)
         self.moves: list[tuple[str, np.ndarray]] = []  # (kind, target TCP pose) of each move
         self.fail: Callable[[str, np.ndarray], str | None] | None = None  # test hook: E_MOTION
 
     def tcp_pose(self) -> np.ndarray:
         return self._tcp.copy()
+
+    def wrist_angle(self, tcp_pose: np.ndarray | None = None) -> float | None:
+        # no joints here: the wrist turns with the tool's yaw, from 0 where the arm started
+        pose = self._tcp if tcp_pose is None else tcp_pose
+        return wrap(yaw_of(pose) - self._start_yaw)
 
     def set_held_fish(self, length: float) -> None:
         self._fish_length = length
