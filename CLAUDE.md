@@ -4,7 +4,7 @@ How to work on this repo. Overview: README.md; each subsystem README lists what 
 
 ## Project
 
-A FAIRINO FR5 arm with a suction gripper picks whole catfish off a table and places them with a uniform heading. **Vision** (RealSense D405, YOLO26 segmentation + pose) finds each fish's pose; **ControlSys** runs the cycle (Qwen3-VL picks the fish, fixed code validates every answer and owns every limit); **Arm** moves (MoveIt 2 with Pilz, frcobot_ros2). Fall 2026 is the design term: `rfp_vision`, `rfp_arm` and `rfp_controlsys` are skeletons; the working code is the Vision data pipeline in `Vision/data/`.
+A FAIRINO FR5 arm with a suction gripper picks whole catfish off a table and places them with a uniform heading. **Vision** (RealSense D405, YOLO26 segmentation + pose) finds each fish's pose; **ControlSys** runs the cycle (Qwen3-VL picks the fish, fixed code validates every answer and owns every limit); **Arm** moves (MoveIt 2 with Pilz, frcobot_ros2). Fall 2026 is the design term. Working code: the Vision data pipeline in `Vision/data/`, and a first pick-and-place cycle in the `rfp_*` packages (below) that runs offline and in tests but has not been on the real arm.
 
 Requirement IDs (Requirement Spec, Confluence) use these prefixes in code, docstrings and commits: SY system, VS vision, VD vision data and models, CS control, AS arm, SF safety, IF interfaces, HW/SW platform, HC hardware constraints.
 
@@ -45,6 +45,18 @@ Rules the code depends on:
 - **No data in Git.** `.gitignore` ignores `Vision/data/dataset/` except `.py`, `.gitkeep` and `classes.txt`, plus `Vision/trained_cv_models/*`, `Vision/data/training/mlflow/` and `*.pt`.
 - End-to-end checks: copy `Vision/` to a temp folder and run the scripts there (paths are relative to `pipeline_common.py`, so real data stays untouched).
 
+## Pick and place (`rfp_vision`, `rfp_arm`, `rfp_controlsys`)
+
+`ControlSys/rfp_controlsys/pick_place.py --mode observe | offline | sim | check | dry-run | run` (its docstring explains each). Rules the code depends on:
+
+- **Three layers behind interfaces.** `rfp_controlsys.cycle` talks to an `Arm` and a `Gripper` (`rfp_arm/interfaces.py`), a `VisionSystem` and a `FishSelector`. Modes only swap what is behind them (`SimArm`/`MoveItArm`, `SimGripper`/`NoGripper`/the real gripper from `make_gripper`). `rfp_vision` and `rfp_arm` don't import each other; `rfp_controlsys` imports both.
+- **ROS only in `moveit_arm.py`, `fairino.py`, `ros_link.py`**, imported inside functions: every other module must import and run without ROS (Windows, CI).
+- **Units:** meters and radians in code, 4x4 poses `T_a_b` (frame b in frame a), {B} = MoveIt's `base_link`. YAML files use meters and degrees, logs mm and degrees (IF-11).
+- **Every plan is checked in fixed code before it runs** (`safety.check_trajectory`: TCP speed, zones, joint travel), every target by `Workcell.pose_problem`. Don't add a motion path that skips them.
+- **The VLM goes in as a `FishSelector`** (`selector.py`); its answers pass `validate_decision` and the fallback rule already. Don't let a selector reach the arm any other way (CS-30).
+- **Settings files mirror the dataclass defaults** (`vision.yaml`, `control.yaml`: a test compares them); unknown names are errors. `workcell.yaml` has placeholder values and `verified: false`: the real arm refuses it.
+- **Tests without ROS:** `Arm/tests/fake_ros.py` is a fake rclpy, move_group and FAIRINO command server with message classes built from `ros_messages.json` (the real fields; rebuild with `make_ros_messages.py`). It catches wrong field names and types and logic errors, not what the real MoveIt rejects: that needs `--mode sim` on the robot PC.
+
 ## Conventions
 
 - Comments and docstrings: short and to the point, only what isn't obvious from the code (the why, gotchas, units). No narration.
@@ -69,6 +81,13 @@ Rules the code depends on:
 - MLflow 3 refuses the plain-folder store: use SQLite (needs the full `mlflow` package, not `mlflow-skinny`).
 - PyPI's Windows torch is CPU-only, and pip prefers PyPI when it has a newer version than the CUDA index: keep torch/torchvision pinned to versions on the chosen index.
 - Dependencies currently resolve to OpenCV 5.0 (`opencv-python` and `opencv-python-headless` at the same version); the pipeline is tested on 4.13 and 5.0.
+
+- The gripper as built is six cups switched by an ESP32 on a serial port (`SerialGripper`), not the control box valves and vacuum switch of the Requirement Spec (`SuctionGripper`, kept as `driver: controller`). It gives no feedback: only the camera's hold check can confirm a hold or see a drop. Opening an ESP32's port with DTR/RTS raised restarts it, so they are held low.
+- rclpy messages are strict: an `int` assigned to a `float64` field raises. Convert with `float()` (NumPy scalars too).
+- The FR5 URDF's last link (`wrist3_link`) has its origin on the j6 axis, not at the flange face (no flange link; by the arm's dimensions the flange is 100 mm further along z). `tool.tcp` in the workcell file is measured from that link.
+- j6 turns only +-175 deg. Grasping at the fish's heading and turning it to the placement heading can add up to more: `plan_grasp` picks the way round that keeps the wrist nearest its angle at the observation pose, so teach observation poses with j6 near 0.
+- The camera at 450 mm sees 0.85 x 0.50 m of table: a 0.6-0.75 m fish fits in the frame only lying along the image's long side. The outline is seen at about half the fish's height, not at its top: put its pixels on that plane (`outline_height_share`), or off-center fish shift by centimeters.
+- A script or scratch file named like a standard-library module (`profile.py`, `operator.py`) in a folder that scripts run from shadows that module for everything imported after it.
 
 ## Robot safety (Arm, ControlSys)
 

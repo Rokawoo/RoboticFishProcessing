@@ -8,7 +8,7 @@
 
 A FAIRINO FR5 arm with a suction gripper picks whole catfish off a table one at a time and places each with the same heading. A camera on the arm and YOLO models find each fish's pose, a vision-language model (VLM) picks which fish is next, and fixed code checks every decision and owns every motion, safety and retry limit.
 
-> **Status:** Fall 2026 is the design term. The Vision data pipeline (`Vision/data/`) works; `rfp_vision`, `rfp_arm` and `rfp_controlsys` are skeletons. Building, training and trials start next term.
+> **Status:** Fall 2026 is the design term. The Vision data pipeline (`Vision/data/`) works. A first pick-and-place cycle ([how to run it](ControlSys/README.md#running-pick-and-place)) runs offline on recordings and is tested against simulated hardware; it has not moved the real arm yet. The VLM, the pose model and the calibration tools are still to come.
 
 ## How the parts work together
 
