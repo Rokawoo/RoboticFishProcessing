@@ -21,6 +21,8 @@ pyrealsense2>=2.51.1    # RealSense recordings (.bag, .db3)
 albumentations>=2.0     # augment_images.py
 mlflow                  # training run tracking
 
+# Arm and Control also use numpy, opencv-python and pyyaml from the Vision list above
+pyserial                # the gripper's board (ESP32) on a serial port
 # Control
 openai                  # VLM client (vLLM's OpenAI-compatible API)
 

@@ -29,8 +29,13 @@ vision = [
 arm = [
     "numpy",
     "opencv-python",
+    "pyyaml",               # configs/workcell.yaml
+    "pyserial",             # the gripper's board on a serial port
 ]
-control = [
+control = [                 # the cycle also needs the vision and arm extras
+    "numpy",
+    "opencv-python",
+    "pyyaml",
     "openai",
 ]
 analysis = [

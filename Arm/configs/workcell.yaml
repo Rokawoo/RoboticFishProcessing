@@ -1,0 +1,118 @@
+# The workcell: frames, tool, zones, observation poses, placement slots, limits (SF-11).
+# Loaded before any motion by rfp_arm.workcell; unknown entries are errors.
+#
+# Units: meters, degrees, seconds. Every position is in the arm base frame {B}
+# (MoveIt's base_link: z up, origin at the middle of the base).
+#
+# !! THE VALUES BELOW ARE PLACEHOLDERS for simulation, not a measured cell. Before the
+# !! real arm moves: measure the table, zones and tool, teach the observation poses,
+# !! calibrate the camera, then set `verified: true`. Dry runs and real runs refuse to
+# !! start while it is false.
+verified: false
+
+robot:
+  group: fairino5_v6_group        # MoveIt planning group (fairino5_v6_moveit2_config)
+  base_frame: base_link
+  # Last link of the group. Its origin is on the j6 axis; the URDF has no flange link.
+  # By the FR5's dimensions the flange face should be 100 mm further along +z: check it
+  # (pick_place.py --mode check compares it with the controller's flange pose).
+  tip_link: wrist3_link
+  joints: [j1, j2, j3, j4, j5, j6]
+
+tool:
+  # TCP in the tip link frame (AS-65): center of the cup footprint, in the plane of the
+  # uncompressed cup faces; z out of the cups, x along the footprint's long side.
+  tcp: {xyz: [0.0, 0.0, 0.220], rpy_deg: [0, 0, 0]}
+  # Cups, bracket and camera as one box in the tip link frame, for MoveIt's collision
+  # checks. Keep its far end short of the cup faces, or reaching a fish counts as a hit.
+  body: {x: [-0.08, 0.08], y: [-0.13, 0.06], z: [0.06, 0.20]}
+
+camera:
+  # The camera's optical frame (z out of the lens, x right, y down in the image) in the
+  # tip link frame: the hand-eye calibration result (AS-60). Keep the lens at least 70 mm
+  # above the cup faces: the D405 measures no depth closer than that.
+  mount: {xyz: [0.0, -0.090, 0.130], rpy_deg: [0, 0, 0]}
+  calibrated: false               # true once calibrated and checked (AS-61); real runs need it
+  calibration_version: nominal-0  # recorded in the run log (AS-64)
+
+table:
+  z: 0.0            # table surface
+  clearance: 0.005  # the cups and the camera stay at least this far above it (SF-13)
+
+zones:
+  # The work zone is the table (SF-15). A fish reaches half its length past its grasp
+  # point, so the table has to be that much larger than the pick area on every side.
+  work: {x: [-0.40, 1.30], y: [-0.85, 0.85], height: 1.0}
+  pick_area: {x: [0.20, 0.60], y: [-0.35, 0.15]}             # SY-15
+  placement: {x: [0.25, 0.55], y: [0.30, 0.72]}              # AS-51
+  exclusion:                                                 # SF-12
+    - {name: operator side, x: [1.00, 1.30], y: [-0.85, 0.85], z: [0.0, 1.5]}
+
+observation:
+  height: 0.45      # camera above the table (AS-11)
+  # Each pose: where the camera looks straight down from (camera_xy; yaw_deg turns the
+  # image's x axis from +X toward +Y), or taught joint angles (joints_deg: [j1, ..., j6],
+  # from `ros2 topic echo /joint_states --once`, converted to degrees). Taught joints are
+  # the safer choice on the real arm: the posture is exactly the one taught. Teach them
+  # with j6 near the middle of its range: from there the wrist turns up to 135 degrees
+  # either way to grasp a fish and bring it to the placement heading.
+  poses:
+    - {name: right, camera_xy: [0.40, -0.18], yaw_deg: 90}
+    - {name: left, camera_xy: [0.40, 0.02], yaw_deg: 90}
+
+placement:
+  heading_deg: 0    # placed fish point head toward +X (AS-52)
+  slots:            # slot centers, filled in this order (AS-56)
+    - [0.38, 0.40]
+    - [0.38, 0.60]
+
+motion:
+  tcp_speed_max: 0.25           # m/s, every motion (SF-21, AS-42); plans above it are refused
+  tcp_accel_max: 0.5            # m/s2 on straight moves (AS-43)
+  approach_speed: 0.05          # m/s onto the fish (AS-22)
+  carry_speed: 0.15             # m/s, straight moves with a fish
+  free_speed: 0.15              # m/s, straight moves without a fish
+  ptp_velocity_scale: 0.10      # point-to-point: share of the joint speed limits
+  ptp_acceleration_scale: 0.10
+  max_joint_travel_deg: 200     # a plan turning a joint further is refused
+  goal_tolerance: 0.002         # m (AS-12 asks for 0.001: tighten once the arm is characterized)
+  planning_time: 5.0
+  pilz_max_trans_vel: 1.0       # MoveIt's pilz_cartesian_limits.yaml, used if it can't be read
+  pilz_max_trans_acc: 2.25
+  carry_ptp_fallback: false     # carry point-to-point if no straight path is found
+
+grasp:                          # Table AS-1
+  pregrasp_distance: 0.10
+  press_distance: 0.010
+  dry_run_standoff: 0.05
+  lift_length_share: 0.6
+  lift_margin: 0.05
+  lift_height_max: 0.50
+  release_clearance: 0.015
+  retreat_distance: 0.10
+  seal_timeout: 1.0
+  seal_dwell: 0.5
+  drop_time: 0.1
+  release_timeout: 1.0
+  max_approach_tilt_deg: 15
+
+gripper:
+  # What switches the vacuum of the six cups:
+  #   serial      a microcontroller board (ESP32) on a serial port: one text line turns the
+  #               vacuum on, another off. No feedback: the camera confirms the hold.
+  #   controller  the FR5 control box's digital I/O (HW-33, HW-34), with a vacuum switch.
+  driver: serial
+  # PLACEHOLDERS: set the port, the baud rate and the lines your board's firmware expects.
+  serial_port: /dev/ttyUSB0     # Windows: COM3, ...
+  serial_baud: 115200
+  serial_on: "1"                # sent with a line feed to turn the vacuum on
+  serial_off: "0"
+  serial_boot_s: 2.0            # an ESP32 may restart when its port is opened: wait this long
+  # driver: controller only
+  vacuum_do: 0
+  blowoff_do: 1
+  holding_di: 0
+  vacuum_di: 1
+  vacuum_switch: true           # false: no switch wired; the camera confirms the hold
+  blowoff_time: 0.2
+  state_timeout: 0.5
