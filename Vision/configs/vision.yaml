@@ -1,0 +1,55 @@
+# Vision thresholds and camera settings (rfp_vision.settings.VisionSettings).
+# Units: meters, degrees, pixels. Unknown names are errors. Defaults are the Requirement
+# Spec's values; the ones marked "tune" are first guesses to adjust on the real cell.
+
+# Camera (VS-11). hfov_deg is only used for cameras that don't report intrinsics
+# (webcams, plain videos); the D405 reports its own.
+width: 1280
+height: 720
+fps: 30
+hfov_deg: 87.0
+
+# Detection (VS-20, VS-61, VS-24)
+predict_conf: 0.25          # the model's own threshold: weaker detections aren't listed
+min_confidence: 0.50        # below: low_confidence
+min_area_share: 0.03        # of the frame; smaller detections aren't fish
+border_margin_px: 8         # an outline this close to the image edge: out_of_frame
+
+# Depth (VS-45, VS-66). With use_depth false, or a camera without depth, each fish is
+# placed on the table plane with default_thickness_m.
+use_depth: true
+depth_range_m: [0.10, 0.50]
+depth_window_m: 0.025
+min_depth_valid: 0.80
+default_thickness_m: 0.10
+outline_height_share: 0.5   # tune: the outline is seen at about half the fish's height
+
+# Heading from the outline's shape (fish_heading.py). With require_heading false, a fish
+# whose head end is unknown is still picked, and placed along the slot's axis.
+require_heading: true
+min_heading_confidence: 0.6 # tune
+
+# Geometry checks (VS-65: Table SY-1 +- 10%; VS-33). Widen for other stand-in fish.
+check_size: true
+length_range_m: [0.54, 0.825]
+width_range_m: [0.0945, 0.154]
+thickness_range_m: [0.081, 0.132]
+cup_footprint_m: [0.14, 0.085]   # along and across the body (HW-31)
+overlap_margin_px: 6
+
+# A fish is valid only if it is at the same place in this many frames in a row (VS-52)
+stable_frames: 3
+stable_position_m: 0.005
+stable_heading_deg: 5
+match_distance_m: 0.05
+
+# Vision check that a held fish is still on the gripper (hold_monitor.py). All "tune".
+hold:
+  use_mask: true            # the fish's outline stays where it was in the image
+  use_depth: true           # the surface close to the camera stays at its distance
+  near_m: 0.25              # a held fish is closer than this; the table is farther
+  depth_tolerance_m: 0.04
+  min_depth_share: 0.5
+  min_region_share: 0.03
+  min_iou: 0.5
+  lost_frames: 3

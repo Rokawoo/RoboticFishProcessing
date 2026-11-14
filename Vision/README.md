@@ -43,9 +43,12 @@ All labeling tools read and write the same YOLO polygon files. Fix labels in the
 
 ## Runtime (`rfp_vision`)
 
-- **Image acquisition (VS-10):** aligned color and depth from the RealSense D405 through realsense2_camera
-- **Detection and segmentation (VS-20):** YOLO26 segmentation model
-- **Keypoints (VS-30):** YOLO26 pose model
-- **Pose and geometry (VS-40):** position and heading in {B} from depth and the hand-eye calibration; head direction from the mask's shape, kept while the head is out of frame (`fish_heading.py`, requirements only so far)
-- **Output (VS-50, IF-20):** fish list topic to ControlSys
-- **Failure flagging (VS-60):** checks that mark unreliable detections
+Plain Python, no ROS: the Control System calls it directly (`vision_system.py`), and it runs on recordings. Settings: `configs/vision.yaml`.
+
+- **Image acquisition (VS-10):** `camera.py`: the RealSense D405 with depth aligned to color (pyrealsense2), RealSense recordings, or any OpenCV camera or video (color only: fish are then placed on the table plane)
+- **Detection and segmentation (VS-20):** `detector.py`: the YOLO26 segmentation model of a training run
+- **Keypoints (VS-30):** YOLO26 pose model (not trained yet; the grasp point is the outline's centroid)
+- **Pose and geometry (VS-40):** `fish_list.py`, `geometry.py`: position, heading and size in {B} from depth and the camera's pose. `fish_heading.py`: head direction from the outline's shape (one frame; keeping it while the head is out of frame is requirements only so far)
+- **Output (VS-50, IF-20):** `FishList` with the fields of Tables IF-1 and IF-2 (`as_record()` gives them in mm and degrees)
+- **Failure flagging (VS-60):** the checks of Table VS-2 except `covered` and `invalid_keypoints`
+- **Hold check:** `hold_monitor.py`: whether a held fish is still on the gripper, from its outline and the depth close to the camera staying put in the image while the arm moves
