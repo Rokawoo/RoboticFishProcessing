@@ -1,0 +1,18 @@
+# The Control System's fixed limits (rfp_controlsys.settings.ControlSettings, CS-30).
+# They don't change while a run is in progress (CS-33). Unknown names are errors.
+
+max_attempts_per_fish: 3      # then the fish is skipped for the rest of the run (CS-62)
+max_failed_cycles: 3          # failed cycles in a row, then pause for the operator (CS-63)
+empty_passes_to_end: 3        # passes over the observation poses with no fish: run ends (SY-22)
+max_reobserve: 3              # "reobserve" answers in a row, then the fallback rule
+fish_list_max_age_s: 1.0      # an older fish list starts no decision or grasp (CS-12, CS-53)
+recheck_position_m: 0.010     # re-check before a grasp: the fish moved more = new decision (CS-41)
+recheck_heading_deg: 10
+same_fish_m: 0.05             # a fish found again within this distance keeps its attempt count
+settle_s: 0.3                 # wait after a move before frames are used (VS-13)
+
+# Lift only when the hold is confirmed by the vacuum switch or by vision. Set false to
+# lift blind while neither is available (no switch wired, camera too close for a cue).
+require_hold_confirmation: true
+vision_hold_check: true       # watch the held fish with the camera while it is carried
+save_images: true             # the annotated observation of every cycle, next to the CSV
