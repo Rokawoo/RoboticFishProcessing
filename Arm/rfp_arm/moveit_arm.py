@@ -19,6 +19,7 @@ from collections.abc import Callable, Sequence
 
 import numpy as np
 
+from rfp_arm.contact import ContactEstimator
 from rfp_arm.interfaces import (
     E_COMM,
     E_MOTION,
@@ -81,11 +82,13 @@ class MoveItArm:
         confirm: Callable[[str], bool] | None = None,
         fault: Callable[[], str | None] | None = None,
         log: Callable[[str], None] = print,
+        torques: Callable[[], Sequence[float] | None] | None = None,
     ):
         """
         `confirm`: asked with a description of each planned move before it runs; False
         cancels it (step mode). `fault`: the controller's fault state (fairino.py), polled
-        during every move; None on mock hardware.
+        during every move; None on mock hardware. `torques`: the joint torques (N m, in
+        joint order) the controller reports, to feel contact with; None: the arm can't feel.
         """
         from moveit_msgs.action import ExecuteTrajectory, MoveGroup
         from moveit_msgs.srv import ApplyPlanningScene
@@ -99,6 +102,8 @@ class MoveItArm:
         self.workcell = workcell
         self._confirm = confirm
         self._fault = fault
+        self._torques = torques
+        self._contact: ContactEstimator | None = None
         self._log = log
         self._lock = threading.Lock()
         self._joints: dict[str, float] = {}
@@ -259,6 +264,16 @@ class MoveItArm:
         if tcp_pose is None:
             return joints[self.workcell.joints[-1]]
         return wrist_angle_at(self._chain, joints, self.workcell.tip_of_tcp(tcp_pose))
+
+    def contact_force(self, zero: bool = False) -> float | None:
+        torques = self._torques() if self._torques else None
+        if torques is None:
+            return None
+        if self._contact is None:
+            self._contact = ContactEstimator(self._chain, self.workcell.tcp)
+        if zero or not self._contact.zeroed:
+            self._contact.zero(torques)
+        return self._contact.force(self.joints(), torques)
 
     def set_held_fish(self, length: float) -> None:
         self._fish_length = length

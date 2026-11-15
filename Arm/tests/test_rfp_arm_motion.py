@@ -501,15 +501,15 @@ def test_grasp_plan_refuses_what_the_limits_forbid():
 class Rig:
     """A simulated arm, a gripper and a GraspSequence wired together."""
 
-    def __init__(self, gripper=None, **options):
+    def __init__(self, gripper=None, cell=CELL, **options):
         self.clock = FakeClock()
-        self.arm = SimArm(CELL)
+        self.arm = SimArm(cell)
         self.gripper = gripper or SimGripper()
         self.steps: list[str] = []
         self.ticks = 0
         self.at_tick = {}  # tick number -> action
         self.sequence = GraspSequence(
-            self.arm, self.gripper, CELL, tick=self.tick, on_step=self.steps.append,
+            self.arm, self.gripper, cell, tick=self.tick, on_step=self.steps.append,
             clock=self.clock, sleep=self.clock.sleep, **options,
         )  # fmt: skip
 
@@ -773,3 +773,124 @@ def test_grasp_takes_the_direction_with_the_least_wrist_twist():
     assert arm.wrist_angle(
         poses.tool_down((0.4, 0.0, 0.3), poses.yaw_of(arm.tcp_pose()) + 0.5)
     ) == (pytest.approx(0.5))
+
+
+# ---------------------------------------------------------------------------
+# Onto the fish: along its surface's slope, and feeling for it
+# ---------------------------------------------------------------------------
+def sloping_fish(tilt_deg: float, heading_deg: float = 100.0) -> np.ndarray:
+    """A grasp pose as Vision gives it for a surface climbing `tilt_deg` toward the head."""
+    pose = fish_pose(heading_deg=heading_deg)
+    pose[:3, :3] = pose[:3, :3] @ poses.rot_y(math.radians(tilt_deg))
+    return pose
+
+
+def test_the_approach_follows_a_sloping_surface():
+    fish = sloping_fish(10.0)
+    p = plan_grasp(CELL, fish, True, 0.60, 0.10, SLOT, math.radians(90))
+    axis = fish[:3, 2]  # into the surface: 10 degrees off straight down
+    assert poses.tilt_from_down(p.surface) == pytest.approx(math.radians(10))
+    assert np.allclose(p.at_depth(0.0), p.surface) and np.allclose(p.surface[:3, 3], fish[:3, 3])
+    assert np.allclose(p.pregrasp[:3, 3], fish[:3, 3] - 0.10 * axis)  # back along the axis
+    assert np.allclose(p.approach_end[:3, 3], fish[:3, 3] + 0.010 * axis)
+    assert np.allclose(p.pregrasp[:3, :3], p.approach_end[:3, :3])  # a straight push
+    assert np.allclose(p.lift[:2, 3], p.approach_end[:2, 3])  # then straight up, tool level again
+    assert poses.tilt_from_down(p.lift) == pytest.approx(0.0, abs=1e-9) and p.lift[2, 3] == 0.41
+    dry = plan_grasp(CELL, fish, True, 0.60, 0.10, SLOT, math.radians(90), dry_run=True)
+    assert np.allclose(dry.approach_end[:3, 3], fish[:3, 3] - 0.05 * axis)
+    # head the other way: the cups turn about the same axis, still square on the surface
+    other = plan_grasp(CELL, sloping_fish(10.0, -80.0), True, 0.60, 0.10, SLOT, math.radians(90))
+    assert round(math.degrees(poses.yaw_of(other.surface))) == 100
+    assert poses.tilt_from_down(other.surface) == pytest.approx(math.radians(10))
+    assert other.surface[2, 0] < 0 < fish[2, 0]  # their x axes run opposite ways along the slope
+    with pytest.raises(ArmError, match="20 deg off vertical"):
+        plan_grasp(CELL, sloping_fish(20.0), True, 0.60, 0.10, SLOT, 0.0)
+    rig = Rig()
+    rig.sequence.run(p)
+    assert tuple(rig.steps) == STEPS and np.allclose(rig.arm.moves[1][1], p.approach_end)
+
+
+def lowest(rig) -> float:
+    return min(pose[2, 3] for _, pose in rig.arm.moves)
+
+
+def test_the_cups_are_lowered_until_the_fish_pushes_back():
+    rig = Rig()
+    rig.arm.contact_surface = 0.095  # the fish is 5 mm lower than the camera said (0.100)
+    rig.run()
+    assert tuple(rig.steps) == STEPS
+    # 15 N on a 3 N/mm surface: 5 mm into it, so 10 mm past the expected height, in 3 mm steps
+    felt = rig.sequence.contact_depth
+    assert felt == pytest.approx(0.012, abs=1e-6)
+    assert 0.100 - felt - 0.010 - 1e-9 <= lowest(rig) < 0.100 - felt  # pressed on, not through
+    start = next(pose for kind, pose in rig.arm.moves if kind == "lin")
+    assert start[2, 3] == pytest.approx(0.115)  # the slow part starts 15 mm above
+
+    hard = Rig()
+    hard.arm.contact_surface, hard.arm.contact_stiffness = 0.100, 20000.0
+    hard.run()  # stiff: the force limit is reached before the press distance
+    assert hard.sequence.contact_depth == pytest.approx(0.003) and lowest(hard) == pytest.approx(
+        0.097
+    )
+
+    nothing = Rig()
+    nothing.arm.contact_surface = 0.05  # no fish under the cups
+    error = nothing.fails()
+    assert error.code == E_NO_SEAL and "nothing felt 25 mm past" in error.message
+    assert nothing.sequence.step == "approach" and lowest(nothing) == pytest.approx(0.075)
+    assert nothing.gripper.state() != GripperState.VACUUM_OFF  # still on: Control lets go
+
+    blind = Rig(cell=make_workcell(lambda d: d["grasp"].update(feel_contact=False)))
+    blind.arm.contact_surface = 0.095
+    blind.run()  # switched off: to the planned depth, as an arm that can't feel does
+    assert blind.sequence.contact_depth is None and lowest(blind) == pytest.approx(0.090)
+    dry = Rig(gripper=NoGripper())
+    dry.arm.contact_surface = 0.095
+    dry.run(dry_run=True)
+    assert dry.sequence.contact_depth is None and lowest(dry) == pytest.approx(0.115)
+
+
+def test_controller_commands_bracket_the_press():
+    soft = make_workcell(
+        lambda d: d["grasp"].update(
+            press_start_commands=["Soft(1)"], press_end_commands=["Soft(0)"]
+        )
+    )
+    sent = []
+
+    def controller(text):
+        sent.append((text, rig.sequence.step))
+        return "0"
+
+    rig = Rig(cell=soft, controller=controller)
+    rig.run()
+    assert sent == [("Soft(1)", "approach"), ("Soft(0)", "confirm hold")]
+    sent.clear()
+    rig = Rig(cell=soft, gripper=SimGripper(seals=False), controller=controller)
+    assert rig.fails().code == E_NO_SEAL and [text for text, _ in sent] == ["Soft(1)", "Soft(0)"]
+    rig = Rig(cell=soft, controller=lambda text: "-1")
+    error = rig.fails()
+    assert error.code == "E_COMM" and "answered '-1' to Soft(1)" in error.message
+    assert [kind for kind, _ in rig.arm.moves] == ["ptp"]  # it didn't go down
+    Rig(cell=soft).run()  # no controller to send them to (simulation): skipped
+
+
+def test_contact_force_is_read_from_joint_torques():
+    from rfp_arm.contact import ContactEstimator
+
+    joints = dict(zip(FR5.joint_names, joints_for(0.40, -0.10, 0.20)))
+    estimator = ContactEstimator(FR5, CELL.tcp)
+    pattern = estimator.pattern(joints)  # N m per N along the tool axis
+    assert abs(pattern[1]) > 0.2 and abs(pattern[5]) < 1e-6  # the shoulder feels it, j6 doesn't
+    holding = 3.0 * np.cos(list(joints.values()))  # what the motors give with nothing touching
+    assert not estimator.zeroed
+    estimator.zero(holding)
+    assert estimator.force(joints, holding) == 0.0
+    assert estimator.force(joints, holding - 25.0 * pattern) == pytest.approx(25.0)
+    assert estimator.force(joints, holding + 25.0 * pattern) == pytest.approx(25.0)  # either sign
+    sideways = np.cross(pattern[:3], [0, 0, 1])  # a change that isn't a push on the tool
+    assert estimator.force(joints, holding + np.r_[sideways, 0, 0, 0]) < 1.0
+    arm = SimArm(CELL)
+    assert arm.contact_force() is None  # nothing to feel unless a surface is set
+    arm.contact_surface = 0.50
+    assert arm.contact_force(zero=True) == 0.0 and arm.contact_force() == 0.0

@@ -23,18 +23,18 @@ def interpolate(start: np.ndarray, end: np.ndarray, share: float) -> np.ndarray:
     relative = start[:3, :3].T @ end[:3, :3]
     angle = rotation_angle(np.eye(3), relative)
     rotation = start[:3, :3]
-    if angle > 1e-9:
-        if math.pi - angle < 1e-6:  # half turn: the axis is the eigenvector of eigenvalue 1
-            values, vectors = np.linalg.eig(relative)
-            axis = np.real(vectors[:, int(np.argmin(np.abs(values - 1.0)))])
-        else:
-            axis = np.array(
-                [
-                    relative[2, 1] - relative[1, 2],
-                    relative[0, 2] - relative[2, 0],
-                    relative[1, 0] - relative[0, 1],
-                ]
-            )
+    axis = np.array(
+        [
+            relative[2, 1] - relative[1, 2],
+            relative[0, 2] - relative[2, 0],
+            relative[1, 0] - relative[0, 1],
+        ]
+    )
+    if math.pi - angle < 1e-6:  # half turn: the axis is the eigenvector of eigenvalue 1
+        values, vectors = np.linalg.eig(relative)
+        axis = np.real(vectors[:, int(np.argmin(np.abs(values - 1.0)))])
+    # Equal orientations can differ by rounding: an angle of 1e-8 with no axis to turn about
+    if np.linalg.norm(axis) > 1e-9:
         rotation = rotation @ axis_rotation(axis, angle * share)
     return from_parts(rotation, start[:3, 3] + (end[:3, 3] - start[:3, 3]) * share)
 
@@ -64,6 +64,10 @@ class SimArm:
             )
         self._tcp = np.array(start_tcp, float)
         self._start_yaw = yaw_of(self._tcp)
+        # Something springy the cups meet at this height (m), to feel in tests; None: nothing
+        self.contact_surface: float | None = None
+        self.contact_stiffness = 3000.0  # N/m, about what six bellows cups give
+        self._contact_zero = 0.0
         self.moves: list[tuple[str, np.ndarray]] = []  # (kind, target TCP pose) of each move
         self.fail: Callable[[str, np.ndarray], str | None] | None = None  # test hook: E_MOTION
 
@@ -74,6 +78,14 @@ class SimArm:
         # no joints here: the wrist turns with the tool's yaw, from 0 where the arm started
         pose = self._tcp if tcp_pose is None else tcp_pose
         return wrap(yaw_of(pose) - self._start_yaw)
+
+    def contact_force(self, zero: bool = False) -> float | None:
+        if self.contact_surface is None:
+            return None
+        pressed = max(0.0, self.contact_surface - self._tcp[2, 3]) * self.contact_stiffness
+        if zero:
+            self._contact_zero = pressed
+        return pressed - self._contact_zero
 
     def set_held_fish(self, length: float) -> None:
         self._fish_length = length

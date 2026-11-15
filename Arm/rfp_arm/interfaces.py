@@ -75,6 +75,10 @@ class Arm(Protocol):
         """Angle of the last joint (rad): now, or what it would be with the tool pointing
         down at `tcp_pose`. None if the arm can't tell."""
 
+    def contact_force(self, zero: bool = False) -> float | None:
+        """Force (N) pressing back on the tool along its axis since the last call with
+        `zero=True`, read with the arm at rest. None if the arm can't feel."""
+
     def set_held_fish(self, length: float) -> None:
         """Tell the arm a fish of this length (m) hangs on the cups; 0 = nothing. From then
         on its checks keep both ends of the fish inside the work zone too (SF-10)."""

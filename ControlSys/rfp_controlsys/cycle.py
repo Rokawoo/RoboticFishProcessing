@@ -125,12 +125,14 @@ class PickPlaceCycle:
         vision_hold: bool = True,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        controller: Callable[[str], str] | None = None,
     ):
         """
         `vision`: a VisionSystem. `console`: a Console. `log`: a RunLog or None.
         `dry_run`: the arm moves, the vacuum stays off, approaches stop short (CS-93).
         `vision_hold`: watch a held fish with the camera (off where the camera isn't on
-        the arm that moves: simulation, offline).
+        the arm that moves: simulation, offline). `controller`: sends a command line to
+        the arm's controller (FairinoIO.send), for the grasp settings' press commands.
         """
         self.arm = arm
         self.gripper = gripper
@@ -144,6 +146,7 @@ class PickPlaceCycle:
         self.vision_hold = vision_hold and settings.vision_hold_check and not dry_run
         self._clock = clock
         self._sleep = sleep
+        self._controller = controller
         self.report = RunReport()
         self.sequence: GraspSequence | None = None  # the grasp in progress or last run
         self._attempts = Attempts(settings.same_fish_m)
@@ -371,6 +374,7 @@ class PickPlaceCycle:
             "heading_known": fish.heading_known,
             "length_mm": round(fish.total_length * 1000),
             "thickness_mm": round(fish.thickness * 1000),
+            "tilt_deg": round(math.degrees(fish.surface_tilt), 1),
             "confidence": round(fish.confidence, 2),
             "slot": self._slot + 1,
             "attempt": self._attempts.count(point) + 1,
@@ -386,6 +390,7 @@ class PickPlaceCycle:
             require_hold_confirmation=self.settings.require_hold_confirmation,
             clock=self._clock,
             sleep=self._sleep,
+            controller=self._controller,
         )
         try:
             plan = plan_grasp(
@@ -412,6 +417,8 @@ class PickPlaceCycle:
 
     def _log_row(self, row: dict, started: float) -> None:
         row["duration_s"] = round(self._clock() - started, 1)
+        felt = self.sequence.contact_depth
+        row["contact_mm"] = "" if felt is None else round(felt * 1000, 1)
         if self.log is not None:
             self.log.cycle(row)
 

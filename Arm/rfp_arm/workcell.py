@@ -116,7 +116,21 @@ class GraspSettings:
     release_dwell: float = 1.0  # without a vacuum switch: wait this long for it to let go
     drop_time: float = 0.1  # holding not reported this long while carrying: E_DROP
     release_timeout: float = 1.0  # vacuum still there this long after release: E_RELEASE
-    max_approach_tilt_deg: float = 15.0  # only near-vertical approaches are supported so far
+    max_approach_tilt_deg: float = 15.0  # the cups lean at most this far onto a fish (AS-21)
+    # Feeling for the fish (arms that report joint torques): from feel_start above where
+    # vision saw the surface, down in steps until something pushes back, then press.
+    feel_contact: bool = True
+    feel_start: float = 0.015  # m
+    feel_step: float = 0.003  # m
+    feel_speed: float = 0.01  # m/s
+    feel_settle: float = 0.15  # s at rest before each reading
+    contact_force: float = 15.0  # N pushing back: the cups are on the fish
+    press_force_max: float = 40.0  # N: stop pressing, whatever press_distance says
+    feel_max_depth: float = 0.025  # m past the expected surface with no contact: E_NO_SEAL
+    # Controller commands (ros2_cmd_server lines) sent before pressing and after the hold
+    # is confirmed, e.g. to make the wrist compliant while the cups settle
+    press_start_commands: tuple[str, ...] = ()
+    press_end_commands: tuple[str, ...] = ()
 
 
 @dataclass

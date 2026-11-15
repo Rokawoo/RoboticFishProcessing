@@ -5,8 +5,10 @@ placement slot into the TCP poses of the nine steps and checks them against the 
 fails, with its Table AS-2 error code (AS-25). The same code runs the simulated arm, a dry
 run and the real thing. No ROS.
 
-Only approaches straight down are planned so far (the cups meet a fish lying on its side
-within AS-21's 15 degrees).
+The approach follows the grasp pose's z axis, which the Vision System lays square onto
+the fish's surface (within AS-21's 15 degrees of straight down). On an arm that reports
+joint torques the last centimeters are felt: down in small steps until the fish pushes
+back, then pressed on.
 """
 
 import math
@@ -18,6 +20,7 @@ import numpy as np
 
 from rfp_arm.gripper import wait_for
 from rfp_arm.interfaces import (
+    E_COMM,
     E_DROP,
     E_MOTION,
     E_NO_SEAL,
@@ -30,7 +33,7 @@ from rfp_arm.interfaces import (
     MotionAborted,
     Tick,
 )
-from rfp_arm.poses import tilt_from_down, tool_down, wrap, yaw_of
+from rfp_arm.poses import rot_z, tilt_from_down, tool_down, wrap, yaw_of
 from rfp_arm.workcell import Workcell
 
 STEPS = ("pre-grasp", "vacuum on", "approach", "confirm hold", "lift", "carry", "lower",
@@ -50,6 +53,13 @@ class GraspPlan:
     fish_length: float
     turn: float  # rad the fish is turned between pick and place
     dry_run: bool
+    surface: np.ndarray  # the cups just touching the fish where vision saw its surface
+
+    def at_depth(self, depth: float) -> np.ndarray:
+        """The TCP pose `depth` m past the fish's surface along the approach (< 0: short of it)."""
+        pose = self.surface.copy()
+        pose[:3, 3] += pose[:3, 2] * depth
+        return pose
 
     def poses(self) -> dict[str, np.ndarray]:
         return {
@@ -84,8 +94,11 @@ def plan_grasp(
     g = workcell.grasp
     point = grasp_pose[:3, 3]
     tilt = math.degrees(tilt_from_down(grasp_pose))
-    if tilt > g.max_approach_tilt_deg:
-        raise ArmError(E_MOTION, f"approach {tilt:.0f} deg off vertical isn't supported yet")
+    if tilt > g.max_approach_tilt_deg + 0.01:
+        raise ArmError(
+            E_MOTION,
+            f"approach {tilt:.0f} deg off vertical (at most {g.max_approach_tilt_deg:.0f})",
+        )
     if not workcell.pick_area.contains(point):
         raise ArmError(E_MOTION, "the grasp point is outside the pick area (CS-13)")
     if not workcell.placement_zone.contains(slot):
@@ -98,7 +111,6 @@ def plan_grasp(
 
     x, y, z = point
     table = workcell.table_z
-    end_z = z + g.dry_run_standoff if dry_run else z - g.press_distance
     lift_z = table + min(g.lift_length_share * fish_length + g.lift_margin, g.lift_height_max)
     lift_z = max(lift_z, z + g.lift_margin)
     release_z = table + max(thickness, 0.0) + g.release_clearance
@@ -118,8 +130,8 @@ def plan_grasp(
         if None in angles:  # the arm can't tell: the wrist turns as the tool's yaw does
             start = wrap(grasp_yaw - tool_yaw)
             angles = [middle + start, middle + start + turn]
-        ways.append((max(abs(a - middle) for a in angles), grasp_yaw, place_yaw, angles))
-    _, grasp_yaw, place_yaw, angles = min(ways, key=lambda way: way[0])
+        ways.append((max(abs(a - middle) for a in angles), flip, place_yaw, angles))
+    _, flip, place_yaw, angles = min(ways, key=lambda way: way[0])
     worst = max(angles, key=lambda a: abs(a - middle))
     if not low <= worst <= high:
         raise ArmError(
@@ -127,17 +139,26 @@ def plan_grasp(
             f"the wrist would turn to {math.degrees(worst):.0f} deg (range "
             f"{math.degrees(low):.0f} to {math.degrees(high):.0f}: the vacuum tube)",
         )
+    # The cups meet the fish along the grasp pose's z axis; `flip` turns them about it.
+    surface = grasp_pose.copy()
+    surface[:3, :3] = grasp_pose[:3, :3] @ rot_z(flip)
+    grasp_yaw = yaw_of(surface)
     plan = GraspPlan(
-        pregrasp=tool_down((x, y, z + g.pregrasp_distance), grasp_yaw),
-        approach_end=tool_down((x, y, end_z), grasp_yaw),
-        lift=tool_down((x, y, lift_z), grasp_yaw),
+        pregrasp=surface,
+        approach_end=surface,
+        lift=surface,
         carry=tool_down((slot[0], slot[1], lift_z), place_yaw),
         lower=tool_down((slot[0], slot[1], release_z), place_yaw),
         retreat=tool_down((slot[0], slot[1], release_z + g.retreat_distance), place_yaw),
         fish_length=fish_length,
         turn=turn,
         dry_run=dry_run,
+        surface=surface,
     )
+    plan.pregrasp = plan.at_depth(-g.pregrasp_distance)
+    plan.approach_end = plan.at_depth(-g.dry_run_standoff if dry_run else g.press_distance)
+    end = plan.approach_end[:3, 3]
+    plan.lift = tool_down((end[0], end[1], max(lift_z, end[2] + g.lift_margin)), grasp_yaw)
     for name, pose in plan.poses().items():
         held = fish_length if name in ("lift", "carry", "lower") else 0.0
         if problem := workcell.pose_problem(pose, held):
@@ -171,7 +192,10 @@ class GraspSequence:
         require_hold_confirmation: bool = True,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        controller: Callable[[str], str] | None = None,
     ):
+        """`controller`: sends a command line to the arm's controller and returns its
+        answer (FairinoIO.send), for the grasp settings' press_*_commands."""
         self.arm = arm
         self.gripper = gripper
         self.workcell = workcell
@@ -183,6 +207,8 @@ class GraspSequence:
         self._sleep = sleep
         self.step = ""  # the step running, or the one that failed
         self.holding = False  # a fish is (believed to be) on the cups
+        self.contact_depth: float | None = None  # m past the expected surface where it was felt
+        self._controller = controller
         self._not_holding_since: float | None = None
         self._release_z = math.inf  # TCP height at which a held fish rests on the table
 
@@ -197,12 +223,21 @@ class GraspSequence:
             self._begin("vacuum on")  # before the cups reach the fish (CS-44)
             self.gripper.vacuum_on()
         self._begin("approach")
-        self._move(lambda: self._lin(plan.approach_end, m.approach_speed))
-        if vacuum:
-            self._begin("confirm hold")
-            self._confirm_hold()
-            self.holding = True
-            self.arm.set_held_fish(plan.fish_length)
+        try:
+            self._send(self.workcell.grasp.press_start_commands)
+            self._move(lambda: self._approach(plan))
+            if vacuum:
+                self._begin("confirm hold")
+                self._confirm_hold()
+                self.holding = True
+                self.arm.set_held_fish(plan.fish_length)
+        except BaseException:
+            try:  # whatever was switched on for the press goes off again
+                self._send(self.workcell.grasp.press_end_commands)
+            except ArmError:
+                pass
+            raise
+        self._send(self.workcell.grasp.press_end_commands)
         self._begin("lift")
         self._move(lambda: self._lin(plan.lift, m.carry_speed))
         self._begin("carry")
@@ -236,6 +271,45 @@ class GraspSequence:
 
     def _lin(self, pose: np.ndarray, speed: float) -> None:
         self.arm.move_lin(pose, speed, self.workcell.motion.tcp_accel_max, self._moving)
+
+    def _send(self, commands) -> None:
+        """Controller commands of the grasp settings; an answer other than "0" is an error."""
+        for command in commands if self._controller else ():
+            answer = self._controller(command)
+            if answer != "0":
+                raise self._error(E_COMM, f"the controller answered '{answer}' to {command}")
+
+    def _approach(self, plan: GraspPlan) -> None:
+        """Onto the fish. If the arm can feel: slowly down from just above where the fish
+        should be until it pushes back, then press; otherwise to the planned depth."""
+        g, m = self.workcell.grasp, self.workcell.motion
+        self.contact_depth = None
+        feel = g.feel_contact and not plan.dry_run and self.arm.contact_force() is not None
+        if not feel:
+            self._lin(plan.approach_end, m.approach_speed)
+            return
+        depth = -g.feel_start
+        self._lin(plan.at_depth(depth), m.approach_speed)
+        self._sleep(g.feel_settle)
+        self.arm.contact_force(zero=True)
+        while True:
+            force = self.arm.contact_force()
+            if self.contact_depth is None and force >= g.contact_force:
+                self.contact_depth = depth
+            if self.contact_depth is None:
+                limit = g.feel_max_depth
+                if depth >= limit - 1e-9:
+                    raise self._error(
+                        E_NO_SEAL,
+                        f"nothing felt {limit * 1000:.0f} mm past where the fish should be",
+                    )
+            else:
+                limit = self.contact_depth + g.press_distance
+                if depth >= limit - 1e-9 or force >= g.press_force_max:
+                    return
+            depth = min(depth + g.feel_step, limit)
+            self._lin(plan.at_depth(depth), g.feel_speed)
+            self._sleep(g.feel_settle)
 
     def _carry(self, pose: np.ndarray) -> None:
         try:

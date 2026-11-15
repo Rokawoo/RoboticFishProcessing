@@ -412,3 +412,36 @@ def test_the_arm_knows_its_wrist_angle_and_where_it_would_be(ros):
         careful.move_ptp(down(0.40, -0.10, 0.25, turn=-1.2))
     careful.move_joints(HOME)  # back toward the range: allowed
     assert robot.joints[5] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_the_arm_feels_a_surface_through_the_controller_torques(ros):
+    robot, link = ros(fairino=True)
+    robot.tcp = CELL.tcp
+    io = FairinoIO(link)
+    io.connect(timeout=2.0)
+    assert len(io.joint_torques()) == 6
+    arm = MoveItArm(link, CELL, fault=io.fault, torques=io.joint_torques, log=lambda text: None)
+    arm.connect(timeout=5.0)
+    above = down(0.40, -0.10, 0.20, turn=0.0)
+    arm.move_ptp(above)
+    time.sleep(0.05)
+    assert arm.contact_force(zero=True) == pytest.approx(0.0, abs=0.5)
+    robot.contact_z = 0.195  # something springy 5 mm below the cups: 3 N per mm
+    pressed = above.copy()
+    pressed[2, 3] = 0.185
+    arm.move_lin(pressed, 0.02, 0.5)
+    time.sleep(0.05)
+    assert arm.contact_force() == pytest.approx(30.0, abs=3.0)  # 10 mm into it
+    assert MoveItArm(link, CELL, log=lambda text: None).contact_force() is None  # no torques
+
+
+def test_grasp_feels_for_the_fish_on_the_fake_arm(ros):
+    quick = make_workcell(lambda d: d["grasp"].update(feel_settle=0.03))
+    robot, sequence, plan, steps, _ = grasp_rig(ros, quick)
+    robot.tcp = quick.tcp
+    robot.contact_z = 0.095  # 5 mm lower than the camera said
+    sequence.arm._torques = sequence.arm._fault.__self__.joint_torques  # the same FairinoIO
+    sequence.run(plan)
+    assert tuple(steps) == STEPS
+    assert sequence.contact_depth == pytest.approx(0.012, abs=0.0035)  # felt, a step either way
+    assert sum(r.planner_id == "LIN" for r in robot.requests) > 8  # the small steps down

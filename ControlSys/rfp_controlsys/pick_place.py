@@ -11,6 +11,7 @@ Usage:
     python pick_place.py --mode offline --device clip.mp4 --any-size --cycles 2
     python pick_place.py --mode sim --cycles 2            # MoveIt's mock hardware in RViz
     python pick_place.py --mode check                     # real arm: state, I/O, camera
+    python pick_place.py --mode feel                      # real arm: the force on the gripper
     python pick_place.py --mode dry-run --step            # THE ARM MOVES, vacuum off
     python pick_place.py --mode run                       # THE ARM MOVES, with vacuum
 
@@ -21,6 +22,9 @@ Modes, in the order to bring a cell up (SF-43):
     sim       The whole cycle on MoveIt with mock hardware; watch the arm in RViz (CS-92).
     check     Real arm, nothing moves: prints joint state, TCP pose, the controller's flange
               pose and I/O, the gripper state and what the camera sees.
+    feel      Real arm, nothing moves: prints the force the arm feels on the gripper from
+              its joint torques. Push on the cups by hand to see it, and set the grasp
+              settings' contact_force and press_force_max from what you read.
     dry-run   THE REAL ARM MOVES. Vacuum off, every approach stops 50 mm short (CS-93).
     run       THE REAL ARM MOVES and picks fish.
 
@@ -82,11 +86,12 @@ MODES = {
     "offline": "the whole cycle with a simulated arm and gripper, no ROS (recorded videos)",
     "sim": "the whole cycle on MoveIt's mock hardware, shown in RViz",
     "check": "real arm: read its state, I/O and the camera; nothing moves",
+    "feel": "real arm: show the force felt on the gripper, live; nothing moves",
     "dry-run": "THE REAL ARM MOVES: vacuum off, approaches stop 50 mm short",
     "run": "THE REAL ARM MOVES: pick and place with vacuum",
 }
-ROS_MODES = ("sim", "check", "dry-run", "run")
-REAL_MODES = ("check", "dry-run", "run")
+ROS_MODES = ("sim", "check", "feel", "dry-run", "run")
+REAL_MODES = ("check", "feel", "dry-run", "run")
 MOVING_MODES = ("dry-run", "run")
 
 
@@ -181,7 +186,13 @@ def moveit_arm(link, workcell: Workcell, console: Console, io=None):
     try:
         from rfp_arm.moveit_arm import MoveItArm
 
-        arm = MoveItArm(link, workcell, console.confirm_move, io.fault if io else None)
+        arm = MoveItArm(
+            link,
+            workcell,
+            console.confirm_move,
+            io.fault if io else None,
+            torques=io.joint_torques if io else None,
+        )
         arm.connect()
     except ImportError as e:
         sys.exit(f"❌ MoveIt 2's Python messages aren't available ({e}): install ros-humble-moveit")
@@ -272,6 +283,19 @@ def check(arm, io: FairinoIO, vision: VisionSystem, workcell: Workcell) -> None:
     print("\n✅ Check done. Nothing moved. Next: --mode dry-run --step")
 
 
+def feel(arm) -> None:
+    """Print the force the arm feels along the gripper's axis until Ctrl+C. Nothing moves."""
+    if arm.contact_force(zero=True) is None:
+        sys.exit("❌ The controller reports no joint torques: the arm can't feel contact.")
+    print("\nFeeling (Ctrl+C to stop). Zeroed now; push on the cups along the gripper's axis:")
+    try:
+        while True:
+            print(f"\r   {arm.contact_force():6.1f} N   ", end="", flush=True)
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        print("\nNext: set contact_force and press_force_max (grasp, Arm/configs/workcell.yaml)")
+
+
 def start_checks(mode: str, workcell: Workcell, io: FairinoIO | None, gripper) -> None:
     """SF-41: don't start moving the real arm unless these pass."""
     problems = []
@@ -320,6 +344,7 @@ def run_cycles(
     settings: ControlSettings,
     console: Console,
     max_cycles: int | None,
+    controller=None,
 ) -> None:
     log = RunLog(
         {
@@ -332,7 +357,7 @@ def run_cycles(
     )
     cycle = PickPlaceCycle(
         arm, gripper, vision, RuleSelector(), workcell, settings, console, log,
-        dry_run=mode == "dry-run", vision_hold=mode == "run",
+        dry_run=mode == "dry-run", vision_hold=mode == "run", controller=controller,
     )  # fmt: skip
     print(f"\nRunning ({mode}). Log: {log.folder}")
     stopped = ""
@@ -435,6 +460,9 @@ def main() -> None:
         if mode == "check":
             check(arm, io, vision, workcell)
             return
+        if mode == "feel":
+            feel(arm)
+            return
         if mode == "sim":
             gripper = SimGripper()
         elif mode == "dry-run":
@@ -444,7 +472,10 @@ def main() -> None:
         if mode in MOVING_MODES:
             start_checks(mode, workcell, io, gripper)
             confirm_real_motion(mode, args.yes)
-        run_cycles(mode, arm, gripper, vision, workcell, control_settings, console, args.cycles)
+        run_cycles(
+            mode, arm, gripper, vision, workcell, control_settings, console, args.cycles,
+            io.send if io else None,
+        )  # fmt: skip
     except ArmError as e:
         sys.exit(f"❌ {e}")
     except CameraError as e:

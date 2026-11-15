@@ -314,6 +314,9 @@ class FakeRobot:
         self.inputs = [False] * 16
         self.emergency_stop = False
         self.sealed = lambda: True  # whether the cups seal when the vacuum is on
+        self.tcp = np.eye(4)  # the tool, in the tip link: where a surface is felt
+        self.contact_z: float | None = None  # height of something springy under the tool
+        self.contact_stiffness = 3000.0  # N/m
         self.commands = []
         self.jobs = []
         self._subscribers: dict[str, list] = {}
@@ -537,11 +540,27 @@ class FakeRobot:
         self.inputs[0] = vacuum and self.sealed()
         word = lambda bits: sum(1 << i for i, on in enumerate(bits) if on)
         flange = self.tip()[:3, 3] * 1000
+        torques = self.joint_torques()
         state = message("fairino_msgs/msg/RobotNonrtState")(
             dgt_output_l=word(self.outputs) & 0xFF, dgt_output_h=word(self.outputs) >> 8,
             dgt_input_l=word(self.inputs) & 0xFF, dgt_input_h=word(self.inputs) >> 8,
             emg=int(self.emergency_stop),
             flange_x_cur_pos=float(flange[0]), flange_y_cur_pos=float(flange[1]),
             flange_z_cur_pos=float(flange[2]),
+            **{f"j{i + 1}_cur_tor": float(torques[i]) for i in range(6)},
         )  # fmt: skip
         return state
+
+    def joint_torques(self) -> np.ndarray:
+        """What holding the arm up takes (made up, changing with the posture), plus what a
+        springy surface under the tool adds: J^T times its push."""
+        torques = 3.0 * np.cos(self.joints)
+        tool = self.tip() @ self.tcp
+        if self.contact_z is not None and tool[2, 3] < self.contact_z:
+            push = np.array([0.0, 0.0, (self.contact_z - tool[2, 3]) * self.contact_stiffness])
+            for i in range(6):
+                nudged = self.joints.copy()
+                nudged[i] += 1e-6
+                moved = (FR5.fk(nudged) @ self.tcp)[:3, 3] - tool[:3, 3]
+                torques[i] -= moved / 1e-6 @ push  # the motors push back against it
+        return torques

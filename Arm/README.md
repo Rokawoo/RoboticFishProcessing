@@ -22,6 +22,8 @@ The Control System sees only `interfaces.py`: an `Arm` (move the TCP, stop), a `
 | `workcell.py` | Loads `configs/workcell.yaml`; says why a tool pose is not allowed (work zone, exclusion zones, table clearance, ends of a held fish) | no |
 | `grasp.py` | `plan_grasp`: the poses of Table AS-1 for a fish and a slot. `GraspSequence`: runs them, stops at the failed step with its error code | no |
 | `gripper.py` | The gripper in each form: `ValveGripper` (vacuum switched by the ESP32 valve board of `valve.py`: on/off only, the camera confirms the hold), `SuctionGripper` (control box I/O with a vacuum switch, Table AS-4), simulated and dry-run grippers | no |
+| `valve.py` | The valve board from the PC: `SerialValve` (USB) and `HttpValve` (Wi-Fi), every answer checked | no |
+| `contact.py` | Feels contact without a force sensor: the force along the tool axis from the change in joint torques | no |
 | `safety.py` | Checks every planned trajectory in fixed code before it runs: TCP speed, zones, joint travel | no |
 | `kinematics.py`, `poses.py` | FR5 forward kinematics (from the URDF) and pose math | no |
 | `sim.py` | Simulated arm for tests and offline runs | no |
@@ -33,7 +35,7 @@ The Control System sees only `interfaces.py`: an `Arm` (move the TCP, stop), a `
 ## Responsibilities
 
 - **Motion (AS-10, AS-40):** MoveIt 2 with the Pilz planner (straight LIN and PTP moves) within the fish handling limits
-- **Grasp sequence (AS-20):** pre-grasp, vacuum on, straight approach, confirm the hold, set the payload, lift, carry, lower, release with blow-off, retreat
+- **Grasp sequence (AS-20):** pre-grasp, vacuum on, straight approach, confirm the hold, set the payload, lift, carry, lower, release with blow-off, retreat. The approach follows the fish's surface normal from the camera (up to 15 degrees off vertical), and on the real arm the last centimeters are felt: down in 3 mm steps until the joint torques show the fish pushing back, then pressed on (`grasp.feel_*`, `contact_force`, `press_force_max` in the workcell file; `pick_place.py --mode feel` shows the force live for tuning)
 - **Suction gripper (AS-30):** six cups (3 x 2) under one vacuum, switched by a solenoid valve on an ESP32 board (firmware in `firmware/valve_control/`, PC side `rfp_arm/valve.py`) over USB serial or Wi-Fi: `gripper.driver: serial` or `http` in the workcell file. The Requirement Spec's variant, vacuum and blow-off valves on DO0/DO1 and a vacuum switch on DI0/DI1 through frcobot_ros2's `ros2_cmd_server`, is `driver: controller`
 - **Placement (AS-50):** placement slots outside the pick area, uniform heading
 - **Calibration (AS-60):** eye-in-hand hand-eye calibration with a ChArUco board and OpenCV

@@ -78,12 +78,23 @@ class FairinoIO:
 
     def command(self, name: str, *arguments, timeout: float = 2.0) -> str:
         """Send a command; the server's answer text."""
+        return self.send(command_text(name, *arguments), timeout)
+
+    def send(self, text: str, timeout: float = 2.0) -> str:
+        """Send a command as written, e.g. 'SetDO(0,1)'; the server's answer text."""
         request = self._request()
-        request.cmd_str = command_text(name, *arguments)
+        request.cmd_str = text
         try:
             return self.link.call(self._client, request, timeout).cmd_res
         except TimeoutError:
-            raise ArmError(E_COMM, f"no answer to {request.cmd_str}") from None
+            raise ArmError(E_COMM, f"no answer to {text}") from None
+
+    def joint_torques(self) -> list[float] | None:
+        """The joints' torques (N m, j1 to j6) as the controller reports them, or None."""
+        state = self._fresh()
+        if state is None:
+            return None
+        return [float(getattr(state, f"j{i}_cur_tor")) for i in range(1, 7)]
 
     # -- GripperIO -----------------------------------------------------------
     def set_output(self, index: int, on: bool) -> None:

@@ -100,7 +100,28 @@ grasp:                          # Table AS-1
   release_dwell: 1.0            # no vacuum switch: time for it to let go
   drop_time: 0.1
   release_timeout: 1.0
-  max_approach_tilt_deg: 15
+  max_approach_tilt_deg: 15     # the cups lean at most this far onto a sloping fish (AS-21)
+  # Feeling for the fish. On the real arm the joint torques tell when something pushes
+  # back: from feel_start above where the camera saw the fish's surface the cups go down
+  # in small steps until contact_force is felt, then press_distance further (or until
+  # press_force_max). No contact by feel_max_depth past the expected surface: no fish
+  # there (E_NO_SEAL). Tune the forces with: pick_place.py --mode feel
+  feel_contact: true            # false: go to the expected surface + press_distance, blind
+  feel_start: 0.015
+  feel_step: 0.003
+  feel_speed: 0.01
+  feel_settle: 0.15
+  contact_force: 15.0           # N, tune
+  press_force_max: 40.0         # N, tune
+  feel_max_depth: 0.025
+  # Controller commands sent before pressing and after the hold is confirmed, as written
+  # for ros2_cmd_server. This is where a compliant wrist would be switched on and off, so
+  # the cups settle onto the fish by themselves, e.g. the controller's impedance mode:
+  #   ImpedanceControlStartStop(status, workSpace, forceThreshold x6, m x6, b x6, k x6,
+  #                             maxV, maxVA, maxW, maxWA)     (0: joint space)
+  # Left empty: its parameters have to be found on the arm, without a fish first.
+  press_start_commands: []
+  press_end_commands: []
 
 gripper:
   # What switches the vacuum of the six cups:
