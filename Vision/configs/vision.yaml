@@ -23,6 +23,11 @@ depth_window_m: 0.025
 min_depth_valid: 0.80
 default_thickness_m: 0.10
 outline_height_share: 0.5   # tune: the outline is seen at about half the fish's height
+# With depth, a plane is fitted to the fish's surface under the cups: the cups are tilted
+# onto it, and the slope along the body (down toward the tail) helps tell head from tail.
+align_to_surface: true      # false: always approach straight down
+max_surface_tilt_deg: 15    # a steeper surface is approached straight down (AS-21)
+surface_fit_rms_m: 0.012    # tune: a rougher fit isn't trusted
 
 # Heading from the outline's shape (fish_heading.py). With require_heading false, a fish
 # whose head end is unknown is still picked, and placed along the slot's axis.

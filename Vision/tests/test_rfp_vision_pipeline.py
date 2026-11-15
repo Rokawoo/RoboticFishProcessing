@@ -19,8 +19,10 @@ from rfp_vision.geometry import (
     Intrinsics,
     deproject,
     depth_at,
+    fit_plane,
     pixels_on_plane,
     polygon_mask,
+    pose_along,
     pose_down,
     to_frame,
 )
@@ -55,8 +57,15 @@ def fish_outline(x: float, y: float, heading: float, length: float = 0.60) -> np
     return (local - centroid) @ np.array([[c, s], [-s, c]]) + (x, y)
 
 
-def render(fish: list[tuple], thickness: float = 0.10, camera=CAMERA, depth: bool = True):
-    """A Frame and its detections for fish given as (x, y, heading, confidence) in {B}."""
+def render(
+    fish: list[tuple],
+    thickness: float = 0.10,
+    camera=CAMERA,
+    depth: bool = True,
+    slope: float = 0.0,
+):
+    """A Frame and its detections for fish given as (x, y, heading, confidence) in {B}.
+    `slope`: how much the fish's surface rises per meter toward its head."""
     t_camera_base = np.linalg.inv(camera)
     color = np.full((K.height, K.width, 3), 90, np.uint8)
     image_depth = np.full((K.height, K.width), camera[2, 3] - TABLE_Z, np.float32)
@@ -67,7 +76,11 @@ def render(fish: list[tuple], thickness: float = 0.10, camera=CAMERA, depth: boo
         pixels = K.project(to_frame(t_camera_base, at_half_height))
         mask = polygon_mask(pixels, color.shape).astype(bool)
         color[mask] = 230
-        image_depth[mask] = camera[2, 3] - TABLE_Z - thickness
+        rows, columns = np.nonzero(mask)
+        top = TABLE_Z + thickness
+        on_top = pixels_on_plane(K, camera, np.column_stack([columns, rows]), top)[:, :2]
+        toward_head = (on_top - (x, y)) @ (math.cos(heading), math.sin(heading))
+        image_depth[rows, columns] = camera[2, 3] - top - slope * toward_head
         box = (*pixels.min(axis=0), *pixels.max(axis=0))
         detections.append(Detection(0, confidence, tuple(float(v) for v in box), pixels))
     frame = Frame(color, image_depth if depth else None, K, 0.0, 0.0, 1)
@@ -450,3 +463,56 @@ def test_video_files_play_in_a_loop_as_a_color_camera(tmp_path):
 
     with pytest.raises(CameraError):
         open_camera(str(Path(tmp_path) / "missing.mp4"))
+
+
+# ---------------------------------------------------------------------------
+# The fish's surface under the cups
+# ---------------------------------------------------------------------------
+def test_plane_fit_and_poses_laid_on_a_surface():
+    rng = np.random.default_rng(1)
+    xy = rng.uniform(-0.05, 0.05, (200, 2))
+    points = np.column_stack([xy, 0.3 + 0.2 * xy[:, 0] + rng.normal(0, 0.001, 200)])
+    normal, middle, rms = fit_plane(points)
+    assert np.allclose(normal, np.array([-0.2, 0, 1]) / math.hypot(0.2, 1), atol=0.01)
+    assert rms == pytest.approx(0.001, abs=0.0005) and middle[2] == pytest.approx(0.3, abs=0.005)
+    pose = pose_along((1, 2, 3), math.radians(90), -normal)
+    assert np.allclose(pose[:3, 2], -normal) and np.allclose(pose[:3, 3], (1, 2, 3))
+    assert np.allclose(pose[:3, 0], (0, 1, 0), atol=1e-3)  # along Y: not tilted by a slope along X
+    assert np.linalg.det(pose[:3, :3]) == pytest.approx(1.0)
+    assert np.allclose(pose_along((0, 0, 0), 0.3, (0, 0, -1)), pose_down((0, 0, 0), 0.3))
+
+
+def test_surface_slope_tilts_the_grasp_and_helps_tell_head_from_tail():
+    middle = (0.40, -0.10, ALONG_Y, 0.9)
+    toward_head = np.array([math.cos(ALONG_Y), math.sin(ALONG_Y)])
+    tilt = math.atan(0.10)  # a surface rising 10 mm per 100 mm toward the head
+
+    frame, detections = render([middle], slope=0.10)
+    fish = locator().locate(frame, detections, CAMERA).fish[0]
+    assert fish.vision_ok and fish.surface_tilt == pytest.approx(tilt, abs=0.01)
+    assert fish.thickness == pytest.approx(0.10, abs=0.003)
+    approach = fish.grasp_pose[:3, 2]  # square onto the surface: leaning toward the head
+    assert approach[2] == pytest.approx(-math.cos(tilt), abs=0.01)
+    assert approach[:2] @ toward_head == pytest.approx(math.sin(tilt), abs=0.01)
+    assert fish.grasp_pose[2, 0] == pytest.approx(math.sin(tilt), abs=0.01)  # x climbs to the head
+    assert fish.heading_known and fish.heading_confidence > 0.9  # shape and slope agree
+
+    level = locator(align_to_surface=False).locate(frame, detections, CAMERA).fish[0]
+    assert np.allclose(level.grasp_pose[:3, 2], (0, 0, -1)) and level.surface_tilt > 0.05
+    frame, detections = render([middle], slope=0.50)  # steeper than the cups may lean
+    steep = locator().locate(frame, detections, CAMERA).fish[0]
+    assert np.allclose(steep.grasp_pose[:3, 2], (0, 0, -1))
+    assert math.degrees(steep.surface_tilt) == pytest.approx(26.6, abs=1.0)
+
+    # sloping down toward what the outline says is the head: the two disagree, so no guess
+    frame, detections = render([middle], slope=-0.10)
+    confused = locator().locate(frame, detections, CAMERA).fish[0]
+    assert confused.failure_code == "wrong_heading" and confused.heading_confidence < 0.6
+    flat, detections = render([middle])  # no slope: the outline decides alone
+    assert locator().locate(flat, detections, CAMERA).fish[0].heading_confidence > 0.8
+
+    centroid, axis = fh.body_axis(fish_outline(0.0, 0.0, 0.0))
+    outline = fish_outline(0.0, 0.0, 0.0)
+    assert fh.head_vote(outline, centroid, axis, (True, True), 0.03)[2]["height"] == 1.0
+    assert fh.head_vote(outline, centroid, axis, (True, True), -0.01)[2]["height"] == -0.5
+    assert "height" not in fh.head_vote(outline, centroid, axis, (True, True))[2]

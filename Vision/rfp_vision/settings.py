@@ -42,6 +42,10 @@ class VisionSettings:
     min_depth_valid: float = 0.80
     default_thickness_m: float = 0.10  # fish height on the table, used without depth
     outline_height_share: float = 0.5  # the outline is seen at about half the fish's height
+    # The fish's surface under the cups, from depth: the cups are tilted onto it
+    align_to_surface: bool = True  # False: always approach straight down
+    max_surface_tilt_deg: float = 15.0  # a steeper surface is approached straight down (AS-21)
+    surface_fit_rms_m: float = 0.012  # a rougher fit isn't trusted
 
     # Heading (fish_heading.py, H-20)
     require_heading: bool = True  # False: a fish with an unknown head end is still valid

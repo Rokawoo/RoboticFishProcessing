@@ -50,13 +50,31 @@ def deproject(intrinsics: Intrinsics, pixel: tuple[float, float], depth: float) 
     return intrinsics.rays(np.array([pixel]))[0] * depth
 
 
+def pose_along(xyz, yaw: float, approach) -> np.ndarray:
+    """4x4 pose at `xyz` whose z axis is `approach` (pointing down into a surface) and whose
+    x axis is the direction `yaw` in the XY plane, laid onto that surface."""
+    z = np.asarray(approach, float) / np.linalg.norm(approach)
+    x = np.array([math.cos(yaw), math.sin(yaw), 0.0])
+    x = x - (x @ z) * z
+    x /= np.linalg.norm(x)
+    pose = np.eye(4)
+    pose[:3, 0], pose[:3, 1], pose[:3, 2], pose[:3, 3] = x, np.cross(z, x), z, xyz
+    return pose
+
+
 def pose_down(xyz, yaw: float) -> np.ndarray:
     """4x4 pose at `xyz` whose z axis points straight down and whose x axis points along `yaw`."""
-    c, s = math.cos(yaw), math.sin(yaw)
-    pose = np.eye(4)
-    pose[:3, :3] = [[c, s, 0.0], [s, -c, 0.0], [0.0, 0.0, -1.0]]
-    pose[:3, 3] = xyz
-    return pose
+    return pose_along(xyz, yaw, (0.0, 0.0, -1.0))
+
+
+def fit_plane(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """(unit normal with z >= 0, a point on the plane, RMS distance of the points to it)
+    of the least-squares plane through (n, 3) points."""
+    points = np.asarray(points, float)
+    middle = points.mean(axis=0)
+    _, _, axes = np.linalg.svd(points - middle, full_matrices=False)
+    normal = axes[-1] if axes[-1][2] >= 0 else -axes[-1]
+    return normal, middle, float(np.sqrt((((points - middle) @ normal) ** 2).mean()))
 
 
 def to_frame(t_a_b: np.ndarray, points_b: np.ndarray) -> np.ndarray:

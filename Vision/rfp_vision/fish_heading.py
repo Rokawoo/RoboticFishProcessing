@@ -134,11 +134,12 @@ class HeadingEstimate:
 # Cues of head_vote: weight, and the raw value that counts as a full vote (H-7). First
 # values, from the outlines of the 3D-printed stand-in fish seen from above: centroid
 # 0.02-0.03 toward the head, end widths differing by 0.17-0.20, tail fin 2x its peduncle.
-CUE_WEIGHTS = {"mass": 1.0, "width": 2.0, "waist": 2.0}
+CUE_WEIGHTS = {"mass": 1.0, "width": 2.0, "waist": 2.0, "height": 2.0}
 MASS_FULL_VOTE = 0.04  # centroid offset from the middle of the fish, share of half its length
 WIDTH_FULL_VOTE = 0.15  # (head-end width - tail-end width) / their sum, 10-20% from each end
 WAIST_FULL_VOTE = 0.25  # distance of the narrowest section from the middle, share of the length
 FLARE_FULL_VOTE = 1.5  # widest section beyond the waist / the waist: a tail fin, not a taper
+HEIGHT_FULL_VOTE = 0.02  # m the fish's surface is higher a quarter length toward the head
 PROFILE_STATIONS = 64  # cross-sections measured along the fish
 
 
@@ -234,7 +235,11 @@ def cut_ends(
 
 
 def head_vote(
-    polygon: np.ndarray, centroid: np.ndarray, axis: np.ndarray, usable: tuple[bool, bool]
+    polygon: np.ndarray,
+    centroid: np.ndarray,
+    axis: np.ndarray,
+    usable: tuple[bool, bool],
+    height_rise: float | None = None,
 ) -> tuple[float, float, dict[str, float]]:
     """
     (signed vote: > 0 = head toward +axis, confidence, per-cue votes) (H-7, H-9).
@@ -242,8 +247,10 @@ def head_vote(
     Cues, each in [-1, 1]: "mass" (the centroid lies on the head side of the middle),
     "width" (the head is wider 10-20% from its end than the tail is 10-20% from its end,
     where the caudal peduncle lies) and "waist" (the narrowest section is near the tail
-    and the outline flares again beyond it: the tail fin). The cues compare both ends, so
-    with an unusable (cut) end there is no vote.
+    and the outline flares again beyond it: the tail fin). With depth there is a fourth,
+    "height": a fish is thickest toward its head, so its surface slopes down to the tail;
+    `height_rise` is how much higher (m) the surface is a quarter length toward +axis than
+    toward -axis. The cues compare both ends, so with an unusable (cut) end there is no vote.
     """
     if not (usable[0] and usable[1]):
         return 0.0, 0.0, {}
@@ -268,9 +275,13 @@ def head_vote(
         / WAIST_FULL_VOTE
         * float(np.clip((flare - 1.0) / (FLARE_FULL_VOTE - 1.0), 0.0, 1.0)),
     }
+    if height_rise is not None:
+        raw["height"] = height_rise / HEIGHT_FULL_VOTE
     cues = {name: float(np.clip(value, -1.0, 1.0)) for name, value in raw.items()}
     vote = sum(CUE_WEIGHTS[name] * value for name, value in cues.items())
-    vote /= sum(CUE_WEIGHTS.values())
+    # A level surface says nothing about the head: the height cue weighs as much as it says.
+    weights = sum(CUE_WEIGHTS[name] for name in cues if name != "height")
+    vote /= weights + CUE_WEIGHTS["height"] * abs(cues.get("height", 0.0))
     return float(vote), float(abs(vote)), cues
 
 
