@@ -1,0 +1,62 @@
+# Control panel: the settings changed most often, in one place.
+#
+# Every value here overrides the same setting in the subsystem's own file, which holds the
+# full list with explanations:
+#   workcell  Arm/configs/workcell.yaml        vision   Vision/configs/vision.yaml
+#   control   ControlSys/configs/control.yaml
+# Any setting of those files can be added below under its section. Unknown names are
+# errors. Units: meters, degrees, seconds, newtons. `run` holds the defaults of
+# pick_place.py's command line (an option given on the command line wins).
+
+run:
+  mode: null          # observe | offline | sim | check | feel | dry-run | run; null: ask
+  device: null        # realsense | a serial number | a camera index | a video; null: the D405
+  model: null         # training run folder or .pt file; null: the newest run
+  cycles: null        # stop after this many grasps; null: until the pick area is clear
+  step: false         # wait for Enter before every move
+  window: true        # show the camera image
+  any_size: false     # skip the fish size checks (videos from other cameras)
+
+workcell:
+  verified: false     # true once the cell is measured: the real arm refuses to move before
+  gripper:
+    driver: serial              # serial | http (the valve board) | controller (FR5 I/O)
+    serial_port: /dev/ttyACM0   # Windows: COM3, ...
+    http_host: ""               # the valve board over Wi-Fi; 192.168.4.1 on its own network
+  motion:
+    tcp_speed_max: 0.25         # m/s, the limit for every move
+    approach_speed: 0.05        # m/s onto the fish
+    carry_speed: 0.15           # m/s with a fish
+    free_speed: 0.15            # m/s without
+    ptp_velocity_scale: 0.10    # share of the joint speed limits on point-to-point moves
+  grasp:
+    feel_contact: true          # lower the cups until the fish pushes back (real arm)
+    contact_force: 15.0         # N that count as touching it      (tune: --mode feel)
+    press_force_max: 40.0       # N at which pressing stops
+    press_distance: 0.010       # m pressed on after contact
+    seal_dwell: 1.0             # s for the vacuum to build up
+    release_dwell: 1.0          # s for it to let go
+    lift_height_max: 0.50       # m above the table
+  tool:
+    wrist_range_deg: [-170, 170]   # how far the last joint may turn (vacuum tube)
+  placement:
+    heading_deg: 0              # placed fish point head toward +X
+
+vision:
+  min_confidence: 0.50          # weaker detections are flagged low_confidence
+  use_depth: true               # false: every fish is put on the table plane
+  align_to_surface: true        # tilt the cups onto the fish's sloping surface
+  require_heading: true         # false: also pick fish whose head end is unknown
+  min_heading_confidence: 0.6
+  check_size: true              # false: don't check length, width and thickness
+  hold:                         # camera check that a held fish is still there
+    use_mask: true
+    use_depth: true
+    lost_frames: 3
+
+control:
+  max_attempts_per_fish: 3
+  max_failed_cycles: 3          # in a row, then the run pauses
+  require_hold_confirmation: true   # false: lift even if nothing confirms the hold
+  vision_hold_check: true
+  save_images: true

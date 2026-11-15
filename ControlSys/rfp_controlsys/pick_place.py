@@ -38,6 +38,9 @@ Before sim, check, dry-run and run (ROS 2 Humble sourced, one terminal each):
 On the real arm the launch has to load fairino_hardware/FairinoHardwareInterface instead of
 mock_components/GenericSystem (config/fairino5_v6_robot.ros2_control.xacro).
 
+The settings changed most often, and the defaults of the options above, are in the
+control panel at the repository's top: control_panel.yaml (--panel for another file).
+
 Moving the real arm: low speed and someone on the emergency stop (Arm/README.md). q or Esc
 in the camera window, or Ctrl+C, stops the arm where it is; a move that MoveIt no longer
 answers for needs the emergency stop. Each run is logged in ControlSys/runs/.
@@ -78,7 +81,7 @@ from rfp_controlsys.console import Console, ask
 from rfp_controlsys.cycle import PickPlaceCycle
 from rfp_controlsys.run_log import RunLog
 from rfp_controlsys.selector import RuleSelector
-from rfp_controlsys.settings import ControlSettings
+from rfp_controlsys.settings import PANEL_FILE, ControlSettings, run_defaults
 from rfp_controlsys.settings import load_settings as load_control_settings
 
 MODES = {
@@ -412,21 +415,32 @@ def main() -> None:
         "--any-size", action="store_true", help="skip fish size checks (videos from other cameras)"
     )
     parser.add_argument("-y", "--yes", action="store_true", help="don't ask before moving the arm")
+    parser.add_argument(
+        "--panel", type=Path, default=PANEL_FILE, help="control panel file (control_panel.yaml)"
+    )
     args = parser.parse_args()
-    if args.cycles is not None and args.cycles < 1:
+    try:  # the control panel's run section fills in what the command line left out
+        run = run_defaults(args.panel)
+    except (ValueError, TypeError) as e:
+        sys.exit(f"❌ {e}")
+    cycles = args.cycles if args.cycles is not None else run["cycles"]
+    if cycles is not None and cycles < 1:
         parser.error("--cycles must be 1 or more")
-    mode = args.mode or pick_mode()
+    if (args.mode or run["mode"]) not in (None, *MODES):
+        parser.error(f"control panel: unknown mode '{run['mode']}'")
+    mode = args.mode or run["mode"] or pick_mode()
+    model = args.model or (Path(run["model"]) if run["model"] else None)
 
     try:
-        workcell = load_workcell(args.workcell)
-        vision_settings = load_vision_settings(args.vision)
-        control_settings = load_control_settings(args.control)
-        weights = find_weights(args.model or pick_model())
+        workcell = load_workcell(args.workcell, args.panel)
+        vision_settings = load_vision_settings(args.vision, args.panel)
+        control_settings = load_control_settings(args.control, args.panel)
+        weights = find_weights(model or pick_model())
     except (WorkcellError, FileNotFoundError, ValueError, TypeError) as e:
         sys.exit(f"❌ {e}")
-    if args.any_size:
+    if args.any_size or run["any_size"]:
         vision_settings.check_size = False
-    device = args.device or pick_device()
+    device = args.device or (str(run["device"]) if run["device"] is not None else pick_device())
 
     print("=" * 60)
     print(f"PICK AND PLACE: {mode} ({MODES[mode]})")
@@ -436,12 +450,12 @@ def main() -> None:
         print(f"          {line}")
     print(f"Model:    {weights}")
     vision = build_vision(device, weights, vision_settings, workcell)
-    console = Console(window=not args.no_window, step=args.step)
+    console = Console(window=run["window"] and not args.no_window, step=args.step or run["step"])
     link = None
     try:
         if mode == "offline":
             run_cycles(mode, SimArm(workcell), SimGripper(), vision, workcell, control_settings,
-                       console, args.cycles)  # fmt: skip
+                       console, cycles)  # fmt: skip
             return
         if mode == "observe":
             observe(vision, workcell, console, _camera_pose_source(workcell, console))
@@ -473,7 +487,7 @@ def main() -> None:
             start_checks(mode, workcell, io, gripper)
             confirm_real_motion(mode, args.yes)
         run_cycles(
-            mode, arm, gripper, vision, workcell, control_settings, console, args.cycles,
+            mode, arm, gripper, vision, workcell, control_settings, console, cycles,
             io.send if io else None,
         )  # fmt: skip
     except ArmError as e:

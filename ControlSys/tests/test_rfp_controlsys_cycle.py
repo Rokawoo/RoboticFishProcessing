@@ -436,10 +436,10 @@ def test_control_settings_file_matches_the_defaults(tmp_path):
     assert load_settings() == ControlSettings()  # ControlSys/configs/control.yaml
     custom = tmp_path / "control.yaml"
     custom.write_text("max_attempts_per_fish: 2\n")
-    assert load_settings(custom).max_attempts_per_fish == 2
+    assert load_settings(custom, panel=None).max_attempts_per_fish == 2
     custom.write_text("max_attempts: 2\n")
     with pytest.raises(ValueError, match="max_attempts"):
-        load_settings(custom)
+        load_settings(custom, panel=None)
     with pytest.raises(FileNotFoundError):
         load_settings(tmp_path / "missing.yaml")
 
@@ -482,3 +482,46 @@ def test_script_refuses_the_real_arm_until_the_workcell_is_verified(capsys):
         pick_place.confirm_real_motion("dry-run", yes=False)
     pick_place.confirm_real_motion("dry-run", yes=True)
     assert "THE REAL ARM WILL MOVE" in capsys.readouterr().out
+
+
+def test_control_panel_overrides_the_settings_files_everywhere(tmp_path):
+    from rfp_arm.workcell import WorkcellError
+    from rfp_controlsys.settings import run_defaults
+    from rfp_vision.settings import load_settings as load_vision
+
+    # The shipped panel repeats the files' values: with or without it, nothing changes.
+    assert load_vision() == load_vision(panel=None)
+    assert load_settings() == load_settings(panel=None)
+    with_panel, without = load_workcell(), load_workcell(panel=None)
+    for part in ("verified", "motion", "grasp", "gripper", "wrist_range", "placement_heading"):
+        assert getattr(with_panel, part) == getattr(without, part), part
+    assert run_defaults()["mode"] is None and run_defaults()["window"] is True
+
+    panel = tmp_path / "panel.yaml"
+    panel.write_text(
+        "run: {mode: sim, cycles: 2}\n"
+        "workcell:\n  gripper: {serial_port: COM9}\n  grasp: {contact_force: 22.5}\n"
+        "vision:\n  min_confidence: 0.7\n  hold: {lost_frames: 5}\n"
+        "control: {max_attempts_per_fish: 1}\n"
+    )
+    cell = load_workcell(panel=panel)
+    assert cell.gripper.serial_port == "COM9" and cell.gripper.driver == "serial"  # merged in
+    assert cell.grasp.contact_force == 22.5 and cell.grasp.press_force_max == 40.0
+    vision = load_vision(panel=panel)
+    assert (
+        vision.min_confidence == 0.7 and vision.hold.lost_frames == 5 and vision.hold.min_iou == 0.5
+    )
+    assert load_settings(panel=panel).max_attempts_per_fish == 1
+    run = run_defaults(panel)
+    assert (run["mode"], run["cycles"], run["step"]) == ("sim", 2, False)
+    assert run_defaults(tmp_path / "no_panel.yaml")["mode"] is None  # no file: the defaults
+
+    panel.write_text("workcell: {grasp: {contact_forse: 1}}\n")
+    with pytest.raises(WorkcellError, match="contact_forse"):
+        load_workcell(panel=panel)
+    panel.write_text("visions: {min_confidence: 0.7}\n")
+    with pytest.raises(ValueError, match="unknown section"):
+        load_vision(panel=panel)
+    panel.write_text("run: {modes: sim}\n")
+    with pytest.raises(ValueError, match="unknown run setting"):
+        run_defaults(panel)

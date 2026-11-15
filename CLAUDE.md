@@ -54,6 +54,7 @@ Rules the code depends on:
 - **Units:** meters and radians in code, 4x4 poses `T_a_b` (frame b in frame a), {B} = MoveIt's `base_link`. YAML files use meters and degrees, logs mm and degrees (IF-11).
 - **Every plan is checked in fixed code before it runs** (`safety.check_trajectory`: TCP speed, zones, joint travel), every target by `Workcell.pose_problem`. Don't add a motion path that skips them.
 - **The VLM goes in as a `FishSelector`** (`selector.py`); its answers pass `validate_decision` and the fallback rule already. Don't let a selector reach the arm any other way (CS-30).
+- **`control_panel.yaml` (repo root) overrides the three settings files** for everything that loads them (`load_workcell`, both `load_settings`; `panel=None` skips it). Its `run` section holds `pick_place.py`'s command-line defaults. A test checks that the shipped panel changes nothing, so a default changed in one place has to be changed in both.
 - **Settings files mirror the dataclass defaults** (`vision.yaml`, `control.yaml`: a test compares them); unknown names are errors. `workcell.yaml` has placeholder values and `verified: false`: the real arm refuses it.
 - **Tests without ROS:** `Arm/tests/fake_ros.py` is a fake rclpy, move_group and FAIRINO command server with message classes built from `ros_messages.json` (the real fields; rebuild with `make_ros_messages.py`). It catches wrong field names and types and logic errors, not what the real MoveIt rejects: that needs `--mode sim` on the robot PC.
 

@@ -18,6 +18,35 @@ from rfp_arm.poses import invert, tool_down, transform
 DEFAULT_FILE = Path(__file__).resolve().parents[1] / "configs" / "workcell.yaml"
 
 
+PANEL_FILE = Path(__file__).resolve().parents[2] / "control_panel.yaml"
+PANEL_SECTIONS = ("run", "workcell", "vision", "control")
+
+
+def panel_section(panel: Path | None, name: str) -> dict:
+    """One section of the control panel file (control_panel.yaml); {} without the file."""
+    import yaml
+
+    if panel is None or not panel.is_file():
+        return {}
+    data = yaml.safe_load(panel.read_text(encoding="utf-8")) or {}
+    unknown = sorted(set(data) - set(PANEL_SECTIONS)) if isinstance(data, dict) else ["?"]
+    if unknown:
+        raise ValueError(f"{panel.name}: unknown section(s): {', '.join(unknown)}")
+    section = data.get(name) or {}
+    if not isinstance(section, dict):
+        raise TypeError(f"{panel.name}: '{name}' must be a mapping of settings")
+    return section
+
+
+def merged(base: dict, over: dict) -> dict:
+    """`base` with the values of `over` on top; mappings inside are merged, not replaced."""
+    result = dict(base)
+    for key, value in over.items():
+        both = isinstance(value, dict) and isinstance(result.get(key), dict)
+        result[key] = merged(result[key], value) if both else value
+    return result
+
+
 class WorkcellError(ValueError):
     """The workcell file is missing something, or its values contradict each other."""
 
@@ -283,8 +312,9 @@ def _mm(point) -> str:
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
-def load_workcell(path: Path | None = None) -> Workcell:
-    """The workcell of a YAML file (default: Arm/configs/workcell.yaml), checked."""
+def load_workcell(path: Path | None = None, panel: Path | None = PANEL_FILE) -> Workcell:
+    """The workcell of a YAML file (default: Arm/configs/workcell.yaml) with the control
+    panel's `workcell` section on top (`panel=None`: without it), checked."""
     import yaml
 
     path = path or DEFAULT_FILE
@@ -292,7 +322,7 @@ def load_workcell(path: Path | None = None) -> Workcell:
         raise WorkcellError(f"workcell file not found: {path}")
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        workcell = workcell_from_mapping(data)
+        workcell = workcell_from_mapping(merged(data, panel_section(panel, "workcell")))
     except (KeyError, TypeError, ValueError, yaml.YAMLError) as e:
         detail = f"missing '{e.args[0]}'" if isinstance(e, KeyError) else str(e)
         raise WorkcellError(f"{path.name}: {detail}") from None

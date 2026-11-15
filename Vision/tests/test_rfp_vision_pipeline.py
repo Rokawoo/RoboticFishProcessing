@@ -434,15 +434,15 @@ def test_settings_file_matches_the_defaults_and_rejects_unknown_names(tmp_path):
     assert load_settings() == VisionSettings()  # Vision/configs/vision.yaml
     custom = tmp_path / "vision.yaml"
     custom.write_text("min_confidence: 0.7\nhold: {lost_frames: 5}\ndepth_range_m: [0.1, 0.6]\n")
-    settings = load_settings(custom)
+    settings = load_settings(custom, panel=None)
     assert settings.min_confidence == 0.7 and settings.hold.lost_frames == 5
     assert settings.depth_range_m == (0.1, 0.6) and settings.hold.min_iou == 0.5
     custom.write_text("min_confidense: 0.7\n")
     with pytest.raises(ValueError, match="min_confidense"):
-        load_settings(custom)
+        load_settings(custom, panel=None)
     custom.write_text("hold: {lost_frame: 5}\n")
     with pytest.raises(ValueError, match="lost_frame"):
-        load_settings(custom)
+        load_settings(custom, panel=None)
     with pytest.raises(FileNotFoundError):
         load_settings(tmp_path / "missing.yaml")
 

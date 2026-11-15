@@ -7,6 +7,35 @@ from pathlib import Path
 DEFAULT_FILE = Path(__file__).resolve().parents[1] / "configs" / "vision.yaml"
 
 
+PANEL_FILE = Path(__file__).resolve().parents[2] / "control_panel.yaml"
+PANEL_SECTIONS = ("run", "workcell", "vision", "control")
+
+
+def panel_section(panel: Path | None, name: str) -> dict:
+    """One section of the control panel file (control_panel.yaml); {} without the file."""
+    import yaml
+
+    if panel is None or not panel.is_file():
+        return {}
+    data = yaml.safe_load(panel.read_text(encoding="utf-8")) or {}
+    unknown = sorted(set(data) - set(PANEL_SECTIONS)) if isinstance(data, dict) else ["?"]
+    if unknown:
+        raise ValueError(f"{panel.name}: unknown section(s): {', '.join(unknown)}")
+    section = data.get(name) or {}
+    if not isinstance(section, dict):
+        raise TypeError(f"{panel.name}: '{name}' must be a mapping of settings")
+    return section
+
+
+def merged(base: dict, over: dict) -> dict:
+    """`base` with the values of `over` on top; mappings inside are merged, not replaced."""
+    result = dict(base)
+    for key, value in over.items():
+        both = isinstance(value, dict) and isinstance(result.get(key), dict)
+        result[key] = merged(result[key], value) if both else value
+    return result
+
+
 @dataclass
 class HoldSettings:
     """Vision check that a held fish still moves with the gripper (hold_monitor.py)."""
@@ -86,14 +115,15 @@ def from_mapping(cls, data: dict, where: str):
     return cls(**values)
 
 
-def load_settings(path: Path | None = None) -> VisionSettings:
-    """Settings from a YAML file (default: Vision/configs/vision.yaml); defaults if it's missing."""
+def load_settings(path: Path | None = None, panel: Path | None = PANEL_FILE) -> VisionSettings:
+    """Settings from a YAML file (default: Vision/configs/vision.yaml; defaults if it's
+    missing) with the control panel's `vision` section on top (`panel=None`: without it)."""
     import yaml
 
     path = path or DEFAULT_FILE
-    if not path.is_file():
-        if path != DEFAULT_FILE:
-            raise FileNotFoundError(f"vision settings not found: {path}")
-        return VisionSettings()
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return from_mapping(VisionSettings, data, path.name)
+    data = {}
+    if path.is_file():
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    elif path != DEFAULT_FILE:
+        raise FileNotFoundError(f"vision settings not found: {path}")
+    return from_mapping(VisionSettings, merged(data, panel_section(panel, "vision")), path.name)

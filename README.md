@@ -88,6 +88,10 @@ pytest
 
 **Train a fish model:** [the six steps in Vision/README.md](Vision/README.md#building-the-fish-model). Videos, frames, labels, weights and logs stay out of Git (team dataset store).
 
+## Control panel
+
+[control_panel.yaml](control_panel.yaml) at the top of the repository holds the settings changed most often: how `pick_place.py` runs (mode, camera, model), the gripper's port, speeds, the forces of the grasp, vision thresholds, attempt limits. Its values override the subsystem files (`Arm/configs/workcell.yaml`, `Vision/configs/vision.yaml`, `ControlSys/configs/control.yaml`), which hold every setting with its explanation; any of them can be added to the panel.
+
 ## Documentation
 
 | Document | Link |
