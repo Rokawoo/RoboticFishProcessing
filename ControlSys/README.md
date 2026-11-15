@@ -28,6 +28,8 @@ python ControlSys/rfp_controlsys/pick_place.py --mode run          # THE ARM MOV
 
 One cycle: move to the next observation pose, get a fish list, let the selector choose, validate the answer, look again from the same pose (CS-41), run the grasp sequence, answer a failure as in Table CS-1, log a CSV row.
 
+**Taught demos:** `python ControlSys/rfp_controlsys/demo.py` plays a sequence of hand-taught poses with the vacuum switched between them (no camera), on the simulated arm, in RViz or on the real arm, waiting for Enter before each step unless `--auto`. Demo files are in [Demos/](../Demos/) (`fish_pickup.yaml` is the pickup taught on the arm); `demo.py record <name>` teaches a new one from the arm's joint angles.
+
 **Adding the VLM:** write a class with `choose(context) -> Decision` (`selector.py`: the context holds the annotated image, the candidates and the last result, as in Table IF-5) and pass it to `PickPlaceCycle` in place of `RuleSelector`. Its answers already go through `validate_decision`, one retry and the fallback rule.
 
 ## Responsibilities

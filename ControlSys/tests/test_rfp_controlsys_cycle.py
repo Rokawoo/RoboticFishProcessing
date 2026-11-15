@@ -525,3 +525,66 @@ def test_control_panel_overrides_the_settings_files_everywhere(tmp_path):
     panel.write_text("run: {modes: sim}\n")
     with pytest.raises(ValueError, match="unknown run setting"):
         run_defaults(panel)
+
+
+# ---------------------------------------------------------------------------
+# Taught demos
+# ---------------------------------------------------------------------------
+def test_the_taught_pickup_demo_plays_on_the_simulated_arm(tmp_path):
+    from rfp_arm.kinematics import FR5
+    from rfp_controlsys import demo as demos
+
+    pickup = demos.load_demo(demos.demo_path("fish_pickup"))
+    assert pickup.name == "fish_pickup" and len(pickup.steps) == 16 and len(pickup.poses) == 6
+    assert pickup.steps[0] == ("vacuum", False) and pickup.steps[6] == ("vacuum", True)  # off, on
+    cell = demos.demo_workcell(CELL)  # taught poses lie outside the placeholder zones
+    arm, gripper, said, waits = SimArm(cell), SimGripper(), [], []
+    assert demos.play(pickup, arm, gripper, cell, say=said.append, sleep=waits.append)
+    assert [kind for kind, _ in arm.moves] == [
+        "joints", "joints", "lin", "lin", "lin", "lin", "joints", "lin", "joints", "joints",
+    ]  # fmt: skip
+    assert gripper.events == ["release", "vacuum on", "release"] and waits == [1.0, 1.0, 1.0]
+    grasp = cell.tcp_of_tip(FR5.fk(pickup.poses["grasp"]))
+    assert np.allclose(arm.moves[3][1], grasp)  # the taught grasp pose, reached in a line
+    assert np.allclose(arm.tcp_pose(), cell.tcp_of_tip(FR5.fk(pickup.poses["start"])))
+    assert len(said) == 16 and "16/16  joints: start" in said[-1]
+    with pytest.raises(ArmError, match="work zone"):  # with the cell's own zones it is refused
+        demos.play(pickup, SimArm(CELL), SimGripper(), CELL, say=said.append, sleep=waits.append)
+
+    stopped = SimArm(cell)
+    asked = []
+    assert not demos.play(pickup, stopped, SimGripper(), cell, say=said.append,
+                          confirm=lambda step: asked.append(step) or len(asked) < 3)  # fmt: skip
+    assert len(stopped.moves) == 1 and len(asked) == 3  # the operator said stop at step 3
+
+    readings = iter([[0.1, -1.0, 1.2, -1.5, -1.5, 0.0], [0.2, -1.1, 1.3, -1.6, -1.5, 0.3]])
+    typed = iter(["j home", "", "l over fish", "l fish", "on", "w 0.5", "w", "undo", "off", None])
+    taught = demos.record(
+        lambda: next(readings), lambda prompt: next(typed), "mine", say=said.append
+    )
+    assert taught.steps == [
+        ("joints", "home"),
+        ("line", "fish"),
+        ("vacuum", "on"),
+        ("vacuum", "off"),
+    ]
+    assert taught.poses["fish"][0] == 0.2
+    file = tmp_path / "mine.yaml"
+    demos.save_demo(file, taught)
+    again = demos.load_demo(file)
+    assert again.steps == taught.steps and again.poses["home"] == pytest.approx(
+        taught.poses["home"], abs=1e-4
+    )
+    assert demos.record(list, lambda prompt: "done", "empty", say=said.append) is None
+    assert demos.demo_path("mine").name == "mine.yaml" and demos.demo_path(str(file)) == file
+
+    for text, problem in (
+        ("poses: {a: [0, 0, 0, 0, 0, 0]}\nsteps: [{jump: a}]\n", "unknown step"),
+        ("poses: {a: [0, 0, 0, 0, 0, 0]}\nsteps: [{joints: b}]\n", "names no pose"),
+        ("poses: {a: [0, 0]}\nsteps: [{line: a}]\n", "needs 6 joints"),
+        ("poses: {}\nsteps: []\n", "no steps"),
+        ("just text", "not a demo file"),
+    ):
+        file.write_text(text)
+        with pytest.raises(demos.DemoError, match=problem):
+            demos.load_demo(file)

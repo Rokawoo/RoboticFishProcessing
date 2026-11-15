@@ -52,6 +52,7 @@ Every failure (no seal, dropped fish, bad VLM answer) has a defined response: re
 | [Vision/](Vision/README.md) | Camera, fish detection and pose; the dataset tools and model training |
 | [Arm/](Arm/README.md) | Motion, grasp sequence, suction gripper, placement, calibration, safety |
 | [ControlSys/](ControlSys/README.md) | Cycle state machine, VLM decisions, validation, failure handling, logging |
+| [Demos/](Demos/) | Taught demos (poses and vacuum steps) played by `ControlSys/rfp_controlsys/demo.py` |
 
 Subsystems talk only through the interfaces in Requirement Spec Section 2.7. Root: `pyproject.toml` (packages, one extra per subsystem), `requirements.txt` / `environment.yml` (dev environment), `CLAUDE.md` (notes for AI assistants).
 

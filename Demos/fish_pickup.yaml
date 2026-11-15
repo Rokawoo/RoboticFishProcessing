@@ -1,0 +1,32 @@
+# A taught demo: play it with  python ControlSys/rfp_controlsys/demo.py play fish_pickup
+description: Fixed-position fish pickup, taught by hand on the FR5 (2026-11-08)
+line_speed: 0.10      # m/s on straight moves
+
+# Joint angles in degrees, j1 to j6, as read from the arm at each taught pose
+poses:
+  start: [37.368, -112.243, 119.765, -105.846, -88.641, -5.935]
+  approach: [27.085, -76.626, 91.792, -110.146, -85.86, -18.927]
+  pre_grasp: [27.352, -64.224, 91.594, -113.079, -77.829, -17.882]
+  grasp: [27.353, -63.276, 91.86, -113.101, -77.672, -17.881]
+  place_above: [11.612, -72.295, 90.442, -110.245, -84.96, 58.674]
+  place: [11.671, -65.168, 91.304, -115.395, -82.889, 56.915]
+
+# joints: point-to-point to a pose;  line: straight line to it;
+# vacuum: on / off;  wait: seconds
+steps:
+  - vacuum: off
+  - joints: start
+  - joints: approach
+  - line: pre_grasp
+  - wait: 1.0           # hold before the last bit down
+  - line: grasp
+  - vacuum: on
+  - wait: 1.0           # the vacuum builds up
+  - line: pre_grasp
+  - line: approach
+  - joints: place_above
+  - line: place
+  - vacuum: off
+  - wait: 1.0           # the fish comes off
+  - joints: place_above
+  - joints: start
