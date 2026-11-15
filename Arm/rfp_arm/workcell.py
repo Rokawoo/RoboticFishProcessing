@@ -112,7 +112,8 @@ class GraspSettings:
     release_clearance: float = 0.015  # cup faces above the fish's resting height (AS-24)
     retreat_distance: float = 0.10
     seal_timeout: float = 1.0  # no hold this long after the approach: E_NO_SEAL
-    seal_dwell: float = 0.5  # without a vacuum switch: wait this long instead
+    seal_dwell: float = 1.0  # without a vacuum switch: wait this long for the vacuum to build
+    release_dwell: float = 1.0  # without a vacuum switch: wait this long for it to let go
     drop_time: float = 0.1  # holding not reported this long while carrying: E_DROP
     release_timeout: float = 1.0  # vacuum still there this long after release: E_RELEASE
     max_approach_tilt_deg: float = 15.0  # only near-vertical approaches are supported so far
@@ -120,15 +121,15 @@ class GraspSettings:
 
 @dataclass
 class GripperSettings:
-    """How the vacuum is switched (AS-30): by a board on a serial port, or by the FR5
-    control box I/O of HW-33 and HW-34."""
+    """How the vacuum is switched (AS-30): by the ESP32 valve board (USB serial or
+    Wi-Fi), or by the FR5 control box I/O of HW-33 and HW-34."""
 
-    driver: str = "controller"  # "serial": a board on a serial port; "controller": FR5 I/O
-    serial_port: str = ""  # /dev/ttyUSB0, COM3, ...
+    driver: str = "controller"  # "serial", "http" (the valve board) or "controller" (FR5 I/O)
+    serial_port: str = ""  # /dev/ttyACM0, COM3, ...
     serial_baud: int = 115200
-    serial_on: str = "1"  # the line sent to turn the vacuum on
-    serial_off: str = "0"
-    serial_boot_s: float = 2.0  # wait after opening the port before the first command
+    http_host: str = ""  # the board's address; 192.168.4.1 on its own access point
+    valve_timeout: float = 2.0  # s to wait for the board's answer
+    valve_inverted: bool = False  # True: the vacuum is on while the valve is off
     vacuum_do: int = 0
     blowoff_do: int = 1
     holding_di: int = 0  # vacuum switch output 1: on at the holding threshold (AS-31)
@@ -252,10 +253,12 @@ class Workcell:
                 found.append(f"motion.{name} must be above 0 and at most tcp_speed_max")
         if not 0 < limits.ptp_velocity_scale <= 1 or not 0 < limits.ptp_acceleration_scale <= 1:
             found.append("motion.ptp_*_scale must be above 0 and at most 1")
-        if self.gripper.driver not in ("serial", "controller"):
-            found.append("gripper.driver must be 'serial' or 'controller'")
+        if self.gripper.driver not in ("serial", "http", "controller"):
+            found.append("gripper.driver must be 'serial', 'http' or 'controller'")
         elif self.gripper.driver == "serial" and not self.gripper.serial_port:
             found.append("gripper.serial_port is empty")
+        elif self.gripper.driver == "http" and not self.gripper.http_host:
+            found.append("gripper.http_host is empty")
         return found
 
 

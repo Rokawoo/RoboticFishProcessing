@@ -96,23 +96,25 @@ grasp:                          # Table AS-1
   release_clearance: 0.015
   retreat_distance: 0.10
   seal_timeout: 1.0
-  seal_dwell: 0.5
+  seal_dwell: 1.0               # no vacuum switch: time for the vacuum to build up
+  release_dwell: 1.0            # no vacuum switch: time for it to let go
   drop_time: 0.1
   release_timeout: 1.0
   max_approach_tilt_deg: 15
 
 gripper:
   # What switches the vacuum of the six cups:
-  #   serial      a microcontroller board (ESP32) on a serial port: one text line turns the
-  #               vacuum on, another off. No feedback: the camera confirms the hold.
-  #   controller  the FR5 control box's digital I/O (HW-33, HW-34), with a vacuum switch.
+  #   serial      the ESP32 valve board over USB (firmware: Arm/firmware/valve_control)
+  #   http        the same board over Wi-Fi
+  #   controller  the FR5 control box's digital I/O (HW-33, HW-34), with a vacuum switch
+  # The valve board confirms each switch but can't tell whether the cups hold: with it,
+  # the camera confirms the hold. Try it with: python Arm/scripts/gripper_bench.py on
   driver: serial
-  # PLACEHOLDERS: set the port, the baud rate and the lines your board's firmware expects.
-  serial_port: /dev/ttyUSB0     # Windows: COM3, ...
+  serial_port: /dev/ttyACM0     # Windows: COM3, ...
   serial_baud: 115200
-  serial_on: "1"                # sent with a line feed to turn the vacuum on
-  serial_off: "0"
-  serial_boot_s: 2.0            # an ESP32 may restart when its port is opened: wait this long
+  http_host: ""                 # 192.168.4.1 on the board's own access point
+  valve_timeout: 2.0
+  valve_inverted: false         # true: the vacuum is on while the valve is off
   # driver: controller only
   vacuum_do: 0
   blowoff_do: 1

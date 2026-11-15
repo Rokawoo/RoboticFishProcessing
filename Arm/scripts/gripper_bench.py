@@ -8,14 +8,15 @@ Usage:
     python gripper_bench.py status          # the gripper's state
     python gripper_bench.py on              # vacuum on, then the state for 3 s
     python gripper_bench.py off             # vacuum off
+    python gripper_bench.py pulse 500       # valve board only: vacuum on for 500 ms
     python gripper_bench.py watch           # print the state until Ctrl+C
 
 The gripper section of Arm/configs/workcell.yaml (--workcell) says what switches the vacuum:
-    driver: serial      a board (ESP32) on a serial port; needs pyserial, no ROS. The board
-                        reports nothing, so the state is what was last sent, and opening
-                        the port sends "off" first.
+    driver: serial      the ESP32 valve board over USB; needs pyserial, no ROS
+    driver: http        the same board over Wi-Fi; no ROS
     driver: controller  the FR5 control box I/O with a vacuum switch (Table AS-4); needs
                         ROS 2 and: ros2 run fairino_hardware ros2_cmd_server
+Except for status, starting this tool turns the vacuum off first.
 """
 
 import argparse
@@ -34,6 +35,7 @@ ACTIONS = {
     "status": "the gripper's state",
     "on": "vacuum on, then the state for 3 s",
     "off": "vacuum off",
+    "pulse": "valve board only: vacuum on for some milliseconds",
     "watch": "print the state until Ctrl+C",
 }
 
@@ -67,6 +69,7 @@ def main() -> None:
     fix_console()
     parser = argparse.ArgumentParser(description="Switch and watch the suction gripper by hand.")
     parser.add_argument("action", nargs="?", choices=list(ACTIONS), help="popup if not given")
+    parser.add_argument("ms", nargs="?", type=int, default=500, help="pulse length (500)")
     parser.add_argument("--workcell", type=Path, help="workcell file (Arm/configs/workcell.yaml)")
     args = parser.parse_args()
     action = args.action
@@ -87,7 +90,8 @@ def main() -> None:
             link, io = controller_io()
             print(f"Gripper: control box, vacuum valve DO{settings.vacuum_do}")
         else:
-            print(f"Gripper: board on {settings.serial_port} at {settings.serial_baud} baud")
+            where = settings.serial_port if settings.driver == "serial" else settings.http_host
+            print(f"Gripper: valve board ({settings.driver}) at {where}")
         gripper = make_gripper(settings, io, workcell.grasp.release_timeout)
         if action == "on":
             gripper.vacuum_on()
@@ -98,6 +102,11 @@ def main() -> None:
             gripper.release()
             watch(gripper, 1.5)
             print("✅ Vacuum off.")
+        elif action == "pulse":
+            if not hasattr(gripper, "pulse"):
+                sys.exit("❌ pulse needs the valve board (gripper.driver: serial or http)")
+            gripper.pulse(args.ms)
+            print(f"✅ Vacuum on for {args.ms} ms.")
         elif action == "watch":
             print("Watching the gripper (Ctrl+C to stop):")
             watch(gripper, None)

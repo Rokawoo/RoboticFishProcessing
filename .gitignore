@@ -275,6 +275,9 @@ Vision/trained_cv_models/*
 # Local MLflow database and logged files from training/train.py
 Vision/data/training/mlflow/
 
+# Wi-Fi names and passwords of the valve board (see secrets.example.h)
+Arm/firmware/**/secrets.h
+
 # Editors and OS
 # VS Code: personal settings stay local; the extension recommendations are shared.
 .vscode/*

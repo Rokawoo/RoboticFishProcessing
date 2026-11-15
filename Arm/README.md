@@ -9,7 +9,8 @@ Implements Requirement Spec **Section 2.5 Arm System (AS)** and **Section 2.6 Sa
 | Folder | Contents |
 |---|---|
 | `rfp_arm/` | Motion, grasp sequence steps, gripper I/O, placement poses, failure detection and status (modules below); `basic_move_demo.py` nods and swings the arm (moves the real arm: read its docstring first) |
-| `scripts/` | `gripper_bench.py`: switch the vacuum by hand and watch the vacuum switch. Calibration tools come here |
+| `scripts/` | `gripper_bench.py`: switch the vacuum by hand (`on`, `off`, `pulse`, `status`). Calibration tools come here |
+| `firmware/valve_control/` | Arduino sketch of the valve board (Adafruit Feather ESP32 V2). Wi-Fi names and passwords go in `secrets.h`, copied from `secrets.example.h` and never committed |
 | `configs/` | `workcell.yaml`: frames, tool and camera mount, zones, observation poses, placement slots, motion and gripper limits |
 
 ## Modules (`rfp_arm/`)
@@ -20,7 +21,7 @@ The Control System sees only `interfaces.py`: an `Arm` (move the TCP, stop), a `
 |---|---|---|
 | `workcell.py` | Loads `configs/workcell.yaml`; says why a tool pose is not allowed (work zone, exclusion zones, table clearance, ends of a held fish) | no |
 | `grasp.py` | `plan_grasp`: the poses of Table AS-1 for a fish and a slot. `GraspSequence`: runs them, stops at the failed step with its error code | no |
-| `gripper.py` | The gripper in each form: `SerialGripper` (vacuum switched by a board, an ESP32, on a serial port: on/off only, the camera confirms the hold), `SuctionGripper` (control box I/O with a vacuum switch, Table AS-4), simulated and dry-run grippers | no |
+| `gripper.py` | The gripper in each form: `ValveGripper` (vacuum switched by the ESP32 valve board of `valve.py`: on/off only, the camera confirms the hold), `SuctionGripper` (control box I/O with a vacuum switch, Table AS-4), simulated and dry-run grippers | no |
 | `safety.py` | Checks every planned trajectory in fixed code before it runs: TCP speed, zones, joint travel | no |
 | `kinematics.py`, `poses.py` | FR5 forward kinematics (from the URDF) and pose math | no |
 | `sim.py` | Simulated arm for tests and offline runs | no |
@@ -33,7 +34,7 @@ The Control System sees only `interfaces.py`: an `Arm` (move the TCP, stop), a `
 
 - **Motion (AS-10, AS-40):** MoveIt 2 with the Pilz planner (straight LIN and PTP moves) within the fish handling limits
 - **Grasp sequence (AS-20):** pre-grasp, vacuum on, straight approach, confirm the hold, set the payload, lift, carry, lower, release with blow-off, retreat
-- **Suction gripper (AS-30):** six cups (3 x 2) under one vacuum, switched on and off by an ESP32 board (`gripper.driver: serial` in the workcell file; set the port and the on/off lines your firmware expects). The Requirement Spec's variant, vacuum and blow-off valves on DO0/DO1 and a vacuum switch on DI0/DI1 through frcobot_ros2's `ros2_cmd_server`, is `driver: controller`
+- **Suction gripper (AS-30):** six cups (3 x 2) under one vacuum, switched by a solenoid valve on an ESP32 board (firmware in `firmware/valve_control/`, PC side `rfp_arm/valve.py`) over USB serial or Wi-Fi: `gripper.driver: serial` or `http` in the workcell file. The Requirement Spec's variant, vacuum and blow-off valves on DO0/DO1 and a vacuum switch on DI0/DI1 through frcobot_ros2's `ros2_cmd_server`, is `driver: controller`
 - **Placement (AS-50):** placement slots outside the pick area, uniform heading
 - **Calibration (AS-60):** eye-in-hand hand-eye calibration with a ChArUco board and OpenCV
 - **Failure detection, status and logging (AS-70, AS-80):** no seal, dropped fish, collision, planning failure

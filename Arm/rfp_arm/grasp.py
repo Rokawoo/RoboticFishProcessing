@@ -307,6 +307,8 @@ class GraspSequence:
             self.gripper, GripperState.VACUUM_OFF, g.release_timeout, self._clock, self._sleep
         ):
             raise self._error(E_RELEASE, f"vacuum still on {g.release_timeout:g} s after release")
+        if not self.gripper.has_switch:
+            self._sleep(g.release_dwell)
         self._dropped()
 
     def _dropped(self) -> None:

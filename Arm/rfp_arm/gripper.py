@@ -1,7 +1,8 @@
 """
 The suction gripper (AS-30), six cups under one vacuum, in the forms it can take:
 
-    SerialGripper   the vacuum switched by a microcontroller board on a serial port
+    ValveGripper    the vacuum switched by the ESP32 valve board (valve.py), over USB
+                    serial or Wi-Fi: the gripper as built
     SuctionGripper  vacuum and blow-off valves on control box outputs, the vacuum switch
                     on its inputs: the gripper states of Table AS-4. The I/O comes from a
                     GripperIO (fairino.py on the real arm)
@@ -16,6 +17,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from rfp_arm.interfaces import E_COMM, ArmError, Gripper, GripperState
+from rfp_arm.valve import HttpValve, SerialValve, ValveError
 from rfp_arm.workcell import GripperSettings
 
 
@@ -90,72 +92,66 @@ class SuctionGripper:
         return GripperState.VACUUM_OFF
 
 
-def open_serial(port: str, baud: int):
-    """An open pyserial port. DTR and RTS stay low: raising them restarts an ESP32."""
-    try:
-        import serial
-    except ImportError:
-        raise ArmError(E_COMM, "the serial gripper needs pyserial: pip install pyserial") from None
-    link = serial.Serial()
-    link.port, link.baudrate = port, baud
-    link.dtr = link.rts = False
-    link.timeout, link.write_timeout = 0.2, 1.0
-    link.open()
-    return link
-
-
-class SerialGripper:
+class ValveGripper:
     """
-    Vacuum switched by a microcontroller board on a serial port (an ESP32): one text line
-    turns it on, another off (GripperSettings.serial_on / serial_off). The board reports
-    nothing back, so the state is what was last sent, and a hold can only be confirmed by
-    the camera (`has_switch` is False). Opening the port turns the vacuum off.
+    The gripper as built: six cups under one vacuum, switched by the valve board
+    (valve.py). The board confirms each switch but can't tell whether the cups hold a
+    fish, so `has_switch` is False: only the camera can confirm a hold or see a drop.
+    Making one turns the vacuum off, for a known start.
     """
 
     has_switch = False
 
-    def __init__(
-        self,
-        settings: GripperSettings,
-        open_port: Callable = open_serial,
-        sleep: Callable[[float], None] = time.sleep,
-    ):
-        self._settings = settings
-        try:
-            self._port = open_port(settings.serial_port, settings.serial_baud)
-        except OSError as e:  # pyserial's SerialException is an OSError
-            raise ArmError(E_COMM, f"can't open the gripper's port: {e}") from None
-        sleep(settings.serial_boot_s)
-        self._on = False
-        self._send(settings.serial_off)
+    def __init__(self, valve, inverted: bool = False):
+        """`valve`: a SerialValve or HttpValve. `inverted`: vacuum while the valve is off."""
+        self._valve = valve
+        self._inverted = inverted
+        self._vacuum = False
+        self._switch(False)
 
     def vacuum_on(self) -> None:
-        self._send(self._settings.serial_on)
-        self._on = True
+        self._switch(True)
 
     def release(self) -> None:
-        self._send(self._settings.serial_off)
-        self._on = False
+        self._switch(False)
 
     def state(self) -> GripperState:
-        return GripperState.NO_SEAL if self._on else GripperState.VACUUM_OFF
+        return GripperState.NO_SEAL if self._vacuum else GripperState.VACUUM_OFF
+
+    def pulse(self, milliseconds: int) -> None:
+        """Bench use: the valve on for a time; the board switches it back by itself."""
+        try:
+            self._valve.pulse(milliseconds)
+        except ValveError as e:
+            raise ArmError(E_COMM, str(e)) from None
 
     def close(self) -> None:
-        """Close the port. The vacuum stays as it is."""
-        self._port.close()
+        """Close the link to the board. The vacuum stays as it is."""
+        self._valve.close()
 
-    def _send(self, line: str) -> None:
+    def _switch(self, vacuum: bool) -> None:
+        valve_on = vacuum != self._inverted
         try:
-            self._port.write((line + "\n").encode("ascii"))
-            self._port.flush()
-        except OSError as e:
-            raise ArmError(E_COMM, f"the gripper's port stopped answering: {e}") from None
+            answered = self._valve.on() if valve_on else self._valve.off()
+        except ValveError as e:
+            raise ArmError(E_COMM, str(e)) from None
+        if answered != valve_on:
+            raise ArmError(E_COMM, f"the valve reports {'on' if answered else 'off'} instead")
+        self._vacuum = vacuum
 
 
 def make_gripper(settings: GripperSettings, io: "GripperIO | None", release_timeout: float = 1.0):
     """The real gripper the settings describe. `io`: the control box I/O, for 'controller'."""
-    if settings.driver == "serial":
-        return SerialGripper(settings)
+    try:
+        if settings.driver == "serial":
+            valve = SerialValve(settings.serial_port, settings.serial_baud, settings.valve_timeout)
+            return ValveGripper(valve, settings.valve_inverted)
+        if settings.driver == "http":
+            return ValveGripper(
+                HttpValve(settings.http_host, settings.valve_timeout), settings.valve_inverted
+            )
+    except ValveError as e:
+        raise ArmError(E_COMM, str(e)) from None
     if io is None:
         raise ArmError(E_COMM, "the controller gripper needs the FAIRINO command server")
     return SuctionGripper(io, settings, release_timeout)

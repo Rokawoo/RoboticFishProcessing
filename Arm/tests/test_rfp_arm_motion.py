@@ -14,9 +14,9 @@ from rfp_arm.fairino import command_text, io_bit
 from rfp_arm.grasp import STEPS, GraspSequence, OperatorStop, plan_grasp
 from rfp_arm.gripper import (
     NoGripper,
-    SerialGripper,
     SimGripper,
     SuctionGripper,
+    ValveGripper,
     make_gripper,
     wait_for,
 )
@@ -32,6 +32,7 @@ from rfp_arm.interfaces import (
 from rfp_arm.kinematics import FR5, Chain
 from rfp_arm.safety import check_trajectory
 from rfp_arm.sim import SimArm, interpolate
+from rfp_arm.valve import HttpValve, SerialValve, ValveError
 from rfp_arm.workcell import (
     GripperSettings,
     WorkcellError,
@@ -117,7 +118,7 @@ def test_default_workcell_loads_unverified_and_consistent():
     assert cell.pick_area.x[1] - cell.pick_area.x[0] == pytest.approx(0.4)  # SY-15: 500 x 400 mm
     assert cell.pick_area.y[1] - cell.pick_area.y[0] == pytest.approx(0.5)
     assert cell.grasp.pregrasp_distance == 0.10 and cell.motion.tcp_speed_max == 0.25
-    assert cell.gripper.driver == "serial" and cell.gripper.serial_port  # the cell's ESP32
+    assert cell.gripper.driver == "serial" and cell.gripper.serial_port == "/dev/ttyACM0"
     for pose in cell.observation_poses:  # AS-11: straight down from 450 mm
         tcp = cell.observation_tcp(pose)
         camera = cell.camera_of_tcp(tcp)
@@ -144,7 +145,8 @@ def test_workcell_file_errors_say_what_is_wrong(tmp_path):
     )
     assert "approach_speed" in problems(lambda d: d["motion"].update(approach_speed=0.5))
     assert "serial_port is empty" in problems(lambda d: d["gripper"].update(serial_port=""))
-    assert "must be 'serial' or 'controller'" in problems(lambda d: d["gripper"].update(driver="x"))
+    assert "must be 'serial', 'http' or" in problems(lambda d: d["gripper"].update(driver="x"))
+    assert "http_host is empty" in problems(lambda d: d["gripper"].update(driver="http"))
     assert "observation pose 'right'" in problems(lambda d: d["observation"].update(height=1.5))
 
     def load(text: str):
@@ -286,69 +288,132 @@ def test_gripper_states_follow_table_as4():
     assert NoGripper().state() == GripperState.VACUUM_OFF
 
 
-class Port:
-    """A serial port that remembers what was written to it."""
+class Board:
+    """The valve board's serial port: answers like Arm/firmware/valve_control."""
 
-    def __init__(self, port, baud):
-        self.port, self.baud, self.sent, self.broken, self.closed = port, baud, [], False, False
+    def __init__(self, port="COM7", baud=115200, timeout=2.0):
+        self.port, self.baud = port, baud
+        self.valve, self.lines, self.received = False, [], []
+        self.unplugged = self.closed = False
+        self.dtr = self.rts = None
+
+    def reset_input_buffer(self) -> None:
+        self.lines.clear()
 
     def write(self, data: bytes) -> None:
-        if self.broken:
+        if self.unplugged:
             raise OSError("device disconnected")
-        self.sent.append(data)
+        command = data.decode().strip().upper()
+        self.received.append(command)
+        if command in ("ON", "OFF"):
+            self.valve = command == "ON"
+        elif command.startswith("PULSE"):
+            if int(command[5:] or 0) <= 0:
+                self.lines.append("ERR PULSE needs ms > 0")
+                return
+            self.valve = True
+        elif command != "STATUS":
+            self.lines.append(f"ERR unknown command: {command}")
+            return
+        self.lines.append("OK ON" if self.valve else "OK OFF")
 
     def flush(self) -> None:
         pass
+
+    def readline(self) -> bytes:
+        return (self.lines.pop(0) + "\r\n").encode() if self.lines else b""
 
     def close(self) -> None:
         self.closed = True
 
 
-def test_serial_gripper_sends_one_line_per_switch():
-    settings = GripperSettings(
-        driver="serial", serial_port="COM7", serial_on="ON", serial_off="OFF"
-    )
-    naps, ports = [], []
+def test_valve_board_is_switched_and_answers_are_checked():
+    board = Board()
+    board.lines = ["Connecting to WiFi....", "READY"]  # what a starting board prints
+    valve = SerialValve("COM7", open_port=lambda port, baud, timeout: board)
+    assert board.received == ["STATUS"] and not valve.is_on()
+    assert valve.on() is True and board.valve and valve.is_on()
+    assert valve.pulse(500) is True and board.received[-1] == "PULSE 500"
+    assert valve.off() is False and not board.valve
+    with pytest.raises(ValveError, match="ERR PULSE needs ms"):
+        valve.pulse(0)
+    board.unplugged = True
+    with pytest.raises(ValveError, match="stopped answering"):
+        valve.on()
+    valve.close()
+    assert board.closed
 
-    def open_port(port, baud):
-        ports.append(Port(port, baud))
-        return ports[-1]
+    def no_port(port, baud, timeout):
+        raise OSError("could not open port")
 
-    gripper = SerialGripper(settings, open_port, naps.append)
-    port = ports[0]
-    assert (port.port, port.baud) == ("COM7", 115200) and naps == [2.0]  # the board restarts
-    assert port.sent == [b"OFF\n"] and gripper.state() == GripperState.VACUUM_OFF  # a known start
+    with pytest.raises(ValveError, match="can't open COM7"):
+        SerialValve("COM7", open_port=no_port)
+    clock = FakeClock()
+    silent = Board()
+    silent.write = lambda data: None  # a board that never answers
+    silent.readline = lambda: clock.advance(0.5) or b""  # each read times out
+    with pytest.raises(ValveError, match="doesn't answer"):
+        SerialValve("COM7", open_port=lambda *a: silent, clock=clock)
+
+    pages = {"/status": "OK OFF", "/on": "OK ON", "/off": "OK OFF", "/pulse?ms=250": "OK ON"}
+    asked = []
+
+    def fetch(url):
+        asked.append(url)
+        return pages[url.removeprefix("http://192.168.4.1")]
+
+    wifi = HttpValve("192.168.4.1", fetch=fetch)
+    assert wifi.on() and not wifi.off() and wifi.pulse(250)
+    assert asked[-1] == "http://192.168.4.1/pulse?ms=250"
+
+    def down(url):
+        raise OSError("timed out")
+
+    with pytest.raises(ValveError, match="can't be reached"):
+        HttpValve("192.168.4.1", fetch=down)
+
+
+def test_valve_gripper_turns_the_vacuum_off_first_and_cannot_feel_a_hold():
+    board = Board()
+    board.valve = True  # left on by whoever used it last
+    gripper = ValveGripper(SerialValve("COM7", open_port=lambda *a: board))
+    assert not board.valve and gripper.state() == GripperState.VACUUM_OFF  # a known start
     assert not gripper.has_switch  # nothing tells whether the cups hold: the camera has to
     gripper.vacuum_on()
-    assert port.sent[-1] == b"ON\n" and gripper.state() == GripperState.NO_SEAL
+    assert board.valve and gripper.state() == GripperState.NO_SEAL
     gripper.release()
-    assert port.sent[-1] == b"OFF\n" and gripper.state() == GripperState.VACUUM_OFF
-    port.broken = True
+    assert not board.valve and gripper.state() == GripperState.VACUUM_OFF
+    gripper.pulse(300)
+    assert board.received[-1] == "PULSE 300"
+    board.unplugged = True
     with pytest.raises(ArmError, match="stopped answering") as error:
         gripper.vacuum_on()
     assert error.value.code == "E_COMM" and gripper.state() == GripperState.VACUUM_OFF
-    gripper.close()
-    assert port.closed
 
-    def no_port(port, baud):
-        raise OSError("could not open port 'COM7'")
+    inverted = Board()
+    other_way = ValveGripper(SerialValve("COM7", open_port=lambda *a: inverted), inverted=True)
+    assert inverted.valve and other_way.state() == GripperState.VACUUM_OFF
+    other_way.vacuum_on()
+    assert not inverted.valve and other_way.state() == GripperState.NO_SEAL
 
-    with pytest.raises(ArmError, match="can't open the gripper's port"):
-        SerialGripper(settings, no_port, naps.append)
     assert isinstance(make_gripper(GripperSettings(), FakeIO()), SuctionGripper)
     with pytest.raises(ArmError, match="command server"):
         make_gripper(GripperSettings(), None)
+    with pytest.raises(ArmError, match="can't be reached|can't open|pyserial"):
+        make_gripper(GripperSettings(driver="serial", serial_port="/dev/no-such-port"), None)
 
 
-def test_grasp_with_the_serial_gripper_relies_on_the_camera():
-    settings = GripperSettings(driver="serial", serial_port="COM7")
-    gripper = SerialGripper(settings, Port, lambda seconds: None)
+def test_grasp_with_the_valve_gripper_relies_on_the_camera():
+    board = Board()
+    gripper = ValveGripper(SerialValve("COM7", open_port=lambda *a: board))
     hold = Hold()
     rig = Rig(gripper=gripper, hold_check=hold)
+    before = rig.clock.now
     rig.run()
     assert tuple(rig.steps) == STEPS and hold.events == ["start", "stop"]
-    assert [bytes(line) for line in gripper._port.sent] == [b"0\n", b"1\n", b"0\n"]
-    blind = Rig(gripper=SerialGripper(settings, Port, lambda seconds: None))
+    assert [c for c in board.received if c != "STATUS"] == ["OFF", "ON", "OFF"]
+    assert rig.clock.now - before >= 2.0  # 1 s for the vacuum to build, 1 s to let go
+    blind = Rig(gripper=ValveGripper(SerialValve("COM7", open_port=lambda *a: Board())))
     assert blind.fails().code == E_NO_SEAL  # no camera cue either: it doesn't lift
 
 
