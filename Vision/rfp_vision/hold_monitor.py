@@ -11,7 +11,8 @@ while the arm lifts and carries. Two cues, each used when it is available:
     mask   the detector's outline now, against the outline at the grasp (IoU)
     depth  how much of the close surface seen at the grasp is still at its distance
 
-A frame counts as "fish there" if any available cue says so, and the fish counts as
+A frame counts as "fish there" if any available cue says so (depth is read first, and
+the detector only asked when depth doesn't settle it), and the fish counts as
 dropped after `lost_frames` such frames in a row without it. Depth needs the fish at
 least 7 cm from the D405's lens (its minimum range). Plain NumPy/OpenCV, no ROS.
 """
@@ -93,18 +94,20 @@ class HoldMonitor:
         """Compare a frame with the reference."""
         s = self.settings
         iou = share = None
-        if self._mask is not None:
+        if self._region is not None and frame.depth is not None:
+            depth = self._small(frame.depth)
+            same = np.abs(depth - self._depth) <= s.depth_tolerance_m
+            share = float(np.count_nonzero(same & self._region & (depth > 0)))
+            share /= np.count_nonzero(self._region)
+        # Any cue saying "there" settles the frame, so the model (12 ms of GPU a frame) is
+        # asked only when the depth doesn't already say so.
+        if self._mask is not None and not (share is not None and share >= s.min_depth_share):
             iou = 0.0
             for detection in self._detector.detect(frame.color):
                 mask = self._outline_mask(detection.polygon, frame)
                 union = np.count_nonzero(mask | self._mask)
                 if union:
                     iou = max(iou, np.count_nonzero(mask & self._mask) / union)
-        if self._region is not None and frame.depth is not None:
-            depth = self._small(frame.depth)
-            same = np.abs(depth - self._depth) <= s.depth_tolerance_m
-            share = float(np.count_nonzero(same & self._region & (depth > 0)))
-            share /= np.count_nonzero(self._region)
         votes = []
         if iou is not None:
             votes.append(iou >= s.min_iou)

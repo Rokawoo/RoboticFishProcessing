@@ -385,8 +385,9 @@ def test_mask_cue_follows_the_outline_and_either_cue_keeps_the_fish():
 
     both = HoldMonitor(HoldSettings(), OutlineDetector([there, None, None]))
     assert both.start(held_frame(0.12)) == ["mask", "depth"]
-    status = both.update(held_frame(0.12))  # the model misses a frame, the surface is there
-    assert status.held and status.mask_iou == 0.0 and status.depth_share > 0.9
+    status = both.update(held_frame(0.12))  # the surface is there: the model isn't even asked
+    assert status.held and status.mask_iou is None and status.depth_share > 0.9
+    assert len(both._detector.boxes) == 2
     assert both.update(held_frame(None)).held is False
 
     assert HoldMonitor(HoldSettings(use_mask=False), OutlineDetector([])).start(colour_only) == []

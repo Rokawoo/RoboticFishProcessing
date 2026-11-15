@@ -513,7 +513,7 @@ class MoveItArm:
         deadline = time.monotonic() + timeout
         last = self.joints()
         while time.monotonic() < deadline:
-            time.sleep(0.05)
+            time.sleep(0.02)  # two joint states at the driver's 100 Hz
             now = self.joints()
             if all(abs(now[name] - last[name]) < 1e-4 for name in self.workcell.joints):
                 return
