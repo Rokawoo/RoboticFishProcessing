@@ -42,7 +42,8 @@ def fish(fish_id, x, y, heading_deg=90.0, confidence=0.9, code="none", overlap=F
     pose = pose_down((x, y, 0.10), math.radians(heading_deg)) if ok else None
     outline = np.array([[100, 60], [220, 60], [220, 120], [100, 120]], float)
     heading = math.radians(heading_deg) if ok else None
-    return Fish(fish_id, ok, code, confidence, pose, pose, heading, 0.60, 0.12, 0.10, None,
+    bbox = (x - 0.1, x + 0.1, y - 0.3, y + 0.3, 0.0, 0.1)  # vision places failed fish too
+    return Fish(fish_id, ok, code, confidence, pose, pose, heading, 0.60, 0.12, 0.10, bbox,
                 overlap, outline, heading_known=known)  # fmt: skip
 
 
@@ -257,6 +258,14 @@ def test_only_valid_fish_inside_the_pick_area_are_candidates():
     assert report.cycles == 0 and rig.gripper.events == []
     assert "none can be picked: fish 1: low_confidence" in rig.operator.alerts[0]
     assert report.ended.startswith("stopped at: Fish are on the table")
+
+
+def test_fish_seen_outside_the_pick_area_do_not_keep_the_run_going():
+    # a placed fish at the edge of the frame (out_of_frame) beside the pick area: clear (SY-22)
+    rig = Rig((0.40, 0.45, {"code": "out_of_frame"}))
+    assert rig.run().ended == "pick area clear" and rig.operator.alerts == []
+    rig = Rig((0.40, -0.10, {"code": "out_of_frame"}))  # the same inside it: the operator
+    assert "fish 1: out_of_frame" in rig.run().ended and rig.operator.alerts
 
 
 def test_no_seal_is_retried_then_the_fish_is_skipped():

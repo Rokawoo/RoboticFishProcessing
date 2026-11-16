@@ -190,8 +190,10 @@ class PickPlaceCycle:
         observation = self._observe(pose)
         fish_list = observation.fish_list
         candidates = self._candidates(fish_list)
+        # Fish seen outside the pick area (placed ones at the frame's edge) don't count (SY-22)
+        in_area = [f for f in fish_list.fish if self._maybe_in_pick_area(f)]
 
-        if not fish_list.fish:
+        if not in_area:
             self._empty += 1
             self._next_pose()
             if self._empty >= s.empty_passes_to_end * len(poses):
@@ -204,7 +206,7 @@ class PickPlaceCycle:
             self._next_pose()
             if self._unusable >= len(poses):  # a full pass with fish but none to pick
                 self._unusable = 0
-                self._pause("Fish are on the table but none can be picked: " + _why(fish_list))
+                self._pause("Fish are on the table but none can be picked: " + _why(in_area))
             return True
         self._unusable = 0
         if self._slot >= len(self.workcell.slots):
@@ -285,6 +287,17 @@ class PickPlaceCycle:
             and not any(zone.contains(fish.grasp_point) for zone in cell.exclusion_zones)
             and self._attempts.count(fish.grasp_point) < limit
         ]
+
+    def _maybe_in_pick_area(self, fish: Fish) -> bool:
+        """Where vision put the fish (its grasp point, else the middle of its outline in {B});
+        a fish it couldn't place at all counts as in the pick area."""
+        if fish.grasp_point is not None:
+            point = fish.grasp_point[:2]
+        elif fish.bbox is not None:
+            point = ((fish.bbox[0] + fish.bbox[1]) / 2, (fish.bbox[2] + fish.bbox[3]) / 2)
+        else:
+            return True
+        return self.workcell.pick_area.contains(point)
 
     def _show(self, observation: Observation, chosen: int | None = None) -> np.ndarray:
         fish_list = observation.fish_list
@@ -520,7 +533,7 @@ class _VisionHold:
         self._cycle._hold_text = ""
 
 
-def _why(fish_list: FishList) -> str:
-    """The failure codes of a fish list's fish, for an alert (CS-73)."""
-    codes = [f"fish {f.fish_id}: {f.failure_code}" for f in fish_list.fish if not f.vision_ok]
+def _why(fish: list[Fish]) -> str:
+    """The failure codes of the fish, for an alert (CS-73)."""
+    codes = [f"fish {f.fish_id}: {f.failure_code}" for f in fish if not f.vision_ok]
     return "; ".join(codes) if codes else "attempt limit reached for each (CS-62)"
