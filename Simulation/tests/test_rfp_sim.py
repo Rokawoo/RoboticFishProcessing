@@ -3,6 +3,7 @@ arm and camera, and a whole cycle in it. Rendering is offscreen and small; skipp
 pyvista (the `sim` extra)."""
 
 import math
+import sys
 import zipfile
 
 import pytest
@@ -245,12 +246,38 @@ def test_closing_the_3d_window_is_noticed_and_asks_the_run_to_stop():
     viewer.on_close = console.request_stop
     try:
         assert not viewer.closed and not console.stop_requested()
-        viewer.plotter.iren.interactor.ExitCallback()  # what the window's close button does
+        viewer.plotter.iren.interactor.ExitCallback()  # the event the close button raises
         assert viewer.closed and console.stop_requested()
         viewer.update()  # harmless afterwards
         viewer.wait(0.05, 1.0)
     finally:
         viewer.close()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or not pv.system_supports_plotting(), reason="needs a Windows display"
+)
+def test_the_close_button_destroys_the_window_and_the_video_is_still_saved(tmp_path):
+    import ctypes
+
+    from rfp_sim.render import Viewer
+
+    video = tmp_path / "view.mp4"
+    world = world_with_fish(window=(320, 200))
+    viewer = Viewer(world, {}, show=True, video=str(video))
+    try:
+        viewer.wait(0.2, 1.0)
+        user32 = ctypes.windll.user32
+        window = int(viewer.plotter.render_window.GetGenericWindowId().split("_")[1], 16)
+        assert user32.IsWindow(window)
+        user32.PostMessageW(window, 0x0010, 0, 0)  # WM_CLOSE, as the X button sends
+        viewer.wait(0.2, 1.0)  # used to draw into the destroyed window and raise
+        assert viewer.closed and not user32.IsWindow(window)
+    finally:
+        viewer.close()
+    frames = cv2.VideoCapture(str(video))
+    assert frames.isOpened() and frames.read()[0]
+    frames.release()
 
 
 # ---------------------------------------------------------------------------

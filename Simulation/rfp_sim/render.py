@@ -338,7 +338,6 @@ class Viewer:
         self.show = show
         self.status = ""
         self.on_close = None  # called once when the user closes the window
-        self.on_close = None  # called once when the user closes the window
         size = world.settings.window
         self.plotter = pv.Plotter(
             off_screen=not show, window_size=size, title="Fish cell simulation"
@@ -405,6 +404,10 @@ class Viewer:
         self.status = text
 
     def update(self) -> None:
+        if self.show and not self.closed:
+            # Events first: the window's close button destroys the window (WM_CLOSE on
+            # Windows) and nothing may be drawn into it after that.
+            self.plotter.iren.process_events()
         if self.closed:
             return
         self.scene.update()
@@ -429,10 +432,7 @@ class Viewer:
         vacuum = f"vacuum {'ON' if self.world.vacuum else 'off'}"
         lines = [self.status, vacuum + (f", holding {held.name}" if held else ""), tube]
         self.text.set_text("upper_left", "\n".join(line for line in lines if line))
-        if self.show:
-            self.plotter.update()
-        else:
-            self.plotter.render()
+        self.plotter.render()
         if self._video:
             self._record()
 
@@ -466,4 +466,5 @@ class Viewer:
         if self._writer is not None:
             self._writer.release()
             self._writer = None
-        self.plotter.close()
+        if not self.closed:
+            self.plotter.close()
