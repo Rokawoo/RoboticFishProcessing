@@ -5,12 +5,12 @@ scored against the simulator's truth. Run it before and after a change to vision
 or the cycle: the change is better if these numbers are. Nothing real moves; no ROS.
 
 Usage:
-    python Simulation/benchmark.py                          # 20 scenes, full-size fish anywhere
+    python Simulation/benchmark.py                 # 20 scenes, full-size fish anywhere
     python Simulation/benchmark.py --scenes 50 --label my-change
     python Simulation/benchmark.py --compare Simulation/benchmarks/<run>   # with the change
     python Simulation/benchmark.py --fish-length 0.55 --placement view     # the old easy case
-    python Simulation/benchmark.py --detector truth          # without the trained model
-    python Simulation/benchmark.py --any-size                # without vision's size checks
+    python Simulation/benchmark.py --detector truth   # without the trained model
+    python Simulation/benchmark.py --any-size         # without vision's size checks
 
 Scenes are the same for the same --seed, --fish, --fish-length and --placement, so two runs
 differ only by the code and settings. Settings come from the control panel like a real run
