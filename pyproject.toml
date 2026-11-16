@@ -62,7 +62,7 @@ where = ["Vision", "Arm", "ControlSys", "Simulation"]
 include = ["rfp_*"]
 
 [tool.pytest.ini_options]
-testpaths = ["Vision/tests", "Arm/tests", "ControlSys/tests", "Simulation/tests"]
+testpaths = ["Vision/tests", "Arm/tests", "ControlSys/tests", "Simulation/tests", "tools/tests"]
 
 [tool.ruff]
 line-length = 100

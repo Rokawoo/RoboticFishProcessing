@@ -1,0 +1,4 @@
+# Shell scripts keep LF line endings on every checkout (bash refuses CRLF)
+*.sh text eol=lf
+# Trained weights are binary: never converted or diffed as text
+*.pt binary
