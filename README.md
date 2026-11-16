@@ -35,10 +35,10 @@ flowchart LR
 
 One cycle:
 
-1. **Observe:** camera over the table, aligned color + depth.
+1. **Observe:** camera over the table, aligned color + depth; a fish cut off at the image's edge gets a closer look, centered on it.
 2. **Find:** YOLO26 masks; depth and the camera's pose give each fish's position, heading and surface slope; unreliable detections are flagged.
 3. **Decide:** the VLM picks a candidate; fixed code validates it, with a fixed-rule fallback.
-4. **Pick and place:** vacuum on, approach square to the fish's surface until contact is felt, the camera confirms the hold and watches for a drop, carry, set down with a uniform heading, release.
+4. **Pick and place:** vacuum on, approach square to the fish's surface where it balances (toward the heavier head) until contact is felt, the camera confirms the hold and watches for a drop, carry, set down with a uniform heading, release.
 5. **Log:** one CSV row per cycle.
 
 Every failure (no seal, dropped fish, bad VLM answer) has a defined response: retry, skip the fish, or pause for the operator.
@@ -55,7 +55,7 @@ Every failure (no seal, dropped fish, bad VLM answer) has a defined response: re
 | [Simulation/](Simulation/README.md) | 3D virtual cell (arm, gripper, camera, fish) running the real cycle |
 | [Demos/](Demos/) | Taught demos (poses and vacuum steps) for `ControlSys/rfp_controlsys/demo.py` |
 
-Subsystems talk only through the interfaces of Requirement Spec Section 2.7. Root: `pyproject.toml` (one extra per subsystem), `requirements.txt` / `environment.yml`, `control_panel.yaml`, `CLAUDE.md` (notes for AI assistants).
+Subsystems talk only through the interfaces of Requirement Spec Section 2.7. Root: `setup.ps1` / `setup.sh` (`tools/setup_rfp.py`), `pyproject.toml` (one extra per subsystem), `requirements.txt` / `environment.yml`, `control_panel.yaml`, `CLAUDE.md` (notes for AI assistants).
 
 ## Hardware and software
 
@@ -75,16 +75,17 @@ Subsystems talk only through the interfaces of Requirement Spec Section 2.7. Roo
 ```bash
 git clone https://github.com/Rokawoo/RoboticFishProcessing.git
 cd RoboticFishProcessing
-conda env create -f environment.yml   # after dependency changes: conda env update -f environment.yml --prune
-conda activate rfp
-pre-commit install                    # ruff checks and formats every commit
-pytest
+.\setup.ps1           # Windows (PowerShell)
+./setup.sh            # Linux; the robot PC: ./setup.sh --robot
+conda activate rfp    # the robot PC: source .venv/bin/activate
 ```
 
-- PyTorch comes with CUDA 13.0 (NVIDIA driver 580+; `requirements.txt` has the older-driver option). Without conda: `pip install -r requirements.txt` (Python 3.10).
+The setup checks each step first and does only what's missing, so run it again after a pull: the Python environment (conda `rfp`, Python 3.10, from `requirements.txt`), the git hooks (ruff on every commit), the simulation's FR5 meshes, and a check of the GPU and the settings. `--check` only reports. `--robot` also installs ROS 2 Humble, MoveIt 2, ros2_control and librealsense, gives you the serial port and clones FAIRINO's driver ([the rest](#run-it-on-the-arm)). If PowerShell won't run scripts: `powershell -ExecutionPolicy Bypass -File .\setup.ps1`.
+
+- The fish model is in Git: each training run's `weights/best.pt` (the rest of a run, the data and the logs stay out). Train a new one: [Vision/README.md](Vision/README.md#building-the-fish-model).
+- PyTorch comes with CUDA 13.0 (NVIDIA driver 580+; `requirements.txt` has the older-driver option).
 - ruff (`ruff check .`, `ruff format .`) also runs on every push.
 - Label Studio needs its own environment (it pins `numpy<2`): `conda create -n label-studio python=3.11`, `pip install label-studio`.
-- Train a fish model: [Vision/README.md](Vision/README.md#building-the-fish-model). Data, weights and logs stay out of Git.
 
 ## Run it in the 3D simulation
 
@@ -100,6 +101,8 @@ The arm picks every fish in the pick area and places it in the next slot. When i
 - **Green** is the pick area, **blue** the placement zone with a dot per slot, yellow the camera's view. They come from the workcell file the real arm uses: try a new layout here first.
 - Vision uses the newest model in `Vision/trained_cv_models/`. Without one, set `detector: truth` in the `simulation` section of [control_panel.yaml](control_panel.yaml), which also sets the fish (`fish_count`, `seed`), the speed, and `drop: lift` or `carry` to test drop detection.
 - Each run's log: `ControlSys/runs/<date>_<time>_sim3d/` (`cycles.csv`, the image of each decision, `report.json`).
+
+**Benchmark:** `python Simulation/benchmark.py` runs the cycle on 20 seeded scenes (full-size stand-ins lying anywhere) and scores it against the simulator's truth: fish placed, slot and heading error, the cups' distance from each fish's center of mass, failures. Run it before and after a change; `--compare <earlier run>` shows the difference. Results: `Simulation/benchmarks/` (not in Git).
 
 Details: [Simulation/README.md](Simulation/README.md).
 
@@ -146,9 +149,12 @@ The placeholder layout, from above. `o-->` is a slot: where a placed fish's midd
 | `table.z` | Height of the table top | 0 if the arm stands on the table |
 | `zones.exclusion` | Boxes the arm never enters (operator, equipment) | |
 | `observation.poses` | Where the camera looks down from, `observation.height` above the table | Together they must see the whole pick area. From 0.45 m the camera sees about 0.85 × 0.50 m, long side along `yaw_deg`. Prefer taught `joints_deg`, with j6 near 0 |
+| `observation.close_height` | Camera height for a closer look at a fish cut off at the image's edge | The image's long side spans about 1.9 × (height − the fish's height): 0.62 holds the 0.79 m stand-in |
 | `tool.wrist_range_deg` | How far j6 may turn (vacuum tube) | j6 = 0 where the tube hangs untwisted |
 | `tool.tcp`, `camera.mount` | Cup faces' middle and camera lens, measured on the gripper | Then `camera.calibrated: true` |
 | `gripper` | What switches the vacuum: `driver: serial` and `serial_port` for the valve board | Test: `python Arm/scripts/gripper_bench.py status` |
+
+**The fish:** `vision.fish_type` in control_panel.yaml: `stand_in` (the printed catfish) or `catfish` (real ones). Each has size limits (a fish measured outside them isn't picked) and `balance_ahead_share`: how far ahead of the middle the cups go, toward the heavier head ([vision.yaml](Vision/configs/vision.yaml)).
 
 **Measuring:** bring the middle of the cups over the point, pointing straight down, and run `pick_place.py --mode check` (MoveIt and the command server running, [below](#run-it-on-the-arm)). It prints the cups' position as `TCP (mm)` and the joints as `joints (deg)` (for `joints_deg`). The pendant shows the flange, not the cups: same x and y when pointing down, different z.
 
@@ -164,15 +170,14 @@ Then run the [simulation](#run-it-in-the-3d-simulation) to see whether the camer
 
 > The program doesn't set the controller's speed limit or collision detection: set them on the pendant. q or Esc in the camera window, or Ctrl+C, stops the arm; if the program dies mid-move, the move finishes.
 
-**Once, on the robot PC:**
+**Once, on the robot PC** (Ubuntu 22.04): `./setup.sh --robot` installs ROS 2 Humble, MoveIt 2, ros2_control and librealsense, adds you to `dialout` (the valve board's port), clones [frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2) into `~/rfp_ws/src` and sets up the Python environment (`.venv`, which sees ROS's packages). Then by hand:
 
-1. ROS 2 Humble, MoveIt 2 and [frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2) built in a ROS workspace; librealsense.
-2. This repository in the Python that ROS uses: `pip install -e ".[vision,arm,control]"`.
-3. Real driver instead of the mock: in `fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro`, `fairino_hardware/FairinoHardwareInterface` instead of `mock_components/GenericSystem`. Keep a mock copy for `--mode sim`.
-4. Valve board flashed ([Arm/firmware/valve_control](Arm/firmware/valve_control)), its port in control_panel.yaml (`gripper.serial_port`, e.g. `/dev/ttyACM0`). Serial access: `sudo usermod -aG dialout $USER`, then log in again.
-5. The [workcell](#set-up-the-workcell) measured and verified.
+1. Build FAIRINO's driver: frcobot_ros2 has a hardware package per controller software version; keep the one matching yours (FAIRINO's ROS 2 guide), then `colcon build` in `~/rfp_ws`.
+2. Real driver instead of the mock: in `fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro`, `fairino_hardware/FairinoHardwareInterface` instead of `mock_components/GenericSystem`. Keep a mock copy for `--mode sim`.
+3. Valve board flashed ([Arm/firmware/valve_control](Arm/firmware/valve_control)), its port in control_panel.yaml (`gripper.serial_port`, e.g. `/dev/ttyACM0`).
+4. The [workcell](#set-up-the-workcell) measured and verified.
 
-**Each session**, three terminals, each with `source /opt/ros/humble/setup.bash` and the workspace's `install/setup.bash`:
+**Each session**, three terminals, each with `source /opt/ros/humble/setup.bash` and `~/rfp_ws/install/setup.bash` (the pipeline's also `source .venv/bin/activate`):
 
 ```bash
 ros2 launch fairino5_v6_moveit2_config demo.launch.py          # driver, MoveIt, RViz

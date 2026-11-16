@@ -6,7 +6,7 @@ Turns camera frames into a fish list (mask, keypoints, position and heading in t
 |---|---|
 | `rfp_vision/` | Runtime vision (below) |
 | `data/` | Dataset and training tools ([details](data/README.md)) |
-| `trained_cv_models/` | One folder per training run; `weights/best.pt` is the model (not in Git) |
+| `trained_cv_models/` | One folder per training run; its `weights/best.pt` is the model, the one file of a run in Git |
 | `configs/` | `vision.yaml`: camera, model and thresholds |
 
 ## Building the fish model
@@ -31,8 +31,9 @@ Plain Python, no ROS: ControlSys calls it directly (`vision_system.py`). Setting
 
 - **Camera (VS-10):** `camera.py`: the D405 with depth aligned to color, RealSense recordings, or any OpenCV camera or video (color only: fish are put on the table plane)
 - **Detection (VS-20):** `detector.py`: a training run's YOLO26 segmentation model
-- **Keypoints (VS-30):** YOLO26 pose model, not trained yet; the grasp point is the outline's centroid
-- **Pose (VS-40):** `fish_list.py`, `geometry.py`: position, heading, size and the surface's slope under the cups, in the base frame. `fish_heading.py`: head end from the outline's shape and the body's slope (one frame at a time)
+- **Keypoints (VS-30):** YOLO26 pose model, not trained yet
+- **Pose (VS-40):** `fish_list.py`, `geometry.py`: middle, heading, size and the surface's slope under the cups, in the base frame. The cups go where the fish balances: `balance_ahead_share` of its length ahead of the middle, toward the heavier head. `fish_heading.py`: head end from the outline's shape and the body's slope (one frame at a time)
+- **Fish types:** `fish_type` in `configs/vision.yaml` (or the control panel): `stand_in` (the printed fish) or `catfish` (real ones), each with its size limits and balance point
 - **Output (VS-50, IF-20):** `FishList` with the fields of Tables IF-1 and IF-2
 - **Failure flags (VS-60):** Table VS-2, except `covered` and `invalid_keypoints`
 - **Hold check:** `hold_monitor.py`: whether a held fish is still on the gripper, from its outline and the depth near the camera while the arm moves
