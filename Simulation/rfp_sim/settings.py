@@ -6,6 +6,7 @@ from pathlib import Path
 
 SIM_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_FILE = SIM_DIR / "sim.yaml"
+MESH_CACHE = SIM_DIR / "models" / "fr5"  # FAIRINO's FR5 meshes, downloaded (not in Git)
 
 
 @dataclass
@@ -21,7 +22,8 @@ class SimSettings:
     fish_color: tuple[float, float, float] = (0.93, 0.93, 0.9)  # the white printed stand-in
 
     # The arm and the gripper
-    robot_meshes: str = ""  # folder with the FR5's STL files; "": search ROS, else plain shapes
+    robot_meshes: str = ""  # folder with the FR5's STL files; "": ROS's, else the download
+    download_robot_meshes: bool = True  # fetch FAIRINO's FR5 meshes once (models/fr5/)
     speed: float = 1.0  # simulated time per real second; 0: as fast as it renders
     step_s: float = 0.05  # simulated seconds between rendered arm poses
     cup_rows: tuple[float, ...] = (-0.05, 0.0, 0.05)  # cup centers along the tool's x (m)
@@ -40,6 +42,7 @@ class SimSettings:
     hfov_deg: float = 87.0  # D405
     depth_range_m: tuple[float, float] = (0.07, 1.0)  # outside it the D405 gives no depth
     depth_noise_m: float = 0.0005
+    depth_edge_holes_px: int = 3  # no depth this close to a depth step (stereo occlusion); 0: off
     detector: str = "model"  # "model": the trained YOLO; "truth": the renderer's own masks
 
     # The 3D view

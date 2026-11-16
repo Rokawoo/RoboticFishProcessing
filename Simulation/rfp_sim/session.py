@@ -9,7 +9,7 @@ from rfp_arm.workcell import Workcell
 from rfp_sim.assets import find_robot_meshes, load_fish, robot_link_meshes
 from rfp_sim.devices import VirtualArm, VirtualGripper
 from rfp_sim.render import TruthDetector, Viewer, VirtualCamera
-from rfp_sim.settings import SIM_DIR, SimSettings, model_path
+from rfp_sim.settings import MESH_CACHE, SIM_DIR, SimSettings, model_path
 from rfp_sim.world import World
 
 
@@ -48,11 +48,11 @@ def build_session(
     notes = [f"fish: {model.source}, {model.length * 1000:.0f} mm long"]
     if not path.is_file():
         notes.append(f"no fish model at {path}: using a plain stand-in shape")
-    folder = find_robot_meshes(settings.robot_meshes, SIM_DIR)
-    meshes = robot_link_meshes(folder, ["base_link", *FR5.links])
-    notes.append(
-        f"arm: {'meshes from ' + str(folder) if meshes else 'plain shapes (no FR5 meshes found)'}"
+    folder, source = find_robot_meshes(
+        settings.robot_meshes, SIM_DIR, MESH_CACHE, settings.download_robot_meshes
     )
+    meshes = robot_link_meshes(folder, ["base_link", *FR5.links])
+    notes.append(f"arm: {source}" if meshes else f"arm: plain shapes ({source})")
     world = World(workcell, settings, model)
     notes += world.place_fish(settings.fish_count, settings.seed)
     camera = VirtualCamera(world, meshes)

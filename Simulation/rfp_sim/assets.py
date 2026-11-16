@@ -1,9 +1,13 @@
 """
 Meshes for the simulation: the catfish (a .3mf or .stl, or a plain stand-in shape) and the
-FR5's links (frcobot_ros2's STL files, or plain shapes when they aren't installed).
+FR5's links: FAIRINO's own STL files from frcobot_ros2 (a ROS install, a configured folder,
+or downloaded once and kept in Simulation/models/fr5/), else plain shapes.
 """
 
+import hashlib
 import os
+import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
@@ -130,18 +134,74 @@ def stand_in_fish(length: float) -> FishModel:
     return _centered(np.array(vertices), np.array(triangles), "plain stand-in shape")
 
 
-def find_robot_meshes(configured: str, base: Path) -> Path | None:
-    """The folder with the FR5's link meshes: the configured one, else frcobot_ros2's
-    fairino_description in a sourced ROS workspace, else None."""
+# FAIRINO's FR5 link meshes in frcobot_ros2, at a fixed commit. They carry no license, so
+# they aren't part of this repository: they are downloaded for local use and checked.
+FR5_COMMIT = "eb6d7ce40071aeb1a0c06e40e95f3be46bd7594e"
+FR5_URL = (
+    "https://raw.githubusercontent.com/FAIR-INNOVATION/frcobot_ros2/{commit}/"
+    "fairino_description/meshes/fairino5_v6/{name}.STL"
+)
+FR5_SHA256 = {
+    "base_link": "ce96425ae7401b8a7262a1c1fd40c8b02bbf152a975d33debcb3ed4369e3938e",
+    "shoulder_link": "c4cc46eea722cab4b57779f0c2cc99091cb0c698a31fc58736c120a0e6dd1324",
+    "upperarm_link": "407e0b0f98eb569b9255b6d3258a7c3ba8b0d8b48c8f3c073bd0d9e59ad5faf0",
+    "forearm_link": "28387d67b50263ffe67cf8a6a1f2f7f11a12bd2bedc65340f920c5311eb1ef92",
+    "wrist1_link": "0f6f96c39bd237f2ff5beeab4179074900cba0d73664dc0bab682d151b777ac6",
+    "wrist2_link": "63c43f1f17a86a1d74b07a172185d1cb3ff4133143511832a2bcd31b2b6a9bdf",
+    "wrist3_link": "4c4d1706c0a1895d59d70af0f444e72bb80abdb526f1a22f24cd4ad3adfa00fb",
+}
+
+
+def _fetch(url: str) -> bytes:
+    with urllib.request.urlopen(url, timeout=20) as response:
+        return response.read()
+
+
+def download_fr5_meshes(folder: Path, fetch=_fetch) -> str | None:
+    """Download FAIRINO's FR5 meshes into `folder`, each checked against its SHA-256.
+    None when done; else why not (no network, a changed file)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, digest in FR5_SHA256.items():
+        target = folder / f"{name}.STL"
+        if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
+            continue
+        try:
+            data = fetch(FR5_URL.format(commit=FR5_COMMIT, name=name))
+        except (urllib.error.URLError, OSError) as e:
+            return f"can't download the FR5 meshes ({e})"
+        if hashlib.sha256(data).hexdigest() != digest:
+            return f"the downloaded {name}.STL isn't the expected file"
+        partial = target.with_suffix(".partial")
+        partial.write_bytes(data)
+        partial.replace(target)
+    return None
+
+
+def find_robot_meshes(
+    configured: str, base: Path, cache: Path | None = None, download: bool = False, fetch=_fetch
+) -> tuple[Path | None, str]:
+    """(folder with the FR5's link meshes or None, where they came from). Looks in the
+    configured folder, then a sourced ROS workspace's fairino_description, then `cache`,
+    which is filled from FAIRINO's repository if `download` is on."""
     if configured:
         folder = Path(configured).expanduser()
         folder = folder if folder.is_absolute() else base / folder
-        return folder if folder.is_dir() else None
+        return (folder, str(folder)) if folder.is_dir() else (None, f"no folder {folder}")
     for prefix in filter(None, os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep)):
         folder = Path(prefix) / "share" / "fairino_description" / "meshes" / "fairino5_v6"
         if folder.is_dir():
-            return folder
-    return None
+            return folder, f"ROS: {folder}"
+    if cache is None:
+        return None, "no FR5 meshes"
+    complete = all((cache / f"{name}.STL").is_file() for name in FR5_SHA256)
+    if complete:
+        return cache, f"FAIRINO's meshes in {cache}"
+    if not download:
+        return None, "no FR5 meshes (download_robot_meshes is off)"
+    problem = download_fr5_meshes(cache, fetch)
+    if problem:
+        return None, problem
+    return cache, f"FAIRINO's meshes, downloaded to {cache}"
 
 
 def robot_link_meshes(folder: Path | None, links: list[str]) -> dict[str, pv.PolyData]:

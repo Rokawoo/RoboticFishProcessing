@@ -62,7 +62,7 @@ simulation:                     # pick_place.py --mode sim3d (Simulation/sim.yam
   speed: 1.0                    # 2: twice as fast as real time; 0: as fast as it renders
   detector: model               # model: the trained YOLO; truth: the renderer's own masks
   drop: ""                      # lift | carry: lose the fish then (tests drop detection)
-  robot_meshes: ""              # folder with the FR5 STLs (frcobot_ros2); "": plain shapes
+  robot_meshes: ""              # folder with the FR5 STLs; "": FAIRINO's, downloaded once
 
 control:
   max_attempts_per_fish: 3

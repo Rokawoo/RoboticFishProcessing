@@ -68,6 +68,7 @@ class World:
         self._drop = settings.drop
         self._grabbed_at: np.ndarray | None = None
         self.joints = self.start_joints()
+        self.relaxed_wrist = float(self.joints[-1])  # the vacuum tube hangs untwisted here
 
     # -- arm -------------------------------------------------------------------
     def start_joints(self) -> np.ndarray:

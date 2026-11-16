@@ -25,7 +25,15 @@ LINK_COLOR = (0.92, 0.92, 0.94)
 CUP_COLOR = (0.12, 0.12, 0.12)
 METAL_COLOR = (0.7, 0.72, 0.75)
 CAMERA_COLOR = (0.2, 0.2, 0.22)
-OPENING = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+TUBE_COLOR = (0.18, 0.4, 0.8)
+OPENING_PX = 15  # at 1280 px wide (about 9 mm at the table): barbels go, fins stay
+FLANGE = np.array([0.0, 0.0, 0.10])  # the FR5's flange face in its last link's frame
+PLATE_THICKNESS = 0.016
+TABLE_THICKNESS = 0.04
+FLOOR_DROP = 0.75  # m from the table top to the floor
+TUBE_RADIUS = 0.058  # m from the wrist's axis where the vacuum tube winds round it
+WRIST_Z = 0.06  # where it leaves the wrist, in the last link's frame
+FOREARM_CLIPS = [(-0.36, 0.0, 0.085), (-0.12, 0.0, 0.085)]  # tube clips, forearm link frame
 
 
 def breadboard_texture(size_m: tuple[float, float]) -> pv.Texture:
@@ -48,6 +56,20 @@ def _tube(a, b, radius: float) -> pv.PolyData:
     return pv.Cylinder(center=(a + b) / 2, direction=b - a, radius=radius, height=length)
 
 
+def bellows_cup(radius: float, length: float) -> pv.PolyData:
+    """A 1.5-fold bellows suction cup along +z, from its fitting (z = 0) to its face."""
+    up = (0.0, 0.0, 1.0)
+    neck = pv.Cylinder(center=(0, 0, 0.15 * length), direction=up, radius=0.45 * radius,
+                       height=0.3 * length)  # fmt: skip
+    fold = pv.ParametricTorus(ringradius=0.7 * radius, crosssectionradius=0.3 * radius)
+    fold = fold.translate((0, 0, 0.42 * length), inplace=False)
+    body = pv.Cylinder(center=(0, 0, 0.6 * length), direction=up, radius=0.62 * radius,
+                       height=0.35 * length)  # fmt: skip
+    lip = pv.Cone(center=(0, 0, 0.88 * length), direction=(0, 0, -1), height=0.24 * length,
+                  radius=radius, resolution=24, capping=True)  # fmt: skip
+    return pv.merge([neck, fold.triangulate(), body, lip])
+
+
 class Scene:
     """The cell's actors in one plotter; update() moves them to the world's state."""
 
@@ -58,8 +80,13 @@ class Scene:
         robot_meshes: dict,
         texture: bool = True,
         camera_body: bool = True,
+        tube: bool = False,
+        room: bool = False,
     ):
-        """`camera_body`: draw the D405's housing (not from the camera itself: it is inside)."""
+        """`camera_body`: draw the D405's housing (not from the camera itself: it is inside).
+        `tube`: draw the vacuum tube, coiling round the wrist as it turns. `room`: the
+        table's slab and legs and a floor. Tube and room are for the eye only: the camera's
+        scene leaves them out rather than invent things in its view."""
         self.plotter = plotter
         self.camera_body = camera_body
         self.world = world
@@ -72,6 +99,8 @@ class Scene:
             self.table = plotter.add_mesh(table, texture=breadboard_texture(size), ambient=0.25)
         else:
             self.table = plotter.add_mesh(table, color=(0.5, 0.5, 0.52))
+        if room:
+            self._add_room()
         s = world.settings
         self.fish = [
             plotter.add_mesh(f.model.mesh, color=s.fish_color, smooth_shading=True, specular=0.2)
@@ -80,7 +109,26 @@ class Scene:
         self.links = self._add_arm(robot_meshes)
         self.gripper = self._add_gripper()
         self.gripper[-1].visibility = camera_body
+        self.tube = None
+        if tube:
+            self.tube = pv.PolyData()
+            plotter.add_mesh(self.tube, color=TUBE_COLOR, smooth_shading=True, specular=0.4)
         self.update()
+
+    def _add_room(self) -> None:
+        cell = self.world.workcell
+        (x0, x1), (y0, y1), top = cell.work_zone.x, cell.work_zone.y, cell.table_z
+        floor = top - FLOOR_DROP
+        add = self.plotter.add_mesh
+        add(pv.Box((x0, x1, y0, y1, top - TABLE_THICKNESS, top - 0.0005)), color=(0.42, 0.43, 0.45))
+        legs = [
+            pv.Box((x, x + 0.06, y, y + 0.06, floor, top - TABLE_THICKNESS))
+            for x in (x0 + 0.04, x1 - 0.10)
+            for y in (y0 + 0.04, y1 - 0.10)
+        ]
+        add(pv.merge(legs), color=(0.3, 0.31, 0.33))
+        add(pv.Plane(center=((x0 + x1) / 2, (y0 + y1) / 2, floor), i_size=6, j_size=6),
+            color=(0.22, 0.23, 0.25))  # fmt: skip
 
     def _add_arm(self, meshes: dict) -> list:
         """One actor per link, in the link's frame: its mesh, or a plain tube to the next joint."""
@@ -101,37 +149,52 @@ class Scene:
         return actors
 
     def _add_gripper(self) -> list:
-        """Flange stem, plate, six cups and the camera, in the tip link's frame."""
+        """Flange adapter, stem, plate, six bellows cups and the camera on its bracket, in
+        the tip link's frame (the FR5's flange face is 100 mm along its z)."""
         cell, s = self.world.workcell, self.world.settings
         tcp = cell.tcp
         axis = tcp[:3, 2]
-        plate_center = tcp[:3, 3] - axis * (s.cup_length + 0.008)
+        plate_center = tcp[:3, 3] - axis * (s.cup_length + PLATE_THICKNESS / 2)
+        cup = bellows_cup(s.cup_radius, s.cup_length)
         cups = [
-            _tube(
-                tcp[:3, :3] @ (x, y, -s.cup_length) + tcp[:3, 3],
-                tcp[:3, :3] @ (x, y, 0.0) + tcp[:3, 3],
-                s.cup_radius,
-            )
+            cup.transform(tcp @ from_parts(np.eye(3), (x, y, -s.cup_length)), inplace=False)
             for x in s.cup_rows
             for y in s.cup_columns
         ]
         span_x = max(s.cup_rows) - min(s.cup_rows) + 2 * s.cup_radius + 0.02
         span_y = max(s.cup_columns) - min(s.cup_columns) + 2 * s.cup_radius + 0.02
-        plate = pv.Box((-span_x / 2, span_x / 2, -span_y / 2, span_y / 2, -0.008, 0.008))
+        half = PLATE_THICKNESS / 2
+        plate = pv.Box((-span_x / 2, span_x / 2, -span_y / 2, span_y / 2, -half, half))
         plate = plate.transform(from_parts(tcp[:3, :3], plate_center), inplace=False)
-        flange = np.array([0.0, 0.0, 0.10])  # the flange face, 100 mm along the tip link's z
-        stem = _tube(flange, plate_center - axis * 0.008, 0.03)
-        camera = pv.Box((-0.021, 0.021, -0.021, 0.021, -0.0115, 0.0115))
+        adapter = _tube(FLANGE, FLANGE + (0, 0, 0.012), 0.0315)  # ISO 9409-1-50 size disk
+        stem = _tube(FLANGE + (0, 0, 0.012), plate_center - axis * half, 0.022)
+        camera = pv.Box((-0.021, 0.021, -0.021, 0.021, -0.0115, 0.0115))  # the D405: 42x42x23
         camera = camera.transform(cell.camera, inplace=False)
-        bracket = _tube(
-            cell.camera[:3, 3], flange + (cell.camera[:3, 3] - flange) * [0, 0, 1], 0.008
-        )
+        on_stem = np.array([0.0, 0.0, cell.camera[2, 3]])
+        bracket = _tube(cell.camera[:3, 3], on_stem, 0.008)
         add = self.plotter.add_mesh
         return [
-            add(pv.merge(cups), color=CUP_COLOR),
-            add(plate.merge(stem).merge(bracket), color=METAL_COLOR),
+            add(pv.merge(cups), color=CUP_COLOR, smooth_shading=True),
+            add(plate.merge(stem).merge(bracket).merge(adapter), color=METAL_COLOR),
             add(camera, color=CAMERA_COLOR),
         ]
+
+    def tube_centerline(self, poses: list[np.ndarray]) -> np.ndarray:
+        """The vacuum tube: from the plate it winds round the wrist by as much as the wrist
+        (j6) has turned from where the tube hangs free, then runs to the forearm."""
+        world, cell, s = self.world, self.world.workcell, self.world.settings
+        tip, forearm = poses[-1], poses[3]
+        plate_top = cell.tcp[:3, :3] @ (0, 0, -(s.cup_length + PLATE_THICKNESS)) + cell.tcp[:3, 3]
+        twist = float(world.joints[-1]) - world.relaxed_wrist
+        f = np.linspace(0.0, 1.0, 24)
+        z = plate_top[2] + (WRIST_Z - plate_top[2]) * f
+        angle = math.pi / 2 - twist * f  # leaves the plate on the side away from the camera
+        around = np.column_stack([TUBE_RADIUS * np.cos(angle), TUBE_RADIUS * np.sin(angle), z])
+        helix = around @ tip[:3, :3].T + tip[:3, 3]
+        back = helix[-1] - tip[:3, 2] * 0.07  # off the wrist, back toward the arm
+        clips = [forearm[:3, :3] @ p + forearm[:3, 3] for p in FOREARM_CLIPS]
+        rest = pv.Spline(np.array([helix[-1], back, *clips]), 40).points
+        return np.vstack([helix, rest[1:]])
 
     def update(self) -> None:
         for actor, fish in zip(self.fish, self.world.fish):
@@ -142,6 +205,9 @@ class Scene:
         tip = poses[-1]
         for actor in self.gripper:
             actor.user_matrix = tip
+        if self.tube is not None:
+            line = pv.lines_from_points(self.tube_centerline(poses))
+            self.tube.copy_from(line.tube(radius=0.006, n_sides=10))
 
     def set_visible(self, table: bool, arm: bool, fish: list[bool]) -> None:
         self.table.visibility = table
@@ -165,6 +231,8 @@ class VirtualCamera:
         self.labels = labels
         self.last_color: np.ndarray | None = None
         self.last_masks: list[np.ndarray] = []  # one per fish in view (labels only)
+        size = max(3, round(OPENING_PX * s.width / 1280) | 1)
+        self._opening = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
         self._rng = np.random.default_rng(7)
         self._count = 0
         self.plotter = pv.Plotter(off_screen=True, window_size=(s.width, s.height))
@@ -190,6 +258,11 @@ class VirtualCamera:
         color = np.ascontiguousarray(self.plotter.screenshot(return_img=True)[:, :, ::-1])
         depth = -self.plotter.get_image_depth(fill_value=np.nan, reset_camera_clipping_range=False)
         depth = np.nan_to_num(depth.astype(np.float32), nan=0.0)
+        if s.depth_edge_holes_px > 0:  # one camera of the pair can't see past an edge
+            steps = np.hypot(cv2.Sobel(depth, cv2.CV_32F, 1, 0), cv2.Sobel(depth, cv2.CV_32F, 0, 1))
+            size = 2 * s.depth_edge_holes_px + 1
+            holes = cv2.dilate((steps > 0.04).astype(np.uint8), np.ones((size, size), np.uint8))
+            depth[holes > 0] = 0.0  # > 0.04: a step of more than about 1 cm between pixels
         if s.depth_noise_m > 0:
             depth += self._rng.normal(0, s.depth_noise_m, depth.shape).astype(np.float32)
         low, high = s.depth_range_m
@@ -212,7 +285,7 @@ class VirtualCamera:
             image = self.plotter.screenshot(return_img=True)
             mask = (image[:, :, 0] > 127).astype(np.uint8)
             # Thin parts (barbels, fin rays) go, as in a segmentation model's outline
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, OPENING)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self._opening)
             if mask.any():
                 masks.append(mask)
         for actor in self.scene.fish:
@@ -271,7 +344,7 @@ class Viewer:
             off_screen=not show, window_size=size, title="Fish cell simulation"
         )
         self.plotter.set_background((0.16, 0.17, 0.2), top=(0.32, 0.34, 0.4))
-        self.scene = Scene(self.plotter, world, robot_meshes)
+        self.scene = Scene(self.plotter, world, robot_meshes, tube=True, room=True)
         self._add_zones()
         self.cone = pv.PolyData(
             np.zeros((5, 3)), lines=[2, 0, 1, 2, 0, 2, 2, 0, 3, 2, 0, 4, 5, 1, 2, 3, 4, 1]
@@ -347,8 +420,14 @@ class Viewer:
         ]
         self.cone.points = np.array(points)
         held = self.world.holding
-        lines = [self.status, f"vacuum {'ON' if self.world.vacuum else 'off'}"
-                 + (f", holding {held.name}" if held else "")]  # fmt: skip
+        low, high = (math.degrees(a) for a in self.world.workcell.wrist_range)
+        wrist = math.degrees(self.world.joints[-1])
+        twist = wrist - math.degrees(self.world.relaxed_wrist)
+        tube = (
+            f"wrist (j6) {wrist:+.0f} deg, tube twisted {twist:+.0f} (range {low:.0f}..{high:.0f})"
+        )
+        vacuum = f"vacuum {'ON' if self.world.vacuum else 'off'}"
+        lines = [self.status, vacuum + (f", holding {held.name}" if held else ""), tube]
         self.text.set_text("upper_left", "\n".join(line for line in lines if line))
         if self.show:
             self.plotter.update()

@@ -16,7 +16,9 @@ fish_color: [0.93, 0.93, 0.9]   # the white printed stand-in
 # The arm and the gripper
 robot_meshes: ""                # folder with the FR5's STL files (frcobot_ros2:
                                 # fairino_description/meshes/fairino5_v6); "": a sourced ROS
-                                # workspace's, else plain shapes
+                                # workspace's, else FAIRINO's downloaded to models/fr5/
+download_robot_meshes: true     # fetch FAIRINO's FR5 meshes once (no license: not in Git);
+                                # false or no network: the arm is drawn as plain tubes
 speed: 1.0                      # simulated seconds per real second; 0: as fast as it renders
 step_s: 0.05                    # simulated seconds between drawn arm poses
 cup_rows: [-0.05, 0.0, 0.05]    # cup centers along the tool's x (m): 3 x 2 cups (HW-31)
@@ -35,6 +37,7 @@ height: 720
 hfov_deg: 87.0
 depth_range_m: [0.07, 1.0]      # outside it the D405 gives no depth
 depth_noise_m: 0.0005
+depth_edge_holes_px: 3          # no depth this close to a depth step, as on the D405 (0: off)
 detector: model                 # model: the trained YOLO; truth: the renderer's own outlines
 
 # The 3D window

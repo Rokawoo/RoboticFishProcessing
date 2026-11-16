@@ -9,6 +9,7 @@ import pytest
 
 pv = pytest.importorskip("pyvista")
 np = pytest.importorskip("numpy")
+cv2 = pytest.importorskip("cv2")
 
 from rfp_arm.interfaces import ArmError, GripperState, MotionAborted
 from rfp_arm.poses import tool_down, yaw_of
@@ -248,5 +249,101 @@ def test_closing_the_3d_window_is_noticed_and_asks_the_run_to_stop():
         assert viewer.closed and console.stop_requested()
         viewer.update()  # harmless afterwards
         viewer.wait(0.05, 1.0)
+    finally:
+        viewer.close()
+
+
+# ---------------------------------------------------------------------------
+# The arm's model, the gripper, the camera's depth holes
+# ---------------------------------------------------------------------------
+def test_fr5_meshes_are_downloaded_once_and_checked(tmp_path, monkeypatch):
+    import hashlib
+    import urllib.error
+
+    from rfp_sim import assets
+
+    files = {"base_link": b"solid base", "wrist3_link": b"solid wrist"}
+    monkeypatch.setattr(
+        assets, "FR5_SHA256", {k: hashlib.sha256(v).hexdigest() for k, v in files.items()}
+    )
+    asked = []
+
+    def fetch(url):
+        asked.append(url)
+        return files[url.split("/")[-1][:-4]]
+
+    cache = tmp_path / "fr5"
+    folder, source = assets.find_robot_meshes("", tmp_path, cache, download=True, fetch=fetch)
+    assert folder == cache and "downloaded" in source and len(asked) == 2
+    assert assets.FR5_COMMIT in asked[0] and asked[0].startswith(
+        "https://raw.githubusercontent.com/"
+    )
+    assert (cache / "wrist3_link.STL").read_bytes() == b"solid wrist"
+    folder, source = assets.find_robot_meshes("", tmp_path, cache, download=True, fetch=fetch)
+    assert folder == cache and len(asked) == 2  # kept: not fetched again
+
+    other = tmp_path / "other"
+    assert assets.find_robot_meshes("", tmp_path, other, download=False)[0] is None
+    tampered = assets.download_fr5_meshes(other, lambda url: b"something else")
+    assert "isn't the expected file" in tampered and not list(other.glob("*.STL"))
+
+    def offline(url):
+        raise urllib.error.URLError("no network")
+
+    assert "can't download" in assets.download_fr5_meshes(tmp_path / "x", offline)
+    assert assets.find_robot_meshes("mine", tmp_path, cache)[0] is None  # configured, missing
+    (tmp_path / "mine").mkdir()
+    assert assets.find_robot_meshes("mine", tmp_path, cache)[0] == tmp_path / "mine"
+
+
+def test_the_camera_has_no_depth_at_the_fish_edges_like_the_d405():
+    from rfp_sim.render import bellows_cup
+
+    world = world_with_fish(width=640, height=360)
+    holes = VirtualCamera(world, {}, labels=True)
+    whole = VirtualCamera(world, {}, labels=True)
+    whole.world = world
+    try:
+        fish = world.fish[0]
+        pose = min(
+            CELL.observation_poses, key=lambda p: np.linalg.norm(p.camera[:2, 3] - fish.pose[:2, 3])
+        )
+        world.set_joints(world.chain.ik(CELL.tip_of_tcp(CELL.observation_tcp(pose)), world.joints))
+        frame = holes.read()
+        mask = holes.last_masks[0]
+        edge = mask ^ cv2.erode(mask, np.ones((3, 3), np.uint8))
+        # no depth along the outline, except where a thin fin lies flat (a step under 1 cm)
+        assert (frame.depth[edge > 0] == 0).mean() > 0.75
+        inside = cv2.erode(mask, np.ones((15, 15), np.uint8)) > 0
+        assert (frame.depth[inside] > 0).mean() > 0.97  # the body itself is measured
+        world.settings.depth_edge_holes_px = 0
+        assert (whole.read().depth[edge > 0] > 0).mean() > 0.9  # switched off: depth everywhere
+    finally:
+        holes.close()
+        whole.close()
+    cup = bellows_cup(0.02, 0.04)
+    x0, x1, y0, y1, z0, z1 = cup.bounds
+    assert max(x1 - x0, y1 - y0) == pytest.approx(0.04, abs=0.002) and z0 >= -1e-6 and z1 <= 0.0401
+
+
+def test_the_vacuum_tube_coils_round_the_wrist_as_it_turns():
+    from rfp_sim.render import Viewer
+
+    world = world_with_fish(window=(320, 200))
+    viewer = Viewer(world, {}, show=False)
+    try:
+        assert viewer.scene.tube.n_points > 100
+        poses = world.chain.link_poses(world.joints)
+        relaxed = viewer.scene.tube_centerline(poses)
+        world.joints[-1] = world.relaxed_wrist + math.radians(150)
+        twisted = viewer.scene.tube_centerline(world.chain.link_poses(world.joints))
+        tip = world.chain.fk(world.joints)
+        start = np.linalg.inv(tip) @ np.append(twisted[0], 1.0)
+        end = np.linalg.inv(tip) @ np.append(twisted[23], 1.0)  # where it leaves the wrist
+        turned = math.atan2(end[1], end[0]) - math.atan2(start[1], start[0])
+        assert abs(math.remainder(turned + math.radians(150), math.tau)) < 0.05  # wound by 150 deg
+        assert np.allclose(relaxed[-1], twisted[-1])  # the forearm end doesn't move
+        viewer.update()
+        assert "tube twisted +150" in viewer.text.GetText(2)  # 2: upper left
     finally:
         viewer.close()
