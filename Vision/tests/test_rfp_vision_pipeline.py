@@ -28,7 +28,7 @@ from rfp_vision.geometry import (
 )
 from rfp_vision.hold_monitor import HoldMonitor
 from rfp_vision.overlay import add_status, draw_fish_list
-from rfp_vision.settings import HoldSettings, VisionSettings, load_settings
+from rfp_vision.settings import Catfish, HoldSettings, VisionSettings, load_settings
 from rfp_vision.vision_system import VisionSystem
 
 # Width of the stand-in fish along its length, tail to head, as a share of the length
@@ -88,7 +88,9 @@ def render(
 
 
 def locator(pick_area=PICK_AREA, **changes) -> FishLocator:
-    return FishLocator(VisionSettings(**changes), TABLE_Z, pick_area, "model", "calibration")
+    """The synthetic fish here are real catfish sizes."""
+    settings = VisionSettings(**{"fish_type": "catfish", **changes})
+    return FishLocator(settings, TABLE_Z, pick_area, "model", "calibration")
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +184,11 @@ def test_fish_are_located_in_the_base_frame_from_depth():
     assert fish_list.vision_ok and fish_list.failure_code == "none" and len(fish_list.valid) == 2
     for (x, y, heading, confidence), fish in zip(truth, fish_list.fish):  # sorted by image x
         assert fish.failure_code == "none" and fish.confidence == confidence
-        assert np.allclose(fish.grasp_point, (x, y, 0.10), atol=0.003)
+        assert np.allclose(fish.middle, (x, y, 0.10), atol=0.003)
+        # the cups go where it balances: its share of the length ahead, toward the head
+        share = VisionSettings().catfish.balance_ahead_share
+        ahead = share * fish.total_length * np.array([math.cos(heading), math.sin(heading)])
+        assert np.allclose(fish.grasp_point[:2], (x, y) + ahead, atol=0.004)
         assert fish.heading_known
         assert abs(math.remainder(fish.heading - heading, math.tau)) < math.radians(2)
         assert fish.total_length == pytest.approx(0.585, abs=0.005)  # the outline's 40 stations
@@ -195,7 +201,7 @@ def test_fish_are_located_in_the_base_frame_from_depth():
     record = fish_list.as_record()
     assert record["fish_count_valid"] == 2 and record["model_version"] == "model"
     first = record["fish"][0]
-    assert first["grasp_pose"][:3] == pytest.approx([300, -120, 100], abs=3)  # mm
+    assert first["target_pose"][:3] == pytest.approx([300, -120, 100], abs=3)  # mm, the middle
     assert first["heading"] == pytest.approx(95, abs=2) and first["total_length"] > 580
     assert fish_list.by_id(2) is fish_list.fish[1] and fish_list.by_id(9) is None
 
@@ -204,7 +210,7 @@ def test_without_depth_fish_lie_on_the_table_plane():
     frame, detections = render([(0.40, -0.10, ALONG_Y, 0.9)], depth=False)
     fish = locator().locate(frame, detections, CAMERA).fish[0]
     assert fish.vision_ok and not fish.depth_measured and fish.thickness == 0.10
-    assert np.allclose(fish.grasp_point, (0.40, -0.10, 0.10), atol=0.003)
+    assert np.allclose(fish.middle, (0.40, -0.10, 0.10), atol=0.003)
     with_depth, _ = render([(0.40, -0.10, ALONG_Y, 0.9)])
     unused = locator(use_depth=False).locate(with_depth, detections, CAMERA).fish[0]
     assert unused.vision_ok and not unused.depth_measured
@@ -248,11 +254,38 @@ def test_each_failed_check_gives_its_code_and_clears_the_poses():
     assert code(middle, change=sliver, require_heading=False, check_size=False) == (
         "grasp_point_off_body"
     )
-    assert code(middle, length_range_m=(0.2, 0.5)) == "geometry_out_of_range"
+    assert code(middle, catfish=Catfish(length_range_m=(0.2, 0.5))) == "geometry_out_of_range"
+    assert code(middle, fish_type="stand_in") == "geometry_out_of_range"  # printed ones are bigger
     # VS-68: of several failed checks, the first in the table's order is the code
     frame, detections = render([(0.40, -0.10, 0.0, 0.3)])
     fish = locator().locate(frame, detections, CAMERA).fish[0]
     assert fish.failure_code == "low_confidence" and "out_of_frame" in fish.failures
+
+
+def test_the_cups_go_only_where_all_six_can_seal():
+    grid = np.stack(np.meshgrid(np.linspace(-0.1, 0.1, 81), np.linspace(-0.06, 0.06, 49)), -1)
+    xy = grid.reshape(-1, 2)
+    axis, at = np.array([1.0, 0.0]), np.zeros(2)
+
+    def reach(z):
+        return locator()._cups_reach(np.column_stack([xy, z]), at, axis)
+
+    assert reach(0.10 + 0 * xy[:, 0])  # flat
+    assert reach(0.10 + 0.2 * xy[:, 0])  # sloping: the cups lean onto it
+    bump = np.hypot(xy[:, 0] - 0.05, xy[:, 1] - 0.0225) < 0.02  # a fin under one cup
+    assert not reach(0.10 + 0.02 * bump)
+    assert not locator()._cups_reach(np.column_stack([xy, 0.1 + 0 * xy[:, 0]])[:100], at, axis)
+
+
+def test_a_rejected_fish_keeps_where_it_was_seen_for_a_closer_look():
+    frame, detections = render([(0.40, -0.10, 0.0, 0.9)])  # along X: longer than the view
+    fish = locator().locate(frame, detections, CAMERA).fish[0]
+    assert "out_of_frame" in fish.failures and fish.grasp_pose is None and fish.middle is None
+    x, y, axis = fish.seen_at  # only part of it is seen: x is off toward the seen part
+    assert abs(x - 0.40) < 0.10 and abs(y - (-0.10)) < 0.01
+    assert abs(math.remainder(axis, math.pi)) < math.radians(3)
+    with pytest.raises(ValueError, match="fish_type"):
+        VisionSettings(fish_type="salmon")
 
 
 def test_empty_frames_and_touching_fish():
@@ -501,7 +534,9 @@ def test_surface_slope_tilts_the_grasp_and_helps_tell_head_from_tail():
     frame, detections = render([middle], slope=0.10)
     fish = locator().locate(frame, detections, CAMERA).fish[0]
     assert fish.vision_ok and fish.surface_tilt == pytest.approx(tilt, abs=0.01)
-    assert fish.thickness == pytest.approx(0.10, abs=0.003)
+    assert fish.middle[2] == pytest.approx(0.10, abs=0.003)
+    ahead = (fish.grasp_point[:2] - fish.middle[:2]) @ toward_head  # the cups toward the head,
+    assert ahead > 0.03 and fish.thickness == pytest.approx(0.10 + 0.10 * ahead, abs=0.003)  # up
     approach = fish.grasp_pose[:3, 2]  # square onto the surface: leaning toward the head
     assert approach[2] == pytest.approx(-math.cos(tilt), abs=0.01)
     assert approach[:2] @ toward_head == pytest.approx(math.sin(tilt), abs=0.01)
@@ -513,7 +548,11 @@ def test_surface_slope_tilts_the_grasp_and_helps_tell_head_from_tail():
     frame, detections = render([middle], slope=0.50)  # steeper than the cups may lean
     steep = locator().locate(frame, detections, CAMERA).fish[0]
     assert np.allclose(steep.grasp_pose[:3, 2], (0, 0, -1))
-    assert math.degrees(steep.surface_tilt) == pytest.approx(26.6, abs=1.0)
+    # measured where the cups go; at the middle that is the slope itself (toward the narrower
+    # head the cups' footprint also takes in the body's rounded sides)
+    at_middle = locator(catfish=Catfish(balance_ahead_share=0.0))
+    tilt = at_middle.locate(frame, detections, CAMERA).fish[0].surface_tilt
+    assert math.degrees(tilt) == pytest.approx(26.6, abs=1.0)
 
     # sloping down toward what the outline says is the head: the two disagree, so no guess
     frame, detections = render([middle], slope=-0.10)

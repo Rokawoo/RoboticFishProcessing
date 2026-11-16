@@ -13,12 +13,16 @@ MESH_CACHE = SIM_DIR / "models" / "fr5"  # FAIRINO's FR5 meshes, downloaded (not
 class SimSettings:
     # The fish
     fish_model: str = "models/catfish.3mf"  # .3mf or .stl, relative to Simulation/
-    fish_length: float = 0.55  # m snout to tail fin after scaling (0.6+ m: not in one view)
+    fish_length: float = 0.79  # m snout to tail fin after scaling: the printed stand-ins
     fish_head: str = "-x"  # the model's axis toward the head
     fish_up: str = "+z"  # the model's axis pointing up as the fish lies on the table
     fish_count: int = 1
     seed: int = 1  # where the fish lie; another number, another layout
-    max_heading_offset_deg: float = 15.0  # fish lie within this of the camera image's long side
+    # "view": each fish where an observation pose sees all of it, within
+    # max_heading_offset_deg of the image's long side (the easy case). "anywhere": anywhere in
+    # the pick area at any heading, as fish really lie
+    placement: str = "anywhere"
+    max_heading_offset_deg: float = 15.0
     fish_color: tuple[float, float, float] = (0.93, 0.93, 0.9)  # the white printed stand-in
 
     # The arm and the gripper

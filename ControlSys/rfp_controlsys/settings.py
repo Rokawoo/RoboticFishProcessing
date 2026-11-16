@@ -42,6 +42,7 @@ class ControlSettings:
     max_failed_cycles: int = 3  # in a row, then pause (CS-63)
     empty_passes_to_end: int = 3  # passes over the observation poses with no fish (SY-22)
     max_reobserve: int = 3  # "reobserve" answers in a row, then the fallback rule (Table CS-1)
+    close_looks: int = 2  # looks centered on a fish cut off at the image's edge; 0: none
     fish_list_max_age_s: float = 1.0  # CS-12, CS-53
     recheck_position_m: float = 0.010  # CS-41
     recheck_heading_deg: float = 10.0

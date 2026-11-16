@@ -40,6 +40,7 @@ class VirtualArm:
         self._clock = clock
         self._sleep = sleep
         self._fish_length = 0.0
+        self._fish_middle_x = 0.0
         self._zero = 0.0
         self._stop = False
         self.moves: list[tuple[str, float]] = []  # (kind, seconds) of each move run
@@ -62,8 +63,8 @@ class VirtualArm:
             self._zero = force
         return force - self._zero
 
-    def set_held_fish(self, length: float) -> None:
-        self._fish_length = length
+    def set_held_fish(self, length: float, middle_x: float = 0.0) -> None:
+        self._fish_length, self._fish_middle_x = length, middle_x
 
     def stop(self) -> None:
         self._stop = True
@@ -114,8 +115,9 @@ class VirtualArm:
 
     def _run(self, kind: str, positions: np.ndarray, times: np.ndarray, tick: Tick | None) -> None:
         check = check_trajectory(
-            self.workcell, self.chain, self.chain.joint_names, positions, times, self._fish_length
-        )
+            self.workcell, self.chain, self.chain.joint_names, positions, times,
+            self._fish_length, None, self._fish_middle_x,
+        )  # fmt: skip
         if not check.ok:
             raise ArmError(E_MOTION, f"{kind} move refused: {check.problem}", self.tcp_pose())
         self._stop = False

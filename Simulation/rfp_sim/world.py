@@ -23,6 +23,7 @@ STARTS = np.radians(  # postures tried for the first observation pose (elbow up,
     [[20, -100, -100, -70, 90, -60], [160, -80, 100, -110, -90, 0], [0, -90, -90, -90, 90, 0],
      [180, -90, 90, -90, -90, 0], [-90, -90, -90, -90, 90, 0], [90, -90, 90, -90, -90, 0]]
 )  # fmt: skip
+BASE_CLEARANCE = 0.15  # m from the arm's base axis that a fish on the table stays
 BACK_OFF = 0.05  # m behind a cup face where its ray starts
 REACH = 0.05  # m in front of it where the ray ends
 
@@ -245,9 +246,40 @@ class World:
             and (pixels[:, 0] <= intrinsics.width - 1 - margin).all()
             and (pixels[:, 1] <= intrinsics.height - 1 - margin).all()
         )
-        if not inside:
-            return False
-        for other in self.fish:  # 3 cm apart at least
+        return inside and self._apart(outline)
+
+    def scatter_fish(self, count: int, seed: int) -> list[str]:
+        """Lay `count` fish as they really lie: each one's middle anywhere in the pick area,
+        at any heading, all of it on the table and clear of the arm's base, apart. Returns a
+        warning for each fish that found no place."""
+        rng = np.random.default_rng(seed)
+        cell = self.workcell
+        zone = cell.work_zone
+        warnings = []
+        for i in range(count):
+            for _ in range(2000):
+                xy = (rng.uniform(*cell.pick_area.x), rng.uniform(*cell.pick_area.y))
+                pose = from_parts(rot_z(rng.uniform(-np.pi, np.pi)), (*xy, cell.table_z))
+                fish = Fish(f"fish {i + 1}", self.model, pose)
+                outline = fish.outline()
+                on_table = (
+                    (outline[:, 0] >= zone.x[0]).all()
+                    and (outline[:, 0] <= zone.x[1]).all()
+                    and (outline[:, 1] >= zone.y[0]).all()
+                    and (outline[:, 1] <= zone.y[1]).all()
+                )
+                clear = np.hypot(outline[:, 0], outline[:, 1]).min() >= BASE_CLEARANCE
+                if on_table and clear and self._apart(outline):
+                    self.fish.append(fish)
+                    break
+            else:
+                warnings.append(f"no free place for fish {i + 1}")
+        self.changed()
+        return warnings
+
+    def _apart(self, outline: np.ndarray) -> bool:
+        """Whether a fish with this top-view outline lies 3 cm or more from every other."""
+        for other in self.fish:
             gaps = np.linalg.norm(outline[:, None, :] - other.outline()[None, :, :], axis=2)
             if (
                 gaps.min() < 0.03

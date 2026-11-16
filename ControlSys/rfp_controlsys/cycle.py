@@ -149,7 +149,7 @@ class PickPlaceCycle:
         self._controller = controller
         self.report = RunReport()
         self.sequence: GraspSequence | None = None  # the grasp in progress or last run
-        self._attempts = Attempts(settings.same_fish_m)
+        self._attempts = Attempts(settings.same_fish_m)  # by the fish's middle
         self._pose_index = 0
         self._slot = 0
         self._empty = 0  # observations in a row without any fish
@@ -201,6 +201,12 @@ class PickPlaceCycle:
                 return False
             return True
         self._empty = 0
+        if not candidates:  # cut off at the image's edge: look again, centered on one
+            closer = self._look_closer(fish_list)
+            if closer is not None:
+                pose, observation = closer
+                fish_list = observation.fish_list
+                candidates = self._candidates(fish_list)
         if not candidates:
             self._unusable += 1
             self._next_pose()
@@ -256,6 +262,79 @@ class PickPlaceCycle:
         self._show(observation)
         return observation
 
+    def _look_closer(self, fish_list: FishList) -> tuple[ObservationPose, Observation] | None:
+        """
+        The biggest fish in the pick area that vision saw cut off at the image's edge, looked
+        at again from straight above its middle with the image's long side along it, and
+        again (aimed at what that look saw) while it is still cut off, up to close_looks
+        times. The pose and the observation from there, or None if no fish needs it or the
+        arm can't get there.
+        """
+        s, cell = self.settings, self.workcell
+        if cell.close_look_height is None or s.close_looks < 1:
+            return None
+        clipped = [
+            fish
+            for fish in fish_list.fish
+            if "out_of_frame" in fish.failures
+            and fish.seen_at is not None
+            and cell.pick_area.contains(fish.seen_at[:2])
+            and self._attempts.count(np.array(fish.seen_at[:2])) < s.max_attempts_per_fish
+        ]
+        if not clipped:
+            return None
+        seen_at = max(clipped, key=lambda fish: _area(fish.mask_polygon)).seen_at
+        found = None
+        for _ in range(s.close_looks):
+            pose = self._close_pose(seen_at)
+            if pose is None:
+                break
+            self.console.state("observing", f"pose '{pose.name}'")
+            try:
+                self.arm.move_ptp(cell.observation_tcp(pose), self._tick)
+            except MotionAborted as aborted:
+                raise OperatorStop(aborted.reason) from None
+            except ArmError as e:
+                if e.code != E_MOTION:
+                    raise RunStopped(f"{pose.name}: {e}") from None
+                self.console.info(f"no closer look: {e}")
+                break
+            self._sleep(s.settle_s)
+            found = (pose, self._observe(pose, move=False))
+            nearest = min(
+                (f for f in found[1].fish_list.fish if f.seen_at is not None),
+                key=lambda f: math.dist(f.seen_at[:2], seen_at[:2]),
+                default=None,
+            )
+            if nearest is None or "out_of_frame" not in nearest.failures:
+                break
+            seen_at = nearest.seen_at
+        return found
+
+    def _close_pose(self, seen_at: tuple[float, float, float]) -> ObservationPose | None:
+        """The look centered on a fish seen at (x, y, body axis): of the two ways to turn the
+        camera along the fish, the one inside the limits whose wrist turns least."""
+        cell = self.workcell
+        x, y, axis = seen_at
+        low, high = cell.wrist_range
+        now = self.arm.wrist_angle()
+        options = []
+        for yaw in (axis, axis + math.pi):
+            camera = cell.close_look_camera((x, y), yaw)
+            tcp = cell.tcp_of_camera(camera)
+            if cell.pose_problem(tcp) is not None:
+                continue
+            wrist = self.arm.wrist_angle(tcp)
+            if wrist is not None and not low <= wrist <= high:
+                continue
+            turn = abs(wrist - now) if wrist is not None and now is not None else 0.0
+            options.append((turn, camera))
+        if not options:
+            return None
+        camera = min(options, key=lambda option: option[0])[1]
+        name = f"close look at x {x * 1000:.0f}, y {y * 1000:.0f} mm"
+        return ObservationPose(name, camera=camera)
+
     def _go_to(self, pose: ObservationPose) -> None:
         if pose.joints is not None:
             self.arm.move_joints(pose.joints, self._tick)
@@ -283,16 +362,16 @@ class PickPlaceCycle:
         return [
             fish
             for fish in fish_list.valid
-            if cell.pick_area.contains(fish.grasp_point)
+            if cell.pick_area.contains(fish.middle)
             and not any(zone.contains(fish.grasp_point) for zone in cell.exclusion_zones)
-            and self._attempts.count(fish.grasp_point) < limit
+            and self._attempts.count(fish.middle) < limit
         ]
 
     def _maybe_in_pick_area(self, fish: Fish) -> bool:
-        """Where vision put the fish (its grasp point, else the middle of its outline in {B});
+        """Where vision put the fish (the middle of its outline in {B}, else of its bounding box);
         a fish it couldn't place at all counts as in the pick area."""
-        if fish.grasp_point is not None:
-            point = fish.grasp_point[:2]
+        if fish.middle is not None:
+            point = fish.middle[:2]
         elif fish.bbox is not None:
             point = ((fish.bbox[0] + fish.bbox[1]) / 2, (fish.bbox[2] + fish.bbox[3]) / 2)
         else:
@@ -315,7 +394,7 @@ class PickPlaceCycle:
         failed_here = None
         if self._last_failed is not None:
             for fish in candidates:
-                if np.linalg.norm(fish.grasp_point[:2] - self._last_failed[:2]) <= s.same_fish_m:
+                if np.linalg.norm(fish.middle[:2] - self._last_failed[:2]) <= s.same_fish_m:
                     failed_here = fish.fish_id
         context = DecisionContext(
             fish_list,
@@ -325,7 +404,7 @@ class PickPlaceCycle:
             self.gripper.state().value,
             self._last_result,
             failed_here,
-            {fish.fish_id: self._attempts.count(fish.grasp_point) for fish in candidates},
+            {fish.fish_id: self._attempts.count(fish.middle) for fish in candidates},
         )
         decision = None
         for _ in range(2):
@@ -390,7 +469,7 @@ class PickPlaceCycle:
             "tilt_deg": round(math.degrees(fish.surface_tilt), 1),
             "confidence": round(fish.confidence, 2),
             "slot": self._slot + 1,
-            "attempt": self._attempts.count(point) + 1,
+            "attempt": self._attempts.count(fish.middle) + 1,
             "result": "stopped",
         }
         self.sequence = GraspSequence(
@@ -409,6 +488,7 @@ class PickPlaceCycle:
             plan = plan_grasp(
                 cell, fish.grasp_pose, fish.heading_known, fish.total_length, fish.thickness,
                 cell.slots[self._slot], self._tool_yaw, self.dry_run, self.arm.wrist_angle,
+                fish.middle,
             )  # fmt: skip
             if plan.wrist is not None:
                 path = [round(math.degrees(a)) for a in plan.wrist]
@@ -448,8 +528,8 @@ class PickPlaceCycle:
         sequence = self.sequence
         code = error.code
         self.report.failures[code] = self.report.failures.get(code, 0) + 1
-        self._last_result, self._last_failed = code, fish.grasp_point
-        attempts = self._attempts.add(fish.grasp_point)
+        self._last_result, self._last_failed = code, fish.middle
+        attempts = self._attempts.add(fish.middle)
         step = sequence.step or "planning"
         self.console.info(
             f"❌ {error} (step '{step}', attempt {attempts} of {s.max_attempts_per_fish})"
@@ -481,7 +561,7 @@ class PickPlaceCycle:
         except ArmError as e:
             raise RunStopped(f"recovery after {code} failed: {e}") from None
         if attempts >= s.max_attempts_per_fish:  # CS-62
-            where = f"x {fish.grasp_point[0] * 1000:.0f}, y {fish.grasp_point[1] * 1000:.0f} mm"
+            where = f"x {fish.middle[0] * 1000:.0f}, y {fish.middle[1] * 1000:.0f} mm"
             self.report.skipped.append(where)
             self.console.info(f"fish at {where} is skipped for the rest of the run")
         self._failed_in_row += 1
@@ -538,6 +618,11 @@ class _VisionHold:
     def stop(self) -> None:
         self._cycle.vision.hold.stop()
         self._cycle._hold_text = ""
+
+
+def _area(polygon: np.ndarray) -> float:
+    x, y = polygon[:, 0], polygon[:, 1]
+    return 0.5 * abs(float(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1))))
 
 
 def _why(fish: list[Fish]) -> str:

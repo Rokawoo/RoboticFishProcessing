@@ -79,9 +79,10 @@ class Arm(Protocol):
         """Force (N) pressing back on the tool along its axis since the last call with
         `zero=True`, read with the arm at rest. None if the arm can't feel."""
 
-    def set_held_fish(self, length: float) -> None:
-        """Tell the arm a fish of this length (m) hangs on the cups; 0 = nothing. From then
-        on its checks keep both ends of the fish inside the work zone too (SF-10)."""
+    def set_held_fish(self, length: float, middle_x: float = 0.0) -> None:
+        """Tell the arm a fish of this length (m) hangs on the cups, its middle `middle_x`
+        along the TCP's x axis; 0 = nothing. From then on its checks keep both ends of the
+        fish inside the work zone too (SF-10)."""
 
     def stop(self) -> None:
         """Controlled stop of any motion (SF-32)."""

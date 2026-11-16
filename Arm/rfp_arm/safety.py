@@ -40,6 +40,7 @@ def check_trajectory(
     times: np.ndarray,
     fish_length: float = 0.0,
     tcp_speed_max: float | None = None,
+    fish_middle_x: float = 0.0,
 ) -> TrajectoryCheck:
     """
     Check trajectory points (rows of joint positions in `joint_names` order, at `times`
@@ -81,14 +82,14 @@ def check_trajectory(
 
     entered = False
     for i, pose in enumerate(poses):
-        problem = workcell.pose_problem(pose, fish_length)
+        problem = workcell.pose_problem(pose, fish_length, True, fish_middle_x)
         if problem is None:
             entered = True
             continue
         # Outside the work zone is allowed only before the path first enters it.
         allowed = not entered and i < len(poses) - 1
         if allowed:
-            problem = workcell.pose_problem(pose, fish_length, work_zone=False)
+            problem = workcell.pose_problem(pose, fish_length, False, fish_middle_x)
         if problem is not None:
             check.problem = f"{problem} ({times[i] - times[0]:.1f} s into the move)"
             return check

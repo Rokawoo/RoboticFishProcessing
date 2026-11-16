@@ -160,6 +160,19 @@ def test_default_workcell_loads_unverified_and_consistent():
         camera = cell.camera_of_tcp(tcp)
         assert np.allclose(camera, pose.camera) and camera[2, 3] == pytest.approx(0.45)
         assert np.allclose(cell.tcp_of_tip(cell.tip_of_tcp(tcp)), tcp)
+    # a look centered on one fish: straight down from close_height, the image along `yaw`
+    close = cell.close_look_camera((0.3, -0.1), 0.5)
+    assert cell.close_look_height == pytest.approx(0.62)
+    assert np.allclose(close[:3, 3], (0.3, -0.1, cell.table_z + 0.62))
+    assert np.allclose(close[:3, 2], (0, 0, -1)) and poses.yaw_of(close) == pytest.approx(0.5)
+
+
+def test_without_close_height_there_are_no_close_looks():
+    data = workcell_data()
+    del data["observation"]["close_height"]
+    assert workcell_from_mapping(data).close_look_height is None
+    data["observation"]["close_height"] = 0.05
+    assert "close_height" in "; ".join(workcell_from_mapping(data).problems())
 
 
 def test_workcell_file_errors_say_what_is_wrong(tmp_path):
@@ -676,11 +689,18 @@ def test_a_failed_move_is_planned_again_once_then_the_fish_is_put_back():
 
     rig = Rig()
     rig.arm.fail = block_carry(1)
-    rig.run()  # the second plan works
+    rig.run()  # no straight carry: point-to-point (carry_ptp_fallback)
     assert tuple(rig.steps) == STEPS
+    to_slot = next(kind for kind, target in rig.arm.moves if np.allclose(target[:2, 3], SLOT))
+    assert to_slot == "ptp"
 
     rig = Rig()
     rig.arm.fail = block_carry(2)
+    rig.run()  # neither way, then the second plan works
+    assert tuple(rig.steps) == STEPS
+
+    rig = Rig()
+    rig.arm.fail = block_carry(4)  # straight and point-to-point, planned twice
     error = rig.fails()
     assert error.code == E_MOTION and rig.sequence.step == "carry"
     assert error.fish_put_back and not error.still_holding and not rig.sequence.holding
@@ -794,6 +814,35 @@ def fake_wrist(now_deg: float, offset_deg: float):
         return poses.wrap(poses.yaw_of(pose) + math.radians(offset_deg))
 
     return wrist
+
+
+def test_the_slot_gets_the_fish_middle_when_the_cups_grasp_it_nearer_the_head():
+    fish = fish_pose(heading_deg=100.0)  # cups at (0.40, -0.10), head toward 100 deg
+    toward_head = np.array([math.cos(math.radians(100)), math.sin(math.radians(100))])
+    middle = np.array([*(fish[:2, 3] - 0.07 * toward_head), fish[2, 3]])  # 70 mm behind them
+    p = plan_grasp(CELL, fish, True, 0.60, 0.10, SLOT, math.radians(90), middle=middle)
+    for pose in (p.carry, p.lower, p.retreat):
+        # the fish turns with the cups: its middle, 70 mm behind them along the placed
+        # fish's heading, lands on the slot
+        heading = CELL.placement_heading
+        placed_middle = pose[:2, 3] - 0.07 * np.array([math.cos(heading), math.sin(heading)])
+        assert np.allclose(placed_middle, SLOT, atol=1e-6)
+    plain = plan_grasp(CELL, fish, True, 0.60, 0.10, SLOT, math.radians(90))
+    assert np.allclose(plain.lower[:2, 3], SLOT)  # no middle given: the cups go to the slot
+    # the held fish's middle, for the arm's checks: along the TCP's x from the cups
+    assert np.allclose(p.surface[:2, 3] + p.surface[:2, 0] * p.middle_x, middle[:2], atol=1e-3)
+    assert plain.middle_x == 0.0
+
+
+def test_a_held_fish_is_checked_from_its_middle_not_from_the_cups():
+    at = (0.40, CELL.work_zone.y[1] - 0.45, 0.40)  # 0.45 m from the work zone's +Y edge
+    # The cups hold a 0.80 m fish 0.11 m nearer its head: its middle is 0.11 m behind them
+    head_out = poses.tool_down(at, math.radians(90))  # head toward the edge, tail inward
+    assert CELL.pose_problem(head_out, 0.80, True, -0.11) is None  # head end 0.29 m out: in
+    tail_out = poses.tool_down(at, math.radians(-90))  # tail toward the edge
+    assert CELL.pose_problem(tail_out, 0.80) is None  # taken as centered: 0.40 m each way
+    problem = CELL.pose_problem(tail_out, 0.80, True, -0.11)  # but the tail reaches 0.51 m
+    assert problem is not None and "fish end" in problem
 
 
 def test_grasp_takes_the_way_round_that_turns_the_wrist_least():

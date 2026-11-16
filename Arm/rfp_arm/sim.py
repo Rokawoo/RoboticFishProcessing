@@ -33,6 +33,7 @@ class SimArm:
         self.realtime = realtime
         self._sleep = sleep
         self._fish_length = 0.0
+        self._fish_middle_x = 0.0
         self._stop = False
         if start_tcp is None:  # above the table, at the first observation pose's height
             first = workcell.observation_poses[0]
@@ -66,8 +67,8 @@ class SimArm:
             self._contact_zero = pressed
         return pressed - self._contact_zero
 
-    def set_held_fish(self, length: float) -> None:
-        self._fish_length = length
+    def set_held_fish(self, length: float, middle_x: float = 0.0) -> None:
+        self._fish_length, self._fish_middle_x = length, middle_x
 
     def move_joints(self, joints: Sequence[float], tick: Tick | None = None) -> None:
         target = self.workcell.tcp_of_tip(self.chain.fk(joints))
@@ -93,7 +94,9 @@ class SimArm:
         if speed > self.workcell.motion.tcp_speed_max + 1e-9:
             raise ArmError(E_MOTION, f"{speed * 1000:.0f} mm/s is above the TCP speed limit")
         problem = self.fail(kind, target) if self.fail else None
-        problem = problem or self.workcell.pose_problem(target, self._fish_length)
+        problem = problem or self.workcell.pose_problem(
+            target, self._fish_length, True, self._fish_middle_x
+        )
         if problem:
             raise ArmError(E_MOTION, problem, self.tcp_pose())
         start = self._tcp.copy()
@@ -102,7 +105,11 @@ class SimArm:
         for i in range(1, steps + 1):
             pose = interpolate(start, target, i / steps)
             # Only a straight move's path is known here; a real PTP path is checked by MoveIt.
-            if straight and (problem := self.workcell.pose_problem(pose, self._fish_length)):
+            if straight and (
+                problem := self.workcell.pose_problem(
+                    pose, self._fish_length, True, self._fish_middle_x
+                )
+            ):
                 raise ArmError(E_MOTION, problem, self.tcp_pose())
             if self.realtime:
                 self._sleep(distance / steps / speed)

@@ -71,10 +71,19 @@ class Fish:
     depth_measured: bool = False  # False: placed on the table plane with the default thickness
     surface_tilt: float = 0.0  # rad between the surface under the cups and level (0: unknown)
     failures: tuple[str, ...] = ()  # every failed check, in table order
+    # (x, y, body axis yaw) of the outline on the table in {B}, kept when vision rejects the
+    # fish (e.g. cut off at the image's edge), so the arm can take a closer look at it
+    seen_at: tuple[float, float, float] | None = None
 
     @property
     def grasp_point(self) -> np.ndarray | None:
+        """Where the cups go: where the fish balances, toward its head (or its middle)."""
         return None if self.grasp_pose is None else self.grasp_pose[:3, 3]
+
+    @property
+    def middle(self) -> np.ndarray | None:
+        """The middle of its outline, on it: what the pick area and the slots are about."""
+        return None if self.target_pose is None else self.target_pose[:3, 3]
 
     def as_record(self) -> dict:
         """The IF-2 fields: mm, degrees, poses as [X, Y, Z, roll, pitch, yaw]."""
@@ -221,20 +230,16 @@ class FishLocator:
             return _finish(fish, failed | {"geometry_out_of_range"})
         outline_xy = outline[:, :2]
         center, axis = fish_heading.body_axis(outline_xy)
+        fish.seen_at = (float(center[0]), float(center[1]), math.atan2(axis[1], axis[0]))
         along = fish_heading.along_axis(outline_xy, center, axis)[:, 0]
         fish.total_length = float(along.max() - along.min())
-        rise = plane = None
+        points = rise = middle_plane = None
         if fish.depth_measured:
             points = self._surface_points(frame, polygon, t_base_camera)
-            rise, plane = self._surface_shape(points, center, axis, fish.total_length)
-        approach = (0.0, 0.0, -1.0)
-        if plane is not None:  # the surface's height and slope right at the grasp point
-            normal, height = plane
-            fish.thickness = float(height - self.table_z)
-            fish.surface_tilt = float(math.acos(min(1.0, normal[2])))
-            if s.align_to_surface and fish.surface_tilt <= math.radians(s.max_surface_tilt_deg):
-                approach = -normal
-        surface = np.array([center[0], center[1], self.table_z + fish.thickness])  # grasp point
+            rise, middle_plane = self._surface_shape(points, center, axis, fish.total_length)
+        if middle_plane is not None:
+            fish.thickness = float(middle_plane[1] - self.table_z)
+        middle_height = fish.thickness  # at the outline's middle, for the size check
         usable = (True, True)
         vote, confidence, _ = fish_heading.head_vote(outline_xy, center, axis, usable, rise)
         fish.heading_confidence = confidence
@@ -246,26 +251,54 @@ class FishLocator:
         if not fish.heading_known and s.require_heading:
             failed.add("wrong_heading")
 
-        fish.width_at_grasp = float(fish_heading.width_profile(outline_xy, center, axis, [0.0])[0])
+        # The cups go where the fish balances: ahead of its middle, toward the heavier head,
+        # as far as they still fit on the body. Without the head end: the middle.
+        grasp_xy, plane = center, middle_plane
+        ahead = s.fish.balance_ahead_share * fish.total_length if fish.heading_known else 0.0
+        for share in (1.0, 0.75, 0.5, 0.25) if ahead > 0 else ():
+            point = center + direction * ahead * share
+            if self._footprint_fits(outline_xy, point, axis) and self._cups_reach(
+                points, point, axis
+            ):
+                grasp_xy = point
+                if points is not None:
+                    fitted = self._surface_shape(points, point, axis, fish.total_length)[1]
+                    plane = fitted if fitted is not None else plane
+                break
+        approach = (0.0, 0.0, -1.0)
+        if plane is not None:  # the surface's height and slope right at the grasp point
+            normal, height = plane
+            fish.thickness = float(height - self.table_z)
+            fish.surface_tilt = float(math.acos(min(1.0, normal[2])))
+            if s.align_to_surface and fish.surface_tilt <= math.radians(s.max_surface_tilt_deg):
+                approach = -normal
+        surface = np.array([grasp_xy[0], grasp_xy[1], self.table_z + fish.thickness])
+
+        offset = float((grasp_xy - center) @ axis)
+        fish.width_at_grasp = float(
+            fish_heading.width_profile(outline_xy, center, axis, [offset])[0]
+        )
+        width_middle = float(fish_heading.width_profile(outline_xy, center, axis, [0.0])[0])
         fish.bbox = (
             float(outline_xy[:, 0].min()), float(outline_xy[:, 0].max()),
             float(outline_xy[:, 1].min()), float(outline_xy[:, 1].max()),
-            float(self.table_z), float(surface[2]),
+            float(self.table_z), float(self.table_z + max(fish.thickness, middle_height)),
         )  # fmt: skip
 
         if not self._footprint_fits(outline_xy, surface[:2], axis):
             failed.add("grasp_point_off_body")
         size_ok = not s.check_size or (
-            _within(fish.total_length, s.length_range_m)
-            and _within(fish.width_at_grasp, s.width_range_m)
-            and _within(fish.thickness, s.thickness_range_m)
+            _within(fish.total_length, s.fish.length_range_m)
+            and _within(width_middle, s.fish.width_range_m)
+            and _within(middle_height, s.fish.thickness_range_m)
         )
-        if not (size_ok and _in_area(surface[:2], self.pick_area)):
+        if not (size_ok and _in_area(center, self.pick_area)):
             failed.add("geometry_out_of_range")
 
         fish.heading = heading
         fish.grasp_pose = pose_along(surface, heading, approach)
-        fish.target_pose = fish.grasp_pose.copy()
+        middle = np.array([center[0], center[1], self.table_z + middle_height])
+        fish.target_pose = pose_along(middle, heading, approach)
         return _finish(fish, failed)
 
     def _surface_from_depth(self, frame, pixel, t_base_camera) -> np.ndarray | None:
@@ -326,6 +359,30 @@ class FishLocator:
             return rise, None
         away = center - middle[:2]
         return rise, (normal, middle[2] - (normal[0] * away[0] + normal[1] * away[1]) / normal[2])
+
+    def _cups_reach(self, points: np.ndarray | None, point_xy, axis) -> bool:
+        """Whether all six cups (3 x 2, 40 mm, filling the footprint) would seal here: the
+        surface under each, against a plane through them, within the bellows' stroke. A fin
+        or bump under one cup stops the press before the others touch."""
+        s = self.settings
+        if points is None or len(points) == 0:
+            return True  # no depth: the footprint check alone
+        half_long, half_wide = (v / 2 - s.cup_diameter_m / 2 for v in s.cup_footprint_m)
+        normal = np.array([-axis[1], axis[0]])
+        offset = points[:, :2] - point_xy
+        along, across = offset @ axis, offset @ normal
+        heights = []
+        for a in (-half_long, 0.0, half_long):
+            for b in (-half_wide, half_wide):
+                near = np.hypot(along - a, across - b) <= s.cup_diameter_m / 2
+                if near.sum() < 3:
+                    return False  # a cup over nothing seen
+                heights.append((a, b, float(np.median(points[near, 2]))))
+        cups = np.array(heights)
+        design = np.column_stack([cups[:, 0], cups[:, 1], np.ones(len(cups))])
+        fit, *_ = np.linalg.lstsq(design, cups[:, 2], rcond=None)
+        residual = cups[:, 2] - design @ fit
+        return float(residual.max() - residual.min()) <= s.cup_stroke_m
 
     def _footprint_fits(self, outline_xy, point_xy, axis) -> bool:
         """Whether the cup footprint, centered on the grasp point along the body, is on the fish."""

@@ -51,6 +51,44 @@ class HoldSettings:
 
 
 @dataclass
+class FishType:
+    """The fish being picked, as vision measures it: outside these sizes it isn't picked
+    (VS-65, VS-33), and the cups go where it balances."""
+
+    length_range_m: tuple[float, float] = (0.54, 0.825)
+    width_range_m: tuple[float, float] = (0.0945, 0.154)  # across the body at its middle
+    thickness_range_m: tuple[float, float] = (0.081, 0.132)  # its height on the table
+    # The head is heavier: the fish balances this far ahead of its outline's middle, as a
+    # share of its measured length. The cups go there when the head end is known (0: middle)
+    balance_ahead_share: float = 0.11
+
+
+@dataclass
+class Catfish(FishType):
+    """Real catfish: Table SY-1 +- 10%. A catfish balances ~0.11 of its length ahead of its
+    middle, but the 140 mm cup array must still seal behind the pectoral fins: on the catfish
+    model all six cups do up to 0.062 of the length ahead at 0.55 m, 0.094 at 0.79 m. Tune on
+    real fish: one that tips head-down when lifted wants more."""
+
+    balance_ahead_share: float = 0.065
+
+
+@dataclass
+class StandIn(FishType):
+    """The printed stand-in (Simulation/models/catfish.3mf, 0.79 m) as vision measures it in
+    the simulation: about 14% long (its raised ends) and taller than real catfish; its true
+    center of mass lies 0.126 x the measured length ahead of the measured middle."""
+
+    length_range_m: tuple[float, float] = (0.80, 1.00)
+    width_range_m: tuple[float, float] = (0.15, 0.22)
+    thickness_range_m: tuple[float, float] = (0.15, 0.21)
+    balance_ahead_share: float = 0.126
+
+
+FISH_TYPES = ("stand_in", "catfish")
+
+
+@dataclass
 class VisionSettings:
     # Camera (VS-11); hfov only for sources without intrinsics (D405: 87 deg)
     width: int = 1280
@@ -66,7 +104,9 @@ class VisionSettings:
 
     # Depth (VS-45, VS-66, C.4)
     use_depth: bool = True  # False, or a camera without depth: the fish lies on the table plane
-    depth_range_m: tuple[float, float] = (0.10, 0.50)
+    # Close looks from 0.62 m see a flat fish's top up to ~0.55 m away (the D405 measures
+    # from 0.07 m; past ~0.5 m its noise grows)
+    depth_range_m: tuple[float, float] = (0.10, 0.75)
     depth_window_m: float = 0.025
     min_depth_valid: float = 0.80
     default_thickness_m: float = 0.10  # fish height on the table, used without depth
@@ -82,10 +122,12 @@ class VisionSettings:
 
     # Geometry checks (VS-65: Table SY-1 +- 10%, VS-33)
     check_size: bool = True  # False: sizes aren't checked (videos not taken by the cell's camera)
-    length_range_m: tuple[float, float] = (0.54, 0.825)
-    width_range_m: tuple[float, float] = (0.0945, 0.154)
-    thickness_range_m: tuple[float, float] = (0.081, 0.132)
+    fish_type: str = "stand_in"  # the fish being picked (FISH_TYPES)
+    stand_in: StandIn = field(default_factory=StandIn)
+    catfish: Catfish = field(default_factory=Catfish)
     cup_footprint_m: tuple[float, float] = (0.14, 0.085)  # along and across the body (HW-31)
+    cup_diameter_m: float = 0.04  # six of them, 3 x 2, filling the footprint
+    cup_stroke_m: float = 0.012  # unevenness under the cups the bellows take up and still seal
     overlap_margin_px: float = 6.0  # outlines this close touch (Table VS-1)
 
     # Stability over the frames of one observation (VS-52)
@@ -95,6 +137,15 @@ class VisionSettings:
     match_distance_m: float = 0.05  # the same fish in two fish lists
 
     hold: HoldSettings = field(default_factory=HoldSettings)
+
+    def __post_init__(self) -> None:
+        if self.fish_type not in FISH_TYPES:
+            raise ValueError(f"fish_type must be one of {', '.join(FISH_TYPES)}")
+
+    @property
+    def fish(self) -> FishType:
+        """The fish being picked (fish_type): its size limits and balance point."""
+        return getattr(self, self.fish_type)
 
 
 def from_mapping(cls, data: dict, where: str):

@@ -3,14 +3,17 @@
 
 # The fish
 fish_model: models/catfish.3mf  # .3mf or .stl, relative to Simulation/; missing: a plain shape
-fish_length: 0.55               # m snout to tail fin; the model is scaled to it. Lying on its
-                                # side this fish is 0.29 x its length tall with its fins, and
-                                # longer than 0.55 m it no longer fits one camera view at 450 mm
+fish_length: 0.79               # m snout to tail fin; the model is scaled to it (0.79: the
+                                # printed stand-ins, vision's fish_type stand_in)
 fish_head: "-x"                 # the model's axis toward the head (catfish.3mf: -x)
 fish_up: "+z"                   # the model's axis pointing up as it lies on the table
 fish_count: 1
 seed: 1                         # where the fish lie; another number, another layout
-max_heading_offset_deg: 15      # fish lie within this of the camera image's long side
+placement: anywhere             # view: each fish where an observation pose sees all of it,
+                                # within max_heading_offset_deg of the image's long side (the
+                                # easy case); anywhere: anywhere in the pick area at any
+                                # heading, as fish really lie
+max_heading_offset_deg: 15
 fish_color: [0.93, 0.93, 0.9]   # the white printed stand-in
 
 # The arm and the gripper

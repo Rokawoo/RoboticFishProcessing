@@ -111,6 +111,7 @@ class MoveItArm:
         self._urdf: str | None = None
         self._chain: Chain | None = None
         self._fish_length = 0.0
+        self._fish_middle_x = 0.0
         self._active = None  # goal handle of the running trajectory
         self._max_trans_vel = workcell.motion.pilz_max_trans_vel
         self._max_trans_acc = workcell.motion.pilz_max_trans_acc
@@ -275,8 +276,8 @@ class MoveItArm:
             self._contact.zero(torques)
         return self._contact.force(self.joints(), torques)
 
-    def set_held_fish(self, length: float) -> None:
-        self._fish_length = length
+    def set_held_fish(self, length: float, middle_x: float = 0.0) -> None:
+        self._fish_length, self._fish_middle_x = length, middle_x
 
     def fault(self) -> str | None:
         return self._fault() if self._fault else None
@@ -456,7 +457,7 @@ class MoveItArm:
         )
         check = check_trajectory(
             self.workcell, self._chain, names, positions.reshape(len(times), -1), times,
-            self._fish_length, tcp_speed_max,
+            self._fish_length, tcp_speed_max, self._fish_middle_x,
         )  # fmt: skip
         if check.end_tcp is None:
             return check

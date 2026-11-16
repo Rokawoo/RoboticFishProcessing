@@ -49,6 +49,7 @@ vision:
   require_heading: true         # false: also pick fish whose head end is unknown
   min_heading_confidence: 0.6
   check_size: true              # false: don't check length, width and thickness
+  fish_type: stand_in           # whose size limits: stand_in (printed fish) or catfish (real)
   hold:                         # camera check that a held fish is still there
     use_mask: true
     use_depth: true
@@ -56,7 +57,8 @@ vision:
 
 simulation:                     # pick_place.py --mode sim3d (Simulation/sim.yaml lists all)
   fish_model: models/catfish.3mf  # relative to Simulation/; missing: a plain stand-in shape
-  fish_length: 0.55             # m, scaled to it; longer fish don't fit one camera view at 450 mm
+  fish_length: 0.79             # m, scaled to it: the printed stand-ins (vision fish_type)
+  placement: anywhere           # anywhere: as fish really lie; view: only where a view sees all
   fish_count: 1
   seed: 1                       # where the fish lie
   speed: 1.0                    # 2: twice as fast as real time; 0: as fast as it renders

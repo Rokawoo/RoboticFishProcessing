@@ -196,7 +196,9 @@ def test_virtual_camera_sees_the_table_and_the_fish_where_they_are():
         )
         seen = located.fish[0]
         assert seen.vision_ok, seen.failures
-        assert np.linalg.norm(seen.grasp_point[:2] - fish.pose[:2, 3]) < 0.015
+        assert np.linalg.norm(seen.middle[:2] - fish.pose[:2, 3]) < 0.015
+        ahead = (seen.grasp_point[:2] - seen.middle[:2]) @ fish.pose[:2, 0]  # toward the head
+        assert ahead == pytest.approx(0.126 * seen.total_length, abs=0.005)
         error = math.remainder(seen.heading - yaw_of(fish.pose), math.tau)
         assert abs(error) < math.radians(8)  # head end found from the shape and the slope
     finally:
@@ -233,6 +235,97 @@ def test_a_whole_cycle_in_the_virtual_cell():
         assert world.holding is None and not world.vacuum
     finally:
         camera.close()
+
+
+def test_a_fish_cut_off_by_the_view_is_placed_after_a_closer_look():
+    from rfp_arm.poses import from_parts, rot_z
+    from rfp_controlsys.console import Console
+    from rfp_controlsys.cycle import PickPlaceCycle
+    from rfp_controlsys.selector import RuleSelector
+    from rfp_controlsys.settings import ControlSettings
+    from rfp_vision.fish_list import FishLocator
+    from rfp_vision.settings import VisionSettings
+    from rfp_vision.vision_system import VisionSystem
+
+    def run(close_looks: int):
+        world = World(CELL, settings(), stand_in_fish(0.79))
+        # along X: longer than the 0.50 m the camera sees that way from 450 mm
+        world.fish = [Fish("fish 1", world.model, from_parts(rot_z(0.1), (0.36, -0.10, 0)))]
+        camera = VirtualCamera(world, {})
+        try:
+            vision_settings = VisionSettings(check_size=False)
+            locator = FishLocator(vision_settings, CELL.table_z, CELL.pick_area.area)
+            vision = VisionSystem(camera, TruthDetector(camera), locator, vision_settings)
+            console = Console(window=False, interactive=False)
+            states = []
+            console.state = lambda state, detail="": states.append(f"{state} {detail}")
+            cycle = PickPlaceCycle(
+                VirtualArm(world, CELL), VirtualGripper(world), vision, RuleSelector(), CELL,
+                ControlSettings(settle_s=0.0, close_looks=close_looks), console,
+                sleep=lambda seconds: None,
+            )  # fmt: skip
+            return cycle.run(1), states, world
+        finally:
+            camera.close()
+
+    report, states, world = run(close_looks=2)
+    assert report.successes == 1, report
+    assert any("close look at" in state for state in states)
+    assert CELL.placement_zone.contains(world.fish[0].pose[:2, 3])
+    report, _, world = run(close_looks=0)
+    assert report.successes == 0 and "none can be picked" in report.ended, report
+
+
+def test_fish_can_lie_anywhere_in_the_pick_area_as_real_fish_do():
+    world = World(CELL, settings(), stand_in_fish(0.79))
+    assert world.scatter_fish(3, seed=4) == []
+    zone, base_clear = CELL.work_zone, 0.15
+    for fish in world.fish:
+        outline = fish.outline()
+        assert CELL.pick_area.contains(fish.pose[:2, 3])
+        assert (outline[:, 0] >= zone.x[0]).all() and (outline[:, 0] <= zone.x[1]).all()
+        assert (outline[:, 1] >= zone.y[0]).all() and (outline[:, 1] <= zone.y[1]).all()
+        assert np.hypot(outline[:, 0], outline[:, 1]).min() >= base_clear  # not under the arm
+    a, b, c = (f.outline() for f in world.fish)
+    for one, other in ((a, b), (a, c), (b, c)):
+        assert np.linalg.norm(one[:, None] - other[None], axis=2).min() >= 0.03
+    again = World(CELL, settings(), stand_in_fish(0.79))
+    again.scatter_fish(3, seed=4)
+    assert all(np.allclose(x.pose, y.pose) for x, y in zip(world.fish, again.fish))
+
+
+def test_a_fish_model_knows_where_it_balances():
+    from rfp_sim.assets import _center_of_mass
+
+    box = pv.Box(bounds=(-0.3, 0.5, -0.1, 0.1, 0.0, 0.2)).triangulate()
+    faces = box.faces.reshape(-1, 4)[:, 1:]
+    assert np.allclose(_center_of_mass(np.asarray(box.points), faces), (0.1, 0.0, 0.1))
+    # the plain stand-in is heavier toward its head (+x), like a catfish
+    assert stand_in_fish(0.79).center_of_mass[0] > 0.01
+
+
+def test_the_benchmark_scores_each_fish_against_the_truth():
+    from rfp_controlsys.settings import ControlSettings
+    from rfp_sim.benchmark import build_bench, report_lines, run_scene, summarize
+    from rfp_vision.settings import StandIn, VisionSettings
+
+    sim = settings(fish_model="none.stl", fish_length=0.55, placement="view", seed=3,
+                   download_robot_meshes=False)  # fmt: skip  # the plain stand-in shape
+    vision = VisionSettings(check_size=False, stand_in=StandIn(balance_ahead_share=0.0))
+    bench = build_bench(CELL, vision, ControlSettings(settle_s=0.0), sim, None, False)
+    try:
+        rows = run_scene(bench, seed=1) + run_scene(bench, seed=2)  # the same cell, reused
+    finally:
+        bench.session.close()
+    assert [r["outcome"] for r in rows] == ["placed", "placed"], rows
+    for row in rows:
+        assert row["ended"] == "pick area clear" and row["head_right"] == 1
+        assert row["slot_error_mm"] < 30 and abs(row["heading_error_deg"]) < 8
+        # the cups at the outline's middle (no shift here): behind its center of mass
+        assert abs(row["grasp_from_middle_mm"]) < 25 and row["grasp_from_com_mm"] < 0
+    summary = summarize(rows)
+    assert summary["placed"] == 2 and summary["fish"] == 2 and summary["failures"] == {}
+    assert any("(was" in line for line in report_lines(summary, summary))
 
 
 @pytest.mark.skipif(not pv.system_supports_plotting(), reason="needs a display")

@@ -33,6 +33,8 @@ class FishModel:
     outline: np.ndarray  # (n, 2) top-view outline (m)
     length: float  # m, tip to tip along x
     source: str
+    # (3,) m: where it balances, for a uniform density (the closed mesh's volume centroid)
+    center_of_mass: np.ndarray | None = None
 
 
 def read_3mf(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -104,8 +106,20 @@ def _centered(vertices: np.ndarray, triangles: np.ndarray, source: str) -> FishM
     center = np.array([moments["m10"], moments["m01"]]) / moments["m00"] * OUTLINE_MM / 1000 + low
     vertices = vertices - [center[0], center[1], vertices[:, 2].min()]
     return FishModel(
-        polydata(vertices, triangles), outline - center, float(np.ptp(vertices[:, 0])), source
-    )
+        polydata(vertices, triangles), outline - center, float(np.ptp(vertices[:, 0])), source,
+        _center_of_mass(vertices, triangles),
+    )  # fmt: skip
+
+
+def _center_of_mass(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    """Volume centroid of a closed triangle mesh: a tetrahedron from the origin to each
+    triangle, signed. An open mesh has no volume: then the vertices' mean."""
+    a, b, c = (vertices[triangles[:, i]] for i in range(3))
+    volumes = np.einsum("ij,ij->i", a, np.cross(b, c)) / 6.0
+    total = volumes.sum()
+    if abs(total) < 1e-9:
+        return vertices.mean(axis=0)
+    return ((a + b + c) / 4.0 * volumes[:, None]).sum(axis=0) / total
 
 
 def stand_in_fish(length: float) -> FishModel:

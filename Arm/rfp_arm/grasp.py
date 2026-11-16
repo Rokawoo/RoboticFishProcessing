@@ -64,6 +64,7 @@ class GraspPlan:
     # the last joint's angle (rad) now, at the grasp and at the slot, as the arm predicted
     # them; it returns to the first. None if the arm can't tell.
     wrist: tuple[float, float, float] | None = None
+    middle_x: float = 0.0  # m along the TCP's x axis from the cups to the fish's middle
 
     @property
     def wrist_sweep(self) -> float | None:
@@ -97,6 +98,7 @@ def plan_grasp(
     tool_yaw: float,
     dry_run: bool = False,
     wrist: Callable[[np.ndarray], float | None] | None = None,
+    middle: np.ndarray | None = None,
 ) -> GraspPlan:
     """
     The poses of Table AS-1. `grasp_pose` is the fish's grasp pose from the fish list (on
@@ -104,7 +106,9 @@ def plan_grasp(
     the TCP's yaw now, at the observation pose, where the arm returns after the place.
     `wrist` (Arm.wrist_angle) tells the last joint's angle now (None) and at a TCP pose;
     without it the wrist is taken to turn with the tool's yaw from the middle of its range.
-    Raises ArmError(E_MOTION) if the fish or a pose is outside the limits.
+    `middle`: the fish's middle in {B} where the cups grasp it elsewhere (toward its heavier
+    head): the slot gets the middle. Raises ArmError(E_MOTION) if the fish or a pose is
+    outside the limits.
     """
     g = workcell.grasp
     point = grasp_pose[:3, 3]
@@ -114,8 +118,8 @@ def plan_grasp(
             E_MOTION,
             f"approach {tilt:.0f} deg off vertical (at most {g.max_approach_tilt_deg:.0f})",
         )
-    if not workcell.pick_area.contains(point):
-        raise ArmError(E_MOTION, "the grasp point is outside the pick area (CS-13)")
+    if not workcell.pick_area.contains(point if middle is None else middle):
+        raise ArmError(E_MOTION, "the fish is outside the pick area (CS-13)")
     if not workcell.placement_zone.contains(slot):
         raise ArmError(E_MOTION, "the slot is outside the placement zone")
 
@@ -136,33 +140,42 @@ def plan_grasp(
     # tube), clear of its ends if a way allows; of arcs within a few degrees of it, the one
     # that stays nearest the middle.
     low, high = workcell.wrist_range
-    middle = (low + high) / 2
+    center = (low + high) / 2
     now = wrist(None) if wrist else None
+    behind = np.zeros(2) if middle is None else np.asarray(middle, float)[:2] - point[:2]
+
+    def at_slot(grasp_yaw: float, place_yaw: float) -> np.ndarray:
+        """The TCP's x, y at the slot that puts the fish's middle on the slot: its offset
+        from the cups turns with the fish."""
+        return np.asarray(slot, float) - rot_z(place_yaw - grasp_yaw)[:2, :2] @ behind
+
     ways = []
     for flip in (0.0, math.pi):
         for fish_turn in turns:
             grasp_yaw = wrap(heading + flip)
             place_yaw = wrap(grasp_yaw + fish_turn)
             angles = None
+            place = at_slot(grasp_yaw, place_yaw)
             if wrist and now is not None:
-                at_grasp = wrist(tool_down((x, y, lift_z), grasp_yaw))
-                at_slot = wrist(tool_down((slot[0], slot[1], lift_z), place_yaw))
-                if at_grasp is not None and at_slot is not None:
-                    angles = (now, at_grasp, at_slot)
+                wrist_grasp = wrist(tool_down((x, y, lift_z), grasp_yaw))
+                wrist_slot = wrist(tool_down((place[0], place[1], lift_z), place_yaw))
+                if wrist_grasp is not None and wrist_slot is not None:
+                    angles = (now, wrist_grasp, wrist_slot)
             predicted = angles is not None
             if not predicted:  # the arm can't tell: the wrist turns as the tool's yaw does
-                start = middle + wrap(grasp_yaw - tool_yaw)
-                angles = (middle, start, start + fish_turn)
+                start = center + wrap(grasp_yaw - tool_yaw)
+                angles = (center, start, start + fish_turn)
             targets = angles[1:]
             ways.append(
                 {
                     "inside": all(low <= a <= high for a in targets),
                     "sweep": max(angles) - min(angles),
-                    "peak": max(abs(a - middle) for a in targets),
-                    "worst": max(targets, key=lambda a: abs(a - middle)),
+                    "peak": max(abs(a - center) for a in targets),
+                    "worst": max(targets, key=lambda a: abs(a - center)),
                     "flip": flip,
                     "turn": fish_turn,
                     "place_yaw": place_yaw,
+                    "place": place,
                     "wrist": tuple(float(a) for a in angles) if predicted else None,
                 }
             )
@@ -180,7 +193,7 @@ def plan_grasp(
         (way for way in roomy if way["sweep"] <= smallest + WRIST_TIE),
         key=lambda way: way["peak"],
     )
-    flip, turn, place_yaw = way["flip"], way["turn"], way["place_yaw"]
+    flip, turn, place_yaw, place = way["flip"], way["turn"], way["place_yaw"], way["place"]
     # The cups meet the fish along the grasp pose's z axis; `flip` turns them about it.
     surface = grasp_pose.copy()
     surface[:3, :3] = grasp_pose[:3, :3] @ rot_z(flip)
@@ -189,14 +202,15 @@ def plan_grasp(
         pregrasp=surface,
         approach_end=surface,
         lift=surface,
-        carry=tool_down((slot[0], slot[1], lift_z), place_yaw),
-        lower=tool_down((slot[0], slot[1], release_z), place_yaw),
-        retreat=tool_down((slot[0], slot[1], release_z + g.retreat_distance), place_yaw),
+        carry=tool_down((place[0], place[1], lift_z), place_yaw),
+        lower=tool_down((place[0], place[1], release_z), place_yaw),
+        retreat=tool_down((place[0], place[1], release_z + g.retreat_distance), place_yaw),
         fish_length=fish_length,
         turn=turn,
         dry_run=dry_run,
         surface=surface,
         wrist=way["wrist"],
+        middle_x=float(behind @ surface[:2, 0]) / max(float(np.hypot(*surface[:2, 0])), 1e-9),
     )
     plan.pregrasp = plan.at_depth(-g.pregrasp_distance)
     plan.approach_end = plan.at_depth(-g.dry_run_standoff if dry_run else g.press_distance)
@@ -204,7 +218,7 @@ def plan_grasp(
     plan.lift = tool_down((end[0], end[1], max(lift_z, end[2] + g.lift_margin)), grasp_yaw)
     for name, pose in plan.poses().items():
         held = fish_length if name in ("lift", "carry", "lower") else 0.0
-        if problem := workcell.pose_problem(pose, held):
+        if problem := workcell.pose_problem(pose, held, True, plan.middle_x):
             raise ArmError(E_MOTION, f"{name} pose: {problem}")
     return plan
 
@@ -273,7 +287,7 @@ class GraspSequence:
                 self._begin("confirm hold")
                 self._confirm_hold()
                 self.holding = True
-                self.arm.set_held_fish(plan.fish_length)
+                self.arm.set_held_fish(plan.fish_length, plan.middle_x)
         except BaseException:
             try:  # whatever was switched on for the press goes off again
                 self._send(self.workcell.grasp.press_end_commands)

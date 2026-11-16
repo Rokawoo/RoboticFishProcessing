@@ -54,7 +54,10 @@ def build_session(
     meshes = robot_link_meshes(folder, ["base_link", *FR5.links])
     notes.append(f"arm: {source}" if meshes else f"arm: plain shapes ({source})")
     world = World(workcell, settings, model)
-    notes += world.place_fish(settings.fish_count, settings.seed)
+    if settings.placement not in ("view", "anywhere"):
+        raise ValueError(f"placement must be 'view' or 'anywhere', not '{settings.placement}'")
+    place = world.scatter_fish if settings.placement == "anywhere" else world.place_fish
+    notes += place(settings.fish_count, settings.seed)
     camera = VirtualCamera(world, meshes)
     shown = Viewer(world, meshes, camera, show=show, video=video) if viewer else None
     arm = VirtualArm(world, workcell, on_step=shown.update if shown else None)

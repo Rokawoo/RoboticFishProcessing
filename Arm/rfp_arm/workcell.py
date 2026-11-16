@@ -125,7 +125,9 @@ class MotionLimits:
     planning_time: float = 5.0  # s
     pilz_max_trans_vel: float = 1.0  # MoveIt's pilz_cartesian_limits.yaml, if it can't be read
     pilz_max_trans_acc: float = 2.25
-    carry_ptp_fallback: bool = False  # carry point-to-point when no straight path is found
+    # A straight carry turns the tool the short way, which can wind the wrist (j6) into its
+    # stop where the planned turn goes the other way round: then carry point-to-point
+    carry_ptp_fallback: bool = True
 
 
 @dataclass
@@ -203,6 +205,8 @@ class Workcell:
     observation_poses: list[ObservationPose]
     placement_heading: float  # rad (AS-52)
     slots: list[tuple[float, float]]
+    # Camera height above the table (m) for a look centered on one fish; None: no such looks
+    close_look_height: float | None = None
     # How far the last joint may turn (rad): the vacuum tube must not wind up
     wrist_range: tuple[float, float] = (math.radians(-180.0), math.radians(180.0))
     motion: MotionLimits = field(default_factory=MotionLimits)
@@ -223,25 +227,38 @@ class Workcell:
     def tcp_of_camera(self, t_base_camera: np.ndarray) -> np.ndarray:
         return t_base_camera @ invert(self.camera) @ self.tcp
 
+    def close_look_camera(self, xy, yaw: float) -> np.ndarray:
+        """T_base_camera looking straight down at `xy` from close_look_height, the image's
+        x axis (its long side) along `yaw`."""
+        return tool_down((float(xy[0]), float(xy[1]), self.table_z + self.close_look_height), yaw)
+
     def observation_tcp(self, pose: ObservationPose) -> np.ndarray | None:
         """TCP pose of an observation pose given as a camera pose (None for taught joints)."""
         return None if pose.camera is None else self.tcp_of_camera(pose.camera)
 
     # -- limits (SF-10, SF-13) ---------------------------------------------
     def pose_problem(
-        self, t_base_tcp: np.ndarray, fish_length: float = 0.0, work_zone: bool = True
+        self,
+        t_base_tcp: np.ndarray,
+        fish_length: float = 0.0,
+        work_zone: bool = True,
+        fish_middle_x: float = 0.0,
     ) -> str | None:
         """
         Why the tool may not be at this TCP pose, or None. The TCP, the camera and (with
         `fish_length`) both ends of the held fish must be outside every exclusion zone and
-        inside the work zone, and over the table the TCP and camera must stay above it.
-        `work_zone=False` skips the inside-the-work-zone part (a path may start outside).
+        inside the work zone, and over the table the TCP and camera must stay above it. The
+        fish lies along the TCP's x axis, its middle `fish_middle_x` from the TCP (the cups
+        hold it nearer its head). `work_zone=False` skips the inside-the-work-zone part (a
+        path may start outside).
         """
         tcp = t_base_tcp[:3, 3]
         points = [("TCP", tcp, True), ("camera", self.camera_of_tcp(t_base_tcp)[:3, 3], True)]
         if fish_length > 0:
-            along = t_base_tcp[:3, 0] * fish_length / 2  # the fish lies along the TCP's x axis
-            points += [("fish end", tcp + along, False), ("fish end", tcp - along, False)]
+            x = t_base_tcp[:3, 0]
+            middle = tcp + x * fish_middle_x
+            ends = (middle + x * fish_length / 2, middle - x * fish_length / 2)
+            points += [("fish end", end, False) for end in ends]
         zone = self.work_zone
         floor = self.table_z + self.table_clearance
         for name, point, is_tool in points:
@@ -278,6 +295,8 @@ class Workcell:
                 found.append(f"slot {i} is outside the placement zone")
         if not self.observation_poses:
             found.append("no observation pose")
+        if self.close_look_height is not None and self.close_look_height <= 0.1:
+            found.append("observation.close_height must be above 0.1 m")
         for pose in self.observation_poses:
             tcp = self.observation_tcp(pose)
             if tcp is not None and (problem := self.pose_problem(tcp)):
@@ -384,6 +403,11 @@ def workcell_from_mapping(data: dict) -> Workcell:
             for z in zones.get("exclusion") or []
         ],
         observation_poses=poses,
+        close_look_height=(
+            float(observation["close_height"])
+            if observation.get("close_height") is not None
+            else None
+        ),
         placement_heading=math.radians(float(placement.get("heading_deg", 0.0))),
         slots=[(float(x), float(y)) for x, y in placement["slots"]],
         motion=_settings(MotionLimits, data.get("motion"), "motion"),

@@ -5,6 +5,8 @@ max_attempts_per_fish: 3      # then the fish is skipped for the rest of the run
 max_failed_cycles: 3          # failed cycles in a row, then pause for the operator (CS-63)
 empty_passes_to_end: 3        # passes over the observation poses with no fish: run ends (SY-22)
 max_reobserve: 3              # "reobserve" answers in a row, then the fallback rule
+close_looks: 2                # looks centered on a fish cut off at the image's edge (each
+                              # aimed at what the last one saw); 0: none
 fish_list_max_age_s: 1.0      # an older fish list starts no decision or grasp (CS-12, CS-53)
 recheck_position_m: 0.010     # re-check before a grasp: the fish moved more = new decision (CS-41)
 recheck_heading_deg: 10

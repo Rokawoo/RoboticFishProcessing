@@ -66,6 +66,11 @@ observation:
   poses:
     - {name: right, camera_xy: [0.40, -0.18], yaw_deg: -90}   # the FR5 wrist (j6) near 0
     - {name: left, camera_xy: [0.40, 0.02], yaw_deg: -90}
+  # A fish cut off at the image's edge gets a look centered on it: the camera straight above
+  # its middle, the image's long side along the fish, this high above the table. There the
+  # long side spans about 1.9 x (this - the fish's height): 0.62 holds a 0.79 m printed
+  # stand-in (up to 0.19 m tall) whole. Leave it out for no such looks.
+  close_height: 0.62
 
 placement:
   heading_deg: 0    # placed fish point head toward +X (AS-52)
@@ -86,7 +91,9 @@ motion:
   planning_time: 5.0
   pilz_max_trans_vel: 1.0       # MoveIt's pilz_cartesian_limits.yaml, used if it can't be read
   pilz_max_trans_acc: 2.25
-  carry_ptp_fallback: false     # carry point-to-point if no straight path is found
+  carry_ptp_fallback: true      # carry point-to-point if no straight path is found (a
+                                # straight carry turns the tool the short way, which can wind
+                                # the wrist into its stop where the planned turn doesn't)
 
 grasp:                          # Table AS-1
   pregrasp_distance: 0.10
