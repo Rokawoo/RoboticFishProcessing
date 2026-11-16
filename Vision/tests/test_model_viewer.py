@@ -29,6 +29,8 @@ def test_models_are_found_named_and_summarized(tmp_path):
     (tmp_path / "still_training" / "weights").mkdir(parents=True)  # no weights: not listed
     os.utime(old, (1, 1))
     assert mv.list_runs(tmp_path) == [new, old]  # newest first
+    os.utime(new, (0, 0))  # file times say otherwise (a clone): the names count
+    assert mv.list_runs(tmp_path) == [new, old]
     assert mv.model_weights(old) == old / "weights" / "best.pt"
     assert mv.model_weights(new) == new / "weights" / "last.pt"
     assert mv.model_name(old / "weights" / "best.pt") == old.name

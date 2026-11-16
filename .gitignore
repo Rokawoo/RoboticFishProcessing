@@ -269,9 +269,16 @@ Vision/tests/model_previews/
 *.engine
 runs/
 mlruns/
-# One folder per training run (weights, plots, results): keep only the folder.
+# One folder per training run (weights, plots, results). Only each run's weights/best.pt is
+# tracked: the model the cell runs, so a clone needs no download (~55 MB each: GitHub warns
+# past 50 MB and refuses past 100 MB). Each directory level has to be let in again.
 Vision/trained_cv_models/*
 !Vision/trained_cv_models/.gitkeep
+!Vision/trained_cv_models/*/
+Vision/trained_cv_models/*/*
+!Vision/trained_cv_models/*/weights/
+Vision/trained_cv_models/*/weights/*
+!Vision/trained_cv_models/*/weights/best.pt
 # Local MLflow database and logged files from training/train.py
 Vision/data/training/mlflow/
 
@@ -282,6 +289,7 @@ Arm/firmware/**/secrets.h
 Simulation/models/*
 !Simulation/models/README.md
 !Simulation/models/catfish.3mf
+Simulation/benchmarks/
 
 # Editors and OS
 # VS Code: personal settings stay local; the extension recommendations are shared.

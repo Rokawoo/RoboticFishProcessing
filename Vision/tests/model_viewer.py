@@ -24,6 +24,7 @@ import argparse
 import csv
 import logging
 import math
+import re
 import sys
 import time
 from collections import deque
@@ -104,7 +105,9 @@ def model_name(weights: Path) -> str:
 
 
 def list_runs(root: Path = TRAINED_MODELS_DIR) -> list[Path]:
-    """Runs with weights, newest first."""
+    """Runs with weights, newest first: by the date and time in the run's name, which a git
+    clone keeps (its file times are the clone's); runs named otherwise come after, by file
+    time."""
     if not root.is_dir():
         return []
     runs = [
@@ -112,7 +115,12 @@ def list_runs(root: Path = TRAINED_MODELS_DIR) -> list[Path]:
         for p in root.iterdir()
         if p.is_dir() and any((p / "weights" / n).is_file() for n in ("best.pt", "last.pt"))
     ]
-    return sorted(runs, key=lambda p: p.stat().st_mtime, reverse=True)
+    return sorted(runs, key=_run_time, reverse=True)
+
+
+def _run_time(run: Path) -> tuple[str, float]:
+    found = re.search(r"_(\d{4}-\d{2}-\d{2}_\d{6})$", run.name)  # train.py's run names
+    return (found.group(1) if found else "", run.stat().st_mtime)
 
 
 def run_summary(run: Path) -> str:

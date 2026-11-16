@@ -4,12 +4,14 @@ into a list of Detections (outline, box, confidence). PyTorch loads on first use
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 MODELS_DIR = Path(__file__).resolve().parents[1] / "trained_cv_models"
+RUN_TIME = re.compile(r"_(\d{4}-\d{2}-\d{2}_\d{6})$")  # train.py: <name>_<model>_<date>_<time>
 
 
 @dataclass
@@ -33,7 +35,9 @@ def find_weights(path: Path) -> Path:
 
 
 def list_runs(root: Path = MODELS_DIR) -> list[Path]:
-    """Training runs with weights, newest first."""
+    """Training runs with weights, newest first: by the date and time in the run's name,
+    which a git clone keeps (its file times are the clone's); runs named otherwise come
+    after them, by file time."""
     if not root.is_dir():
         return []
     runs = [
@@ -41,7 +45,12 @@ def list_runs(root: Path = MODELS_DIR) -> list[Path]:
         for p in root.iterdir()
         if p.is_dir() and any((p / "weights" / n).is_file() for n in ("best.pt", "last.pt"))
     ]
-    return sorted(runs, key=lambda p: p.stat().st_mtime, reverse=True)
+    return sorted(runs, key=_run_time, reverse=True)
+
+
+def _run_time(run: Path) -> tuple[str, float]:
+    found = RUN_TIME.search(run.name)
+    return (found.group(1) if found else "", run.stat().st_mtime)
 
 
 def model_version(weights: Path) -> str:
