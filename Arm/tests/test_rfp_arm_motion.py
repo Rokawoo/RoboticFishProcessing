@@ -812,6 +812,8 @@ def test_grasp_takes_the_way_round_that_turns_the_wrist_least():
     assert round(math.degrees(poses.yaw_of(p.lower))) == 180  # its head still toward +X
     # sweeps of 89 and 91 deg count as equal: the way that stays nearer the middle
     assert path(plan_with(fake_wrist(3, 92), heading_deg=0)) == [3, -88, -88]
+    # clear of the range's ends (+-170) if a way allows: 159 deg rather than 151 to -165
+    assert path(plan_with(fake_wrist(-14, -165), heading_deg=130)) == [-14, 145, 15]
 
     # Head end unknown: the fish goes in either way round, whichever turns the wrist less;
     # here the longer turn of the fish (-100 deg, not +80), as the grasp already turned it

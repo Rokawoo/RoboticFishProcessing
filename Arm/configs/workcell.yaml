@@ -25,8 +25,9 @@ tool:
   tcp: {xyz: [0.0, 0.0, 0.220], rpy_deg: [0, 0, 0]}
   # How far the last joint (j6) may turn. The vacuum tube runs into the gripper, so the
   # wrist must never wind a full turn: plans that leave this range are refused, each grasp
-  # takes the direction with the least twist, and the arm returns to its observation pose
-  # (and this joint to its angle there) after every fish. Put 0 where the tube hangs free.
+  # takes the way round that turns it least (and keeps 10 degrees clear of the ends if it
+  # can), and the arm returns to its observation pose (and this joint to its angle there)
+  # after every fish. Put 0 where the tube hangs free.
   wrist_range_deg: [-170, 170]
   # Cups, bracket and camera as one box in the tip link frame, for MoveIt's collision
   # checks. Keep its far end short of the cup faces, or reaching a fish counts as a hit.
@@ -58,9 +59,10 @@ observation:
   # Each pose: where the camera looks straight down from (camera_xy; yaw_deg turns the
   # image's x axis from +X toward +Y), or taught joint angles (joints_deg: [j1, ..., j6],
   # from `ros2 topic echo /joint_states --once`, converted to degrees). Taught joints are
-  # the safer choice on the real arm: the posture is exactly the one taught. Teach them
-  # with j6 near the middle of its range: from there the wrist turns up to 135 degrees
-  # either way to grasp a fish and bring it to the placement heading.
+  # the safer choice on the real arm: the posture is exactly the one taught (pick_place.py
+  # --mode check prints the joints in degrees). Teach them with j6 near the middle of its
+  # range: from there the wrist turns up to about 160 degrees either way to grasp a fish
+  # and bring it to the placement heading.
   poses:
     - {name: right, camera_xy: [0.40, -0.18], yaw_deg: -90}   # the FR5 wrist (j6) near 0
     - {name: left, camera_xy: [0.40, 0.02], yaw_deg: -90}

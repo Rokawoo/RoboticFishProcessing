@@ -38,6 +38,10 @@ from rfp_arm.workcell import Workcell
 
 # Wrist arcs (rad) this close count as equal: then the one nearer the range's middle
 WRIST_TIE = math.radians(5.0)
+# Plans keep the wrist this far (rad) inside its range when a way round allows: the tilted
+# approach turns it up to 14 deg from where it was predicted (straight down; 10 deg in 95%
+# of grasps), and the tube twists less. In the placeholder cell some way always allows it.
+WRIST_MARGIN = math.radians(10.0)
 
 STEPS = ("pre-grasp", "vacuum on", "approach", "confirm hold", "lift", "carry", "lower",
          "release", "retreat")  # fmt: skip
@@ -129,7 +133,8 @@ def plan_grasp(
     # into the slot either way round. Each way the wrist turns from where it is to the
     # grasp, with the fish to the slot, and back to where it is now (the observation pose):
     # twice the arc it sweeps. Take the smallest arc inside the wrist's range (the vacuum
-    # tube); of arcs within a few degrees of it, the one that stays nearest the middle.
+    # tube), clear of its ends if a way allows; of arcs within a few degrees of it, the one
+    # that stays nearest the middle.
     low, high = workcell.wrist_range
     middle = (low + high) / 2
     now = wrist(None) if wrist else None
@@ -169,9 +174,10 @@ def plan_grasp(
             f"the wrist would turn to {math.degrees(worst):.0f} deg (range "
             f"{math.degrees(low):.0f} to {math.degrees(high):.0f}: the vacuum tube)",
         )
-    smallest = min(way["sweep"] for way in inside)
+    roomy = [way for way in inside if way["peak"] <= (high - low) / 2 - WRIST_MARGIN] or inside
+    smallest = min(way["sweep"] for way in roomy)
     way = min(
-        (way for way in inside if way["sweep"] <= smallest + WRIST_TIE),
+        (way for way in roomy if way["sweep"] <= smallest + WRIST_TIE),
         key=lambda way: way["peak"],
     )
     flip, turn, place_yaw = way["flip"], way["turn"], way["place_yaw"]
