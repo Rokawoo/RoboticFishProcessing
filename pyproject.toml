@@ -38,6 +38,12 @@ control = [                 # the cycle also needs the vision and arm extras
     "pyyaml",
     "openai",
 ]
+sim = [                     # Simulation/: the 3D virtual cell
+    "numpy",
+    "opencv-python",
+    "pyyaml",
+    "pyvista>=0.44",
+]
 analysis = [
     "pandas",
     "matplotlib",
@@ -52,11 +58,11 @@ dev = [
 Repository = "https://github.com/Rokawoo/RoboticFishProcessing"
 
 [tool.setuptools.packages.find]
-where = ["Vision", "Arm", "ControlSys"]
+where = ["Vision", "Arm", "ControlSys", "Simulation"]
 include = ["rfp_*"]
 
 [tool.pytest.ini_options]
-testpaths = ["Vision/tests", "Arm/tests", "ControlSys/tests"]
+testpaths = ["Vision/tests", "Arm/tests", "ControlSys/tests", "Simulation/tests"]
 
 [tool.ruff]
 line-length = 100

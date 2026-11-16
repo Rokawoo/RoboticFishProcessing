@@ -16,6 +16,7 @@ Implements Requirement Spec **Section 2.4 Control System (CS)** and owns the run
 ## Running pick and place
 
 ```bash
+python ControlSys/rfp_controlsys/pick_place.py --mode sim3d        # 3D virtual cell (Simulation/)
 python ControlSys/rfp_controlsys/pick_place.py --mode observe      # camera, detections, fish positions
 python ControlSys/rfp_controlsys/pick_place.py --mode offline --device clip.mp4 --any-size --cycles 2
 python ControlSys/rfp_controlsys/pick_place.py --mode sim --cycles 2   # MoveIt's mock hardware, RViz
@@ -24,7 +25,7 @@ python ControlSys/rfp_controlsys/pick_place.py --mode dry-run --step   # THE ARM
 python ControlSys/rfp_controlsys/pick_place.py --mode run          # THE ARM MOVES, with vacuum
 ```
 
-`observe` and `offline` run anywhere (Windows too). The others need ROS 2 Humble with MoveIt running (`ros2 launch fairino5_v6_moveit2_config demo.launch.py`), and on the real arm the command server (`ros2 run fairino_hardware ros2_cmd_server`); the script's docstring has the details. The same cycle code runs in every mode: only the arm, gripper and camera behind their interfaces change (CS-90).
+`sim3d`, `observe` and `offline` run anywhere (Windows too). The others need ROS 2 Humble with MoveIt running (`ros2 launch fairino5_v6_moveit2_config demo.launch.py`), and on the real arm the command server (`ros2 run fairino_hardware ros2_cmd_server`); the script's docstring has the details. The same cycle code runs in every mode: only the arm, gripper and camera behind their interfaces change (CS-90).
 
 One cycle: move to the next observation pose, get a fish list, let the selector choose, validate the answer, look again from the same pose (CS-41), run the grasp sequence, answer a failure as in Table CS-1, log a CSV row.
 

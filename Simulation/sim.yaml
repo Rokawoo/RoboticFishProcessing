@@ -1,0 +1,41 @@
+# The 3D simulation (pick_place.py --mode sim3d), rfp_sim.settings.SimSettings.
+# The control panel's `simulation` section overrides these. Units: meters, seconds, newtons.
+
+# The fish
+fish_model: models/catfish.3mf  # .3mf or .stl, relative to Simulation/; missing: a plain shape
+fish_length: 0.55               # m snout to tail fin; the model is scaled to it. Lying on its
+                                # side this fish is 0.29 x its length tall with its fins, and
+                                # longer than 0.55 m it no longer fits one camera view at 450 mm
+fish_head: "-x"                 # the model's axis toward the head (catfish.3mf: -x)
+fish_up: "+z"                   # the model's axis pointing up as it lies on the table
+fish_count: 1
+seed: 1                         # where the fish lie; another number, another layout
+max_heading_offset_deg: 15      # fish lie within this of the camera image's long side
+fish_color: [0.93, 0.93, 0.9]   # the white printed stand-in
+
+# The arm and the gripper
+robot_meshes: ""                # folder with the FR5's STL files (frcobot_ros2:
+                                # fairino_description/meshes/fairino5_v6); "": a sourced ROS
+                                # workspace's, else plain shapes
+speed: 1.0                      # simulated seconds per real second; 0: as fast as it renders
+step_s: 0.05                    # simulated seconds between drawn arm poses
+cup_rows: [-0.05, 0.0, 0.05]    # cup centers along the tool's x (m): 3 x 2 cups (HW-31)
+cup_columns: [-0.0225, 0.0225]  # and along its y
+cup_radius: 0.02
+cup_length: 0.04                # bellows, from the plate to the cup faces
+cup_stroke: 0.012               # how far a cup compresses
+cup_stiffness: 500.0            # N/m per cup
+seal_cups: 5                    # cups that must touch for the vacuum to hold the fish
+seal_gap: 0.002                 # m: a cup face this close to the fish touches it
+drop: ""                        # lift | carry: lose the first fish then (tests drop detection)
+
+# The camera (the D405 on the gripper)
+width: 1280
+height: 720
+hfov_deg: 87.0
+depth_range_m: [0.07, 1.0]      # outside it the D405 gives no depth
+depth_noise_m: 0.0005
+detector: model                 # model: the trained YOLO; truth: the renderer's own outlines
+
+# The 3D window
+window: [1280, 800]

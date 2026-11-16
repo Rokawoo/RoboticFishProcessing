@@ -8,7 +8,7 @@
 
 A FAIRINO FR5 arm with a suction gripper picks whole catfish off a table one at a time and places each with the same heading. A camera on the arm and YOLO models find each fish's pose, a vision-language model (VLM) picks which fish is next, and fixed code checks every decision and owns every motion, safety and retry limit.
 
-> **Status:** Fall 2026 is the design term. The Vision data pipeline (`Vision/data/`) works. A first pick-and-place cycle ([how to run it](ControlSys/README.md#running-pick-and-place)) runs offline on recordings and is tested against simulated hardware; it has not moved the real arm yet. The VLM, the pose model and the calibration tools are still to come.
+> **Status:** Fall 2026 is the design term. The Vision data pipeline (`Vision/data/`) works. A first pick-and-place cycle ([how to run it](ControlSys/README.md#running-pick-and-place)) runs offline on recordings and in a [3D simulation](Simulation/README.md) of the cell, and is tested against simulated hardware; it has not moved the real arm yet. The VLM, the pose model and the calibration tools are still to come.
 
 ## How the parts work together
 
@@ -52,6 +52,7 @@ Every failure (no seal, dropped fish, bad VLM answer) has a defined response: re
 | [Vision/](Vision/README.md) | Camera, fish detection and pose; the dataset tools and model training |
 | [Arm/](Arm/README.md) | Motion, grasp sequence, suction gripper, placement, calibration, safety |
 | [ControlSys/](ControlSys/README.md) | Cycle state machine, VLM decisions, validation, failure handling, logging |
+| [Simulation/](Simulation/README.md) | A 3D virtual cell (arm, gripper, camera, fish) in which the real cycle runs: `pick_place.py --mode sim3d` |
 | [Demos/](Demos/) | Taught demos (poses and vacuum steps) played by `ControlSys/rfp_controlsys/demo.py` |
 
 Subsystems talk only through the interfaces in Requirement Spec Section 2.7. Root: `pyproject.toml` (packages, one extra per subsystem), `requirements.txt` / `environment.yml` (dev environment), `CLAUDE.md` (notes for AI assistants).

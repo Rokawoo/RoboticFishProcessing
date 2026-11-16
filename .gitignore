@@ -278,6 +278,11 @@ Vision/data/training/mlflow/
 # Wi-Fi names and passwords of the valve board (see secrets.example.h)
 Arm/firmware/**/secrets.h
 
+# Fish models for the simulation: only the shared ones are tracked
+Simulation/models/*
+!Simulation/models/README.md
+!Simulation/models/catfish.3mf
+
 # Editors and OS
 # VS Code: personal settings stay local; the extension recommendations are shared.
 .vscode/*

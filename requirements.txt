@@ -26,6 +26,9 @@ pyserial                # the gripper's board (ESP32) on a serial port
 # Control
 openai                  # VLM client (vLLM's OpenAI-compatible API)
 
+# Simulation (Simulation/: the 3D virtual cell)
+pyvista>=0.44           # VTK: renders the cell and the virtual camera
+
 # Analysis
 pandas
 matplotlib

@@ -37,6 +37,7 @@ class Console:
         self._detail = ""
         self._stop = False
         self._shown = False
+        self.on_state = None  # called with each new state line (the 3D viewer shows it)
 
     # -- terminal --------------------------------------------------------------
     def state(self, state: str, detail: str = "") -> None:
@@ -44,6 +45,8 @@ class Console:
         if (state, detail) != (self._state, self._detail):
             self._state, self._detail = state, detail
             print(f"[{state}] {detail}".rstrip())
+            if self.on_state is not None:
+                self.on_state(f"{state}  {detail}".rstrip())
 
     def info(self, text: str) -> None:
         print(f"   {text}")

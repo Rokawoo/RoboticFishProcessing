@@ -9,6 +9,7 @@ Usage:
     python pick_place.py                                  # pick the mode (model, camera) in popups
     python pick_place.py --mode observe                   # camera, detections, fish positions
     python pick_place.py --mode offline --device clip.mp4 --any-size --cycles 2
+    python pick_place.py --mode sim3d                     # 3D virtual cell, virtual camera
     python pick_place.py --mode sim --cycles 2            # MoveIt's mock hardware in RViz
     python pick_place.py --mode check                     # real arm: state, I/O, camera
     python pick_place.py --mode feel                      # real arm: the force on the gripper
@@ -19,6 +20,10 @@ Modes, in the order to bring a cell up (SF-43):
     observe   Nothing moves. Shows what the camera and the model see and where each fish is
               in the arm's frame (with MoveIt running: from the arm's real pose).
     offline   The whole cycle with a simulated arm and gripper, no ROS: for recorded videos.
+    sim3d     The whole cycle in a virtual cell (Simulation/): a virtual FR5, gripper and
+              D405 whose color and depth images go through the real vision code, catfish
+              from a 3D model, in a 3D window. No ROS. Settings: control_panel.yaml,
+              simulation section; --video saves the 3D view.
     sim       The whole cycle on MoveIt with mock hardware; watch the arm in RViz (CS-92).
     check     Real arm, nothing moves: prints joint state, TCP pose, the controller's flange
               pose and I/O, the gripper state and what the camera sees.
@@ -87,6 +92,7 @@ from rfp_controlsys.settings import load_settings as load_control_settings
 MODES = {
     "observe": "camera, detections and fish positions; nothing moves",
     "offline": "the whole cycle with a simulated arm and gripper, no ROS (recorded videos)",
+    "sim3d": "3D simulation: virtual arm, gripper, camera and fish, in a 3D window; no ROS",
     "sim": "the whole cycle on MoveIt's mock hardware, shown in RViz",
     "check": "real arm: read its state, I/O and the camera; nothing moves",
     "feel": "real arm: show the force felt on the gripper, live; nothing moves",
@@ -143,23 +149,31 @@ def pick_device() -> str:
 
 
 def build_vision(
-    device: str, weights: Path, settings: VisionSettings, workcell: Workcell
+    device, weights: Path | None, settings: VisionSettings, workcell: Workcell, detector=None
 ) -> VisionSystem:
-    """Camera, model and locator. The first frame warms the model up."""
+    """Camera (a device name, or a camera object), model and locator. The first frame warms
+    the model up. `detector`: use this instead of loading the model."""
     try:
-        camera = open_camera(device, settings.hfov_deg, (settings.width, settings.height),
-                             settings.fps)  # fmt: skip
+        camera = (
+            device
+            if not isinstance(device, str)
+            else open_camera(
+                device, settings.hfov_deg, (settings.width, settings.height), settings.fps
+            )
+        )
     except CameraError as e:
         sys.exit(f"❌ {e}")
     print(f"Camera:   {camera.name}" + ("" if camera.has_depth else "  (no depth: table plane)"))
-    try:
-        from pipeline_common import require_ultralytics
+    if detector is None:
+        try:
+            from pipeline_common import require_ultralytics
 
-        require_ultralytics()  # clear message if PyTorch/Ultralytics is missing or too old
-    except ImportError:
-        pass
+            require_ultralytics()  # clear message if PyTorch/Ultralytics is missing or too old
+        except ImportError:
+            pass
     try:
-        detector = FishDetector(weights, settings.predict_conf, settings.min_area_share)
+        if detector is None:
+            detector = FishDetector(weights, settings.predict_conf, settings.min_area_share)
         detector.warm_up(camera.read().color)
     except (CameraError, ValueError) as e:
         camera.close()
@@ -348,6 +362,8 @@ def run_cycles(
     console: Console,
     max_cycles: int | None,
     controller=None,
+    sleep=time.sleep,
+    vision_hold: bool | None = None,
 ) -> None:
     log = RunLog(
         {
@@ -360,7 +376,8 @@ def run_cycles(
     )
     cycle = PickPlaceCycle(
         arm, gripper, vision, RuleSelector(), workcell, settings, console, log,
-        dry_run=mode == "dry-run", vision_hold=mode == "run", controller=controller,
+        dry_run=mode == "dry-run", controller=controller, sleep=sleep,
+        vision_hold=mode in ("run", "sim3d") if vision_hold is None else vision_hold,
     )  # fmt: skip
     print(f"\nRunning ({mode}). Log: {log.folder}")
     stopped = ""
@@ -386,7 +403,7 @@ def run_cycles(
             cycle.sequence.let_go()
         else:
             print("   Turn it off with: python Arm/scripts/gripper_bench.py off")
-    if mode == "offline":
+    if mode in ("offline", "sim3d"):
         print("Next: --mode sim on the robot PC (MoveIt's mock hardware in RViz)")
     elif mode == "sim":
         print("Next: --mode check on the real arm, then --mode dry-run --step")
@@ -418,6 +435,7 @@ def main() -> None:
     parser.add_argument(
         "--panel", type=Path, default=PANEL_FILE, help="control panel file (control_panel.yaml)"
     )
+    parser.add_argument("--video", help="sim3d: save the 3D view to this .mp4")
     args = parser.parse_args()
     try:  # the control panel's run section fills in what the command line left out
         run = run_defaults(args.panel)
@@ -430,6 +448,9 @@ def main() -> None:
         parser.error(f"control panel: unknown mode '{run['mode']}'")
     mode = args.mode or run["mode"] or pick_mode()
     model = args.model or (Path(run["model"]) if run["model"] else None)
+    if mode == "sim3d":
+        sim3d(args, run, model, cycles)
+        return
 
     try:
         workcell = load_workcell(args.workcell, args.panel)
@@ -501,6 +522,49 @@ def main() -> None:
         vision.close()
         if link is not None:
             link.close()
+
+
+def sim3d(args, run: dict, model: Path | None, cycles: int | None) -> None:
+    """The cycle in the 3D virtual cell (Simulation/). Nothing real moves."""
+    try:
+        from rfp_sim.session import build_session
+        from rfp_sim.settings import load_settings as load_sim_settings
+    except ImportError as e:
+        sys.exit(f"❌ The 3D simulation needs pyvista ({e}): pip install pyvista")
+    try:
+        workcell = load_workcell(args.workcell, args.panel)
+        vision_settings = load_vision_settings(args.vision, args.panel)
+        control_settings = load_control_settings(args.control, args.panel)
+        sim_settings = load_sim_settings(panel=args.panel)
+        weights = None if sim_settings.detector == "truth" else find_weights(model or pick_model())
+    except (WorkcellError, FileNotFoundError, ValueError, TypeError) as e:
+        sys.exit(f"❌ {e}")
+    if args.any_size or run["any_size"]:
+        vision_settings.check_size = False
+    print("=" * 60)
+    print(f"PICK AND PLACE: sim3d ({MODES['sim3d']})")
+    print("=" * 60)
+    window = run["window"] and not args.no_window
+    session = build_session(workcell, sim_settings, show=window, video=args.video)
+    console = Console(window=window, step=args.step or run["step"])
+    if session.viewer is not None:
+        console.on_state = session.viewer.set_status
+    vision = build_vision(session.camera, weights, vision_settings, workcell, session.detector)
+    print(f"Model:    {vision.detector.version}")
+    try:
+        run_cycles("sim3d", session.arm, session.gripper, vision, workcell, control_settings,
+                   console, cycles, sleep=session.wait)  # fmt: skip
+        if window and session.viewer is not None and not session.viewer.closed:
+            print("Close the 3D window to finish.")
+            while not session.viewer.closed:
+                session.viewer.wait(0.1, 1.0)
+    except KeyboardInterrupt:
+        print("\n⏹️  Stopped.")
+    finally:
+        console.close()
+        session.close()
+    if args.video:
+        print(f"   3D view saved: {args.video}")
 
 
 def _camera_pose_source(workcell: Workcell, console: Console):

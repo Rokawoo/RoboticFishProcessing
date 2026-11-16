@@ -54,6 +54,16 @@ vision:
     use_depth: true
     lost_frames: 3
 
+simulation:                     # pick_place.py --mode sim3d (Simulation/sim.yaml lists all)
+  fish_model: models/catfish.3mf  # relative to Simulation/; missing: a plain stand-in shape
+  fish_length: 0.55             # m, scaled to it; longer fish don't fit one camera view at 450 mm
+  fish_count: 1
+  seed: 1                       # where the fish lie
+  speed: 1.0                    # 2: twice as fast as real time; 0: as fast as it renders
+  detector: model               # model: the trained YOLO; truth: the renderer's own masks
+  drop: ""                      # lift | carry: lose the fish then (tests drop detection)
+  robot_meshes: ""              # folder with the FR5 STLs (frcobot_ros2); "": plain shapes
+
 control:
   max_attempts_per_fish: 3
   max_failed_cycles: 3          # in a row, then the run pauses

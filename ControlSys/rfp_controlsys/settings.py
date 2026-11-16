@@ -8,7 +8,7 @@ DEFAULT_FILE = Path(__file__).resolve().parents[1] / "configs" / "control.yaml"
 
 
 PANEL_FILE = Path(__file__).resolve().parents[2] / "control_panel.yaml"
-PANEL_SECTIONS = ("run", "workcell", "vision", "control")
+PANEL_SECTIONS = ("run", "workcell", "vision", "control", "simulation")
 
 
 def panel_section(panel: Path | None, name: str) -> dict:
