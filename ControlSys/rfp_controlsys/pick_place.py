@@ -551,13 +551,14 @@ def sim3d(args, run: dict, model: Path | None, cycles: int | None) -> None:
     console = Console(window=window, step=args.step or run["step"])
     if session.viewer is not None:
         console.on_state = session.viewer.set_status
+        session.viewer.on_close = console.request_stop  # closing the 3D window stops the run
     vision = build_vision(session.camera, weights, vision_settings, workcell, session.detector)
     print(f"Model:    {vision.detector.version}")
     try:
         run_cycles("sim3d", session.arm, session.gripper, vision, workcell, control_settings,
                    console, cycles, sleep=session.wait)  # fmt: skip
         if window and session.viewer is not None and not session.viewer.closed:
-            print("Close the 3D window to finish.")
+            print("Close the 3D window (or press q in it) to finish.")
             while not session.viewer.closed:
                 session.viewer.wait(0.1, 1.0)
     except KeyboardInterrupt:

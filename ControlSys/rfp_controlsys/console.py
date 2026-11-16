@@ -96,6 +96,10 @@ class Console:
     def stop_requested(self) -> bool:
         return self._stop
 
+    def request_stop(self) -> None:
+        """Stop the run at the next check, as the stop key does (another window's close)."""
+        self._stop = True
+
     def close(self) -> None:
         if self._shown:
             cv2.destroyAllWindows()

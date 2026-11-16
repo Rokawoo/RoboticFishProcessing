@@ -264,6 +264,8 @@ class Viewer:
         self.camera = camera
         self.show = show
         self.status = ""
+        self.on_close = None  # called once when the user closes the window
+        self.on_close = None  # called once when the user closes the window
         size = world.settings.window
         self.plotter = pv.Plotter(
             off_screen=not show, window_size=size, title="Fish cell simulation"
@@ -289,9 +291,14 @@ class Viewer:
             tuple(middle + (0, 0, 0.15)),
             (0, 0, 1),
         ]
-        self.plotter.show(interactive_update=True, auto_close=False) if show else self.plotter.show(
-            auto_close=False
-        )
+        self._exited = False
+        if show:
+            self.plotter.show(interactive_update=True, auto_close=False)
+            # Closing the window (or q) asks VTK to exit; caught here, the window stays until
+            # close(), and `closed` tells the program.
+            self.plotter.iren.add_observer("ExitEvent", self._on_exit)
+        else:
+            self.plotter.show(auto_close=False)
         self._writer = None
         self._video = video
         self._last = 0.0
@@ -313,7 +320,13 @@ class Viewer:
 
     @property
     def closed(self) -> bool:
-        return self.show and self.plotter.render_window is None
+        return self.show and (self._exited or self.plotter.render_window is None)
+
+    def _on_exit(self, *_) -> None:
+        if not self._exited:
+            self._exited = True
+            if self.on_close is not None:
+                self.on_close()
 
     def set_status(self, text: str) -> None:
         self.status = text

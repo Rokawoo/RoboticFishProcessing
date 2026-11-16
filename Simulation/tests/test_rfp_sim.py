@@ -231,3 +231,22 @@ def test_a_whole_cycle_in_the_virtual_cell():
         assert world.holding is None and not world.vacuum
     finally:
         camera.close()
+
+
+@pytest.mark.skipif(not pv.system_supports_plotting(), reason="needs a display")
+def test_closing_the_3d_window_is_noticed_and_asks_the_run_to_stop():
+    from rfp_controlsys.console import Console
+    from rfp_sim.render import Viewer
+
+    world = world_with_fish(window=(320, 200))
+    viewer = Viewer(world, {}, show=True)
+    console = Console(window=False, interactive=False)
+    viewer.on_close = console.request_stop
+    try:
+        assert not viewer.closed and not console.stop_requested()
+        viewer.plotter.iren.interactor.ExitCallback()  # what the window's close button does
+        assert viewer.closed and console.stop_requested()
+        viewer.update()  # harmless afterwards
+        viewer.wait(0.05, 1.0)
+    finally:
+        viewer.close()
