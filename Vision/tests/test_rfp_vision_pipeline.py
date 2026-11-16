@@ -47,7 +47,7 @@ PICK_AREA = ((0.20, 0.60), (-0.35, 0.15))
 ALONG_Y = math.radians(85)
 
 
-def fish_outline(x: float, y: float, heading: float, length: float = 0.60) -> np.ndarray:
+def fish_outline(x: float, y: float, heading: float, length: float = 0.60):
     """(n, 2) outline of a catfish whose outline's centroid is at (x, y), head toward `heading`."""
     stations = (np.arange(len(PROFILE)) + 0.5) / len(PROFILE) * length
     half = PROFILE * length / 2

@@ -55,6 +55,7 @@ ROS_APT_DEB = "https://github.com/ros-infrastructure/ros-apt-source/releases/dow
 FRCOBOT_URL = "https://github.com/FAIR-INNOVATION/frcobot_ros2"
 WORKSPACE = Path.home() / "rfp_ws"
 IMPORTS = "import rfp_arm, rfp_vision, rfp_controlsys, rfp_sim, cv2, torch, ultralytics, pyvista"
+INTERPRETER = "python.defaultInterpreterPath"  # VS Code's (and Pylance's) Python for the folder
 Check = Callable[[], tuple[bool, str]]
 
 
@@ -121,7 +122,7 @@ class Setup:
 def safely(check: Check) -> tuple[bool, str]:
     try:
         return check()
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError) as e:
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, RuntimeError) as e:
         return False, f"can't tell ({e})"
 
 
@@ -323,6 +324,29 @@ def project_steps(env) -> list[Step]:
     def hook() -> None:
         sh([python(), "-m", "pre_commit", "install"], cwd=REPO)
 
+    vscode = REPO / ".vscode" / "settings.json"  # this machine's: not in Git
+
+    def editor_settings() -> dict:
+        if not vscode.is_file():
+            return {}
+        try:
+            return json.loads(vscode.read_text(encoding="utf-8"))
+        except ValueError:
+            raise RuntimeError(f"{vscode} has comments: set {INTERPRETER} by hand") from None
+
+    def editor() -> tuple[bool, str]:
+        current = editor_settings().get(INTERPRETER)
+        if not current:
+            return False, "VS Code has no Python environment set for this folder"
+        done = Path(current) == python()
+        return done, f"VS Code uses {current}"
+
+    def set_editor() -> None:
+        settings = editor_settings()
+        settings[INTERPRETER] = str(python())
+        vscode.parent.mkdir(exist_ok=True)
+        vscode.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
     return [
         Step(
             f"Python environment ({env.label})",
@@ -331,6 +355,13 @@ def project_steps(env) -> list[Step]:
             "create or update it from environment.yml / requirements.txt",
         ),
         Step("Git hooks", hooks, hook, "pre-commit install (ruff on every commit)"),
+        Step(
+            "VS Code's Python",
+            editor,
+            set_editor,
+            f"set {INTERPRETER} in .vscode/settings.json (if VS Code still shows another one: "
+            "Python: Select Interpreter)",
+        ),
         Step("Fish model", models, None, "git pull, or train one (Vision/README.md)"),
         Step(
             "FR5 meshes for the simulation",

@@ -81,6 +81,32 @@ def test_a_change_to_the_requirements_means_another_look(setup_rfp, tmp_path, mo
     assert setup_rfp.requirements_hash() != before
 
 
+def test_vs_code_is_pointed_at_the_environment(setup_rfp, tmp_path, monkeypatch):
+    monkeypatch.setattr(setup_rfp, "REPO", tmp_path)
+    env = type(
+        "Env",
+        (),
+        {
+            "label": "test",
+            "python": tmp_path / "env" / "python.exe",
+            "check": None,
+            "install": None,
+        },
+    )()
+    step = next(s for s in setup_rfp.project_steps(env) if s.name == "VS Code's Python")
+    settings = tmp_path / ".vscode" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text('{"editor.rulers": [100]}')
+    assert not step.check()[0]
+    step.install()
+    assert step.check()[0]
+    assert '"editor.rulers"' in settings.read_text()  # the other settings stay
+    settings.write_text('{\n  // a comment\n  "a": 1\n}')  # JSON with comments: by hand
+    assert setup_rfp.safely(step.check)[0] is False
+    with pytest.raises(RuntimeError, match="by hand"):
+        step.install()
+
+
 def test_the_robot_pc_steps(setup_rfp):
     steps = {s.name: s for s in setup_rfp.robot_steps()}
     assert next(iter(steps)) == "Ubuntu 22.04" and steps["Ubuntu 22.04"].install is None

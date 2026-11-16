@@ -886,7 +886,7 @@ def test_grasp_takes_the_way_round_that_turns_the_wrist_least():
 # ---------------------------------------------------------------------------
 # Onto the fish: along its surface's slope, and feeling for it
 # ---------------------------------------------------------------------------
-def sloping_fish(tilt_deg: float, heading_deg: float = 100.0) -> np.ndarray:
+def sloping_fish(tilt_deg: float, heading_deg: float = 100.0):
     """A grasp pose as Vision gives it for a surface climbing `tilt_deg` toward the head."""
     pose = fish_pose(heading_deg=heading_deg)
     pose[:3, :3] = pose[:3, :3] @ poses.rot_y(math.radians(tilt_deg))

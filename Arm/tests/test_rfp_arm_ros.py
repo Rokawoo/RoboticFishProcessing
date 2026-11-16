@@ -37,7 +37,7 @@ OBSERVE = CELL.tcp_of_tip(FR5.fk(HOME))
 YAW = poses.yaw_of(OBSERVE)
 
 
-def down(x: float, y: float, z: float, turn: float = 0.4) -> np.ndarray:
+def down(x: float, y: float, z: float, turn: float = 0.4):
     """A TCP pose pointing down, turned `turn` rad from the observation pose's yaw."""
     return poses.tool_down((x, y, z), YAW + turn)
 
@@ -67,7 +67,7 @@ def connected(ros, cell=CELL, robot_options=None, **arm_options):
     return robot, arm
 
 
-def tcp(robot) -> np.ndarray:
+def tcp(robot):
     return CELL.tcp_of_tip(robot.tip())
 
 
