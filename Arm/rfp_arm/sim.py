@@ -12,31 +12,10 @@ import numpy as np
 
 from rfp_arm.interfaces import E_MOTION, ArmError, MotionAborted, Tick
 from rfp_arm.kinematics import FR5, Chain
-from rfp_arm.poses import axis_rotation, from_parts, rotation_angle, wrap, yaw_of
+from rfp_arm.poses import interpolate, wrap, yaw_of
 from rfp_arm.workcell import Workcell
 
 STEP = 0.02  # m between simulated points
-
-
-def interpolate(start: np.ndarray, end: np.ndarray, share: float) -> np.ndarray:
-    """The pose `share` (0-1) of the way from start to end: straight line, constant turn rate."""
-    relative = start[:3, :3].T @ end[:3, :3]
-    angle = rotation_angle(np.eye(3), relative)
-    rotation = start[:3, :3]
-    axis = np.array(
-        [
-            relative[2, 1] - relative[1, 2],
-            relative[0, 2] - relative[2, 0],
-            relative[1, 0] - relative[0, 1],
-        ]
-    )
-    if math.pi - angle < 1e-6:  # half turn: the axis is the eigenvector of eigenvalue 1
-        values, vectors = np.linalg.eig(relative)
-        axis = np.real(vectors[:, int(np.argmin(np.abs(values - 1.0)))])
-    # Equal orientations can differ by rounding: an angle of 1e-8 with no axis to turn about
-    if np.linalg.norm(axis) > 1e-9:
-        rotation = rotation @ axis_rotation(axis, angle * share)
-    return from_parts(rotation, start[:3, 3] + (end[:3, 3] - start[:3, 3]) * share)
 
 
 class SimArm:

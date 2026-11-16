@@ -30,8 +30,9 @@ from rfp_arm.interfaces import (
     MotionAborted,
 )
 from rfp_arm.kinematics import FR5, Chain
+from rfp_arm.poses import interpolate
 from rfp_arm.safety import check_trajectory
-from rfp_arm.sim import SimArm, interpolate
+from rfp_arm.sim import SimArm
 from rfp_arm.valve import HttpValve, SerialValve, ValveError
 from rfp_arm.workcell import (
     GripperSettings,
@@ -126,6 +127,20 @@ def test_inverse_kinematics_keeps_the_posture_and_link_poses_chain_up():
         and np.allclose(links[0], np.eye(4))
         and np.allclose(links[-1], FR5.fk(seed))
     )
+
+
+def test_inverse_kinematics_reaches_far_swings_in_the_same_posture():
+    # From the lift over a fish to the far slot the base swings 83 deg: one solve overshoots
+    # into another posture and gets nowhere. In steps it gets there as the wrist predicted.
+    from rfp_arm.kinematics import wrist_angle_at
+
+    lift = np.radians([-17, -71, -102, -97, 90, 1])
+    target = CELL.tip_of_tcp(poses.tool_down((0.38, 0.60, 0.38), 0.0))
+    q = FR5.ik(target, lift)
+    assert q is not None and np.allclose(FR5.fk(q), target, atol=1e-6)
+    assert q[4] == pytest.approx(lift[4], abs=0.05)  # the wrist didn't flip over
+    predicted = wrist_angle_at(FR5, dict(zip(FR5.joint_names, lift)), target)
+    assert q[5] == pytest.approx(predicted, abs=1e-4)
 
 
 # ---------------------------------------------------------------------------

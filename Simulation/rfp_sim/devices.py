@@ -12,9 +12,8 @@ from collections.abc import Callable, Sequence
 import numpy as np
 from rfp_arm.interfaces import E_MOTION, ArmError, GripperState, MotionAborted, Tick
 from rfp_arm.kinematics import wrist_angle_at
-from rfp_arm.poses import rotation_angle
+from rfp_arm.poses import interpolate, rotation_angle
 from rfp_arm.safety import check_trajectory
-from rfp_arm.sim import interpolate
 from rfp_arm.workcell import Workcell
 
 from rfp_sim.world import World

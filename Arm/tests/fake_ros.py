@@ -28,8 +28,7 @@ from pathlib import Path
 import numpy as np
 from arm_helpers import solve_ik
 from rfp_arm.kinematics import FR5
-from rfp_arm.poses import from_quaternion, matrix_rpy
-from rfp_arm.sim import interpolate
+from rfp_arm.poses import from_quaternion, interpolate, matrix_rpy
 
 DEFINITIONS = json.loads((Path(__file__).parent / "ros_messages.json").read_text(encoding="utf-8"))
 INTEGERS = {"char", "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64"}

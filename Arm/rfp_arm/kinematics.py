@@ -3,13 +3,27 @@ Forward kinematics of a serial chain, from a URDF or the built-in FR5 chain. Use
 planned trajectories in fixed code (TCP speed, zones) and by the simulated arm. No ROS.
 """
 
+import math
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
-from rfp_arm.poses import axis_rotation, from_parts, transform
+from rfp_arm.poses import (
+    axis_rotation,
+    from_parts,
+    interpolate,
+    rotation_angle,
+    transform,
+    wrap,
+)
+
+# When one solve can't reach a far target, it is reached in steps of at most these
+IK_STEP_SWING = math.radians(10.0)  # about the base
+IK_STEP_TURN = math.radians(15.0)  # of the tip's orientation
+IK_STEP = 0.05  # m
+IK_MAX_STEPS = 40
 
 
 @dataclass(frozen=True)
@@ -72,20 +86,28 @@ class Chain:
     ) -> np.ndarray | None:
         """
         Joint positions (joint_names order) putting the tip at `target`, found from `seed` by
-        damped least squares, so the arm keeps the seed's posture. Each angle is taken the
-        nearest way round to the seed. None if it doesn't converge or a joint limit is hit.
+        damped least squares (in steps about the base if one solve can't get there), so the
+        arm keeps the seed's posture. Each angle is taken the nearest way round to the seed.
+        None if it doesn't converge or a joint limit is hit.
         """
         seed = np.array(seed, float)
-        q = seed.copy()
+        q = self._solve(target, seed, iterations)
+        if q is None:  # a long move: one solve overshoots into another posture, or nowhere
+            q = self._solve_in_steps(target, seed, iterations)
+        if q is None:
+            return None
         lower = np.array([j.lower for j in self.joints if j.kind != "fixed"])
         upper = np.array([j.upper for j in self.joints if j.kind != "fixed"])
+        q = q - 2 * np.pi * np.round((q - seed) / (2 * np.pi))
+        q = np.where(q > upper, q - 2 * np.pi, np.where(q < lower, q + 2 * np.pi, q))
+        return q if ((q >= lower) & (q <= upper)).all() else None
+
+    def _solve(self, target: np.ndarray, q: np.ndarray, iterations: int) -> np.ndarray | None:
         for _ in range(iterations):
             now = self.fk(q)
             error = _twist(now, target)
             if np.linalg.norm(error[:3]) < 1e-7 and np.linalg.norm(error[3:]) < 1e-6:
-                q = q - 2 * np.pi * np.round((q - seed) / (2 * np.pi))
-                q = np.where(q > upper, q - 2 * np.pi, np.where(q < lower, q + 2 * np.pi, q))
-                return q if ((q >= lower) & (q <= upper)).all() else None
+                return q
             jacobian = np.empty((6, len(q)))
             for i in range(len(q)):
                 bumped = q.copy()
@@ -94,6 +116,24 @@ class Chain:
             step = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + 1e-6 * np.eye(6), error)
             q = q + np.clip(step, -0.3, 0.3)
         return None
+
+    def _solve_in_steps(
+        self, target: np.ndarray, seed: np.ndarray, iterations: int
+    ) -> np.ndarray | None:
+        """Through tip poses between where the seed puts it and the target, each solved from
+        the last: swinging about the base (the first joint) and turning a little at a time."""
+        start = self.fk(seed)
+        swing = abs(wrap(_bearing(target) - _bearing(start)))
+        turn = rotation_angle(start, target)
+        distance = float(np.linalg.norm(target[:3, 3] - start[:3, 3]))
+        steps = math.ceil(max(swing / IK_STEP_SWING, turn / IK_STEP_TURN, distance / IK_STEP))
+        steps = min(max(steps, 2), IK_MAX_STEPS)
+        q = seed
+        for i in range(1, steps + 1):
+            q = self._solve(_swung(start, target, i / steps), q, iterations)
+            if q is None:
+                return None
+        return q
 
     def limit_violation(self, positions: Mapping[str, float], margin: float = 0.0) -> str | None:
         for joint in self.joints:
@@ -122,6 +162,24 @@ class Chain:
             links.append(link)
             link = element.find("parent").get("link")
         return cls(tuple(reversed(joints)), base_link, tip_link, tuple(reversed(links)))
+
+
+def _bearing(pose: np.ndarray) -> float:
+    return math.atan2(pose[1, 3], pose[0, 3])
+
+
+def _swung(start: np.ndarray, end: np.ndarray, share: float) -> np.ndarray:
+    """The pose `share` (0-1) of the way from start to end, its position swung about the
+    base's z axis (bearing, distance from the axis and height each go evenly)."""
+    pose = interpolate(start, end, share)
+    (x0, y0, z0), (x1, y1, z1) = start[:3, 3], end[:3, 3]
+    r0, r1 = math.hypot(x0, y0), math.hypot(x1, y1)
+    if min(r0, r1) < 1e-3:  # on the axis there is no bearing: the straight line will do
+        return pose
+    bearing = _bearing(start) + share * wrap(_bearing(end) - _bearing(start))
+    r = r0 + share * (r1 - r0)
+    pose[:3, 3] = (r * math.cos(bearing), r * math.sin(bearing), z0 + share * (z1 - z0))
+    return pose
 
 
 def _twist(a: np.ndarray, b: np.ndarray) -> np.ndarray:

@@ -118,3 +118,24 @@ def rotation_angle(a: np.ndarray, b: np.ndarray) -> float:
 def tilt_from_down(t: np.ndarray) -> float:
     """Angle between the frame's z axis and straight down."""
     return math.acos(min(1.0, max(-1.0, -t[2, 2])))
+
+
+def interpolate(start: np.ndarray, end: np.ndarray, share: float) -> np.ndarray:
+    """The pose `share` (0-1) of the way from start to end: straight line, constant turn rate."""
+    relative = start[:3, :3].T @ end[:3, :3]
+    angle = rotation_angle(np.eye(3), relative)
+    rotation = start[:3, :3]
+    axis = np.array(
+        [
+            relative[2, 1] - relative[1, 2],
+            relative[0, 2] - relative[2, 0],
+            relative[1, 0] - relative[0, 1],
+        ]
+    )
+    if math.pi - angle < 1e-6:  # half turn: the axis is the eigenvector of eigenvalue 1
+        values, vectors = np.linalg.eig(relative)
+        axis = np.real(vectors[:, int(np.argmin(np.abs(values - 1.0)))])
+    # Equal orientations can differ by rounding: an angle of 1e-8 with no axis to turn about
+    if np.linalg.norm(axis) > 1e-9:
+        rotation = rotation @ axis_rotation(axis, angle * share)
+    return from_parts(rotation, start[:3, 3] + (end[:3, 3] - start[:3, 3]) * share)
