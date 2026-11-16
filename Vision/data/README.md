@@ -25,11 +25,11 @@ Clips, frames, labels and weights live on the team's dataset store; `.gitignore`
 
 ## Things to know
 
-- **Name videos by fish and view** (`fish012_left.mp4`): frames are named after the video (`fish012_left_000150.jpg`), so every image traces back to its fish.
-- **Auto labeler engines:** SAM (default) handles the current footage (white fish, gray table); it downloads on first use (`SAM_MODEL` in `annotating/segmentors/sam.py`) and is freed on engine switch or close. The color engine needs color contrast but can label whole sets without clicks.
+- **Video names carry the fish** (`fish012_left.mp4`): frames are named after the video (`fish012_left_000150.jpg`).
+- **Auto labeler engines:** SAM (default) handles the current footage (white fish, gray table); it downloads on first use (`SAM_MODEL` in `annotating/segmentors/sam.py`). The color engine needs color contrast but labels whole sets without clicks.
 - **A new outline replaces** labels it overlaps by more than half (Ctrl+Z undoes).
 - **`classes.txt` must match Label Studio's label names and order**; the splitter stops if a set's own `classes.txt` disagrees.
 - **Labels go next to their images.** Label Studio's export layout (`images/`, `labels/`) and `1a2b3c4d-` label prefix also work.
-- **Re-running is safe:** re-extracting only adds missing frames; the augmenter asks before replacing copies and keeps the old ones if it fails; the splitter rebuilds `dataset/train/`.
-- **The split:** 80/10/10 (`TRAIN_RATIO`, `TEST_RATIO`), in blocks of consecutive frames per set so near copies don't straddle splits; augmented images only in train, with their original. The same fish can be in every split.
+- **Re-running is safe:** extracting again only adds missing frames, the augmenter asks before replacing copies, the splitter rebuilds `dataset/train/`.
+- **The split:** 80/10/10 (`TRAIN_RATIO`, `TEST_RATIO`), in blocks of consecutive frames so near copies don't straddle splits; augmented images only in train, with their original. The same fish can be in every split.
 - **MLflow:** runs are in `training/mlflow/`; from `training/`: `mlflow ui --backend-store-uri sqlite:///mlflow/mlflow.db`.

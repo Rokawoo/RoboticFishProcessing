@@ -46,7 +46,7 @@ mock_components/GenericSystem (config/fairino5_v6_robot.ros2_control.xacro).
 The settings changed most often, and the defaults of the options above, are in the
 control panel at the repository's top: control_panel.yaml (--panel for another file).
 
-Moving the real arm: low speed and someone on the emergency stop (Arm/README.md). q or Esc
+Moving the real arm: README.md, "Run it on the arm". q or Esc
 in the camera window, or Ctrl+C, stops the arm where it is; a move that MoveIt no longer
 answers for needs the emergency stop. Each run is logged in ControlSys/runs/.
 """

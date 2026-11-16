@@ -1,7 +1,5 @@
-# Fish models
+# Models
 
-`catfish.3mf` is the model the simulation uses: "Catfish full scale.3mf", the file the stand-in fish were printed from. It is 790 mm long with its barbels, lies on its side, and has its head toward −x (`fish_head: "-x"`, `fish_up: "+z"` in `Simulation/sim.yaml`). The simulation scales it to `fish_length`.
+`catfish.3mf`: the file the stand-in fish were printed from ("Catfish full scale.3mf"). 790 mm long with its barbels, lying on its side, head toward −x (`fish_head`, `fish_up` in `Simulation/sim.yaml`); the simulation scales it to `fish_length`. Other fish models can go here (`fish_model`); Git tracks only this one. No model: a plain stand-in shape.
 
-Other models can go here too (set `fish_model`); Git tracks only `catfish.3mf` and this file. Without a model the simulation uses a plain stand-in shape.
-
-`fr5/` holds FAIRINO's FR5 link meshes once the simulation has downloaded them (not in Git: they carry no license).
+`fr5/`: FAIRINO's FR5 link meshes once downloaded (not in Git: no license).

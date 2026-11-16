@@ -4,7 +4,7 @@ FR5 movement demo: from the current pose, nod up/down (shoulder j2) CYCLES
 times, then swing left/right (base j1) CYCLES times, returning home in between.
 
 This moves the arm. Run it in simulation (mock hardware) first; on the real
-arm, at low speed with someone on the emergency stop (see Arm/README.md).
+arm, at low speed with someone on the emergency stop (see README.md, "Run it on the arm").
 Ctrl+C does not stop a trajectory the controller has accepted (ROS 2 actions
 keep running when the client exits): use the emergency stop.
 

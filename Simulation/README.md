@@ -1,40 +1,32 @@
 # Simulation
 
-A virtual workcell in which the real pick-and-place code runs: a virtual FR5, suction gripper and RealSense D405, and catfish made from a 3D model, shown in a 3D window. It runs on Windows without ROS, so the vision and cycle code can be tried before the arm is free.
+A virtual cell running the real pick-and-place code: a virtual FR5, gripper and RealSense D405, and catfish from a 3D model, in a 3D window. No ROS; Windows works. How to run it: [top README](../README.md#run-it-in-the-3d-simulation).
 
-```bash
-python ControlSys/rfp_controlsys/pick_place.py --mode sim3d
-python ControlSys/rfp_controlsys/pick_place.py --mode sim3d --video run.mp4   # also record the 3D view
-```
+Settings: the `simulation` section of [control_panel.yaml](../control_panel.yaml); all of them, explained: [sim.yaml](sim.yaml). Needs `pyvista` (the `sim` extra). The fish is [models/catfish.3mf](models/README.md), the file the stand-ins were printed from. The FR5 is drawn with FAIRINO's link meshes from [frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2), downloaded on the first run at a fixed commit, checked by SHA-256 and kept in `models/fr5/`. They carry no license, so they stay out of Git. A sourced ROS workspace's `fairino_description` or a `robot_meshes` folder is used first; offline or with `download_robot_meshes: false` the arm is plain tubes.
 
-Settings: the `simulation` section of [control_panel.yaml](../control_panel.yaml) (every setting, explained: [sim.yaml](sim.yaml)). Needs `pyvista` (the `sim` extra). The fish model is [models/catfish.3mf](models/README.md), the file the stand-in fish were printed from. The FR5 is drawn with FAIRINO's own link meshes from [frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2): on the first run they are downloaded at a fixed commit, checked against their SHA-256 and kept in `models/fr5/`. They carry no license, so they stay out of Git. A sourced ROS workspace's `fairino_description`, or a folder set as `robot_meshes`, is used first; with `download_robot_meshes: false` or no network the arm is drawn as plain tubes.
-
-## What runs for real and what is simulated
+## Real and simulated
 
 | Real code | Simulated (`rfp_sim/`) |
 |---|---|
-| The cycle, the fish selector, failure handling, the log (`rfp_controlsys`) | `world.py`: the arm's joints, the fish, the cups' contact |
-| Vision: the trained YOLO model on the camera's images, depth, the fish list, head/tail, surface slope, hold check (`rfp_vision`) | `render.py`: the camera's color and depth images, the 3D window |
-| Grasp planning and sequence, the fixed-code trajectory check, wrist and zone limits (`rfp_arm`) | `devices.py`: the arm (plans by inverse kinematics, then the same check as on the real arm) and the vacuum |
+| Cycle, selector, failure handling, log (`rfp_controlsys`) | `world.py`: the arm's joints, the fish, the cups' contact |
+| Vision: the trained model on the camera's images, depth, fish list, head/tail, surface slope, hold check (`rfp_vision`) | `render.py`: the camera's color and depth, the 3D window |
+| Grasp planning and sequence, trajectory check, wrist and zone limits (`rfp_arm`) | `devices.py`: the arm (inverse kinematics, then the real arm's checks) and the vacuum |
 
-**The virtual camera** renders the scene from the camera's pose on the gripper (`camera.mount` in the workcell file, moved by the arm) as the D405 would deliver it: 1280 × 720 color and aligned depth, an 87° pinhole lens (no distortion), depth in meters along the optical axis from the GPU's depth buffer, with 0.5 mm noise, no depth outside 0.07–1.0 m, and none within 3 px of a depth step of more than about 1 cm (where one of the stereo pair can't see past an edge). The table is drawn as the perforated breadboard of the real cell, the fish in the white of the printed stand-ins, so the trained model sees images close to the footage it learned from (it finds the rendered fish at about 0.9 confidence). Not modeled: holes on shiny skin, exposure, motion blur, shadows. `detector: truth` uses the renderer's own fish outlines (smoothed as a segmentation model's are) instead of the model, to test everything else.
+**Camera:** rendered from the camera's pose on the gripper (`camera.mount`) as a D405 delivers it: 1280 × 720 color and aligned depth, 87° pinhole lens, depth along the optical axis with 0.5 mm noise, none outside 0.07–1.0 m, and none within 3 px of a depth step over about 1 cm (the stereo pair can't see past an edge). The table is the cell's perforated breadboard, the fish the stand-ins' white, so the model sees footage like its training data (it finds rendered fish at about 0.9 confidence). Not modeled: holes on shiny skin, exposure, motion blur, shadows. `detector: truth` uses the renderer's outlines instead of the model.
 
-**The 3D window** also shows what the camera's view leaves out: the vacuum tube, which winds round the wrist by as much as the wrist (j6) has turned from where the tube hangs free and then runs along the forearm, the table's slab and legs, and the wrist angle against the tube's range. The gripper is drawn as built: flange adapter, plate, six bellows cups, the D405 on its bracket.
+**3D window:** also the vacuum tube, coiled round the wrist by as much as j6 has turned, the table's body, and j6 against the tube's range. The gripper as built: adapter, plate, six bellows cups, the D405 on its bracket.
 
-**The contact:** each of the six cups is a ray along the tool axis. A cup touches when the fish's surface is within 2 mm of its face, each compressed cup pushes back at 500 N/m (what the arm "feels" while pressing on), and the vacuum holds the fish only when 5 of 6 cups touch: a firm, square contact. A held fish follows the cups once they lift and lies down flat where it is let go. There is no other physics: nothing falls over, slides or collides. `drop: lift` or `carry` loses the fish on the way, to test the camera's drop detection.
+**Contact:** each cup is a ray along the tool axis, touching within 2 mm of its face and pushing back at 500 N/m when compressed (what the arm feels while pressing). The vacuum holds the fish only when 5 of 6 cups touch. A held fish follows the cups once they lift and lies flat where it's let go; no other physics. `drop: lift` or `carry` loses the fish on the way, to test drop detection.
 
 ## Found with it
 
-- The FR5's wrist (j6) depends on how the camera is turned at an observation pose: with the placeholder cell's camera at yaw 90° it needed about 170°, past the vacuum tube's range, so the observation poses now face −90° (wrist about −15°).
-- Lying on its side, the printed catfish stands 0.29 × its length high with its fins. Seen from 450 mm (AS-11), a fish that tall and longer than about 0.55 m doesn't fit whole in one camera view, so VS-15 can't be met for the spec's 0.60–0.75 m fish there. Hence `fish_length: 0.55`; for longer fish the cell needs a higher observation pose or more views.
-- A fish already placed, seen at the edge of the frame, kept the run from ending; fish outside the pick area no longer count (SY-22).
-- The rendered fish matches the camera model to the pixel, but vision measures this fish about 18% long: it puts the outline at half the fish's thickness, while the ends of the printed fish (lying on its side) are about 12 cm up. Length checks and slot spacing should allow for it, or the outline's points should be placed with their own depth.
-- Turning the fish to the placement heading while the base swings to the slot costs the wrist up to about 180° when the head end is known, whichever way round the cups grasp it. Over 1000 random fish the wrist turned 193° per cycle on average (there and back) and reached 170° at most: the tube's ±170° range is enough, ±135° would refuse about one fish in five, ±90° two in five (fish with an unknown head end always fit in ±90°).
+- **Observation poses face −90°:** at +90° the FR5's j6 needed about 170°, past the tube's range; at −90° it's about −15°.
+- **Fish length:** lying on its side the printed catfish stands 0.29 × its length high. From 450 mm (AS-11), one longer than about 0.55 m doesn't fit in one view, so VS-15 can't be met for the spec's 0.60–0.75 m fish: they need a higher observation pose or more views. Hence `fish_length: 0.55`.
+- **Vision measures this fish about 18% long:** it puts the outline at half the fish's thickness, but the ends of the printed fish are about 12 cm up. Length checks and slot spacing should allow for it, or the outline's points should get their own depth.
+- **Wrist:** turning a fish with a known head to the placement heading costs j6 up to about 180°. Over 1000 random fish, j6 turned 193° per cycle on average and at most 158° from 0, so the tube's ±170° is enough. ±135° would refuse about one fish in five, ±90° two in five (fish with an unknown head end always fit in ±90°).
 
 ## Other simulators
 
-- **MoveIt with mock hardware in RViz** (`pick_place.py --mode sim`, robot PC): the real ROS and MoveIt path, but no camera, fish or vacuum. RViz shows the robot, the planning scene and the planned trajectories; it can display camera images and point clouds that something else publishes, but it doesn't render a camera itself.
-- **FAIRINO SimMachine** (FAIRINO's controller software in a VMware image): the real controller, so the driver, the command server's answers, ServoJ streaming, joint limits and error codes can be tested; no camera, fish or vacuum either. It is the best stand-in for the arm before the real one: point frcobot_ros2 at the VM's address instead of the robot's.
-- **Gazebo**: physics and simulated depth cameras on ROS topics, but this code reads the camera through pyrealsense2, not ROS, and suction needs a custom plugin.
-
-This simulation covers what those don't (the camera, the fish and the cycle) and SimMachine covers what this one can't (the real controller).
+- **MoveIt with mock hardware in RViz** (`--mode sim`, robot PC): the real ROS and MoveIt path; no camera, fish or vacuum. RViz can show camera images others publish but renders none.
+- **FAIRINO SimMachine** (the controller software in a VMware image): the real controller, for the driver, the command server, ServoJ, joint limits and error codes; no camera, fish or vacuum. The best stand-in for the arm: point frcobot_ros2 at the VM.
+- **Gazebo:** physics and depth cameras on ROS topics, but this code reads the camera through pyrealsense2, and suction needs a custom plugin.
