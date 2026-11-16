@@ -204,7 +204,7 @@ class Workcell:
     placement_heading: float  # rad (AS-52)
     slots: list[tuple[float, float]]
     # How far the last joint may turn (rad): the vacuum tube must not wind up
-    wrist_range: tuple[float, float] = (math.radians(-170.0), math.radians(170.0))
+    wrist_range: tuple[float, float] = (math.radians(-180.0), math.radians(180.0))
     motion: MotionLimits = field(default_factory=MotionLimits)
     grasp: GraspSettings = field(default_factory=GraspSettings)
     gripper: GripperSettings = field(default_factory=GripperSettings)
