@@ -62,8 +62,8 @@ observation:
   # with j6 near the middle of its range: from there the wrist turns up to 135 degrees
   # either way to grasp a fish and bring it to the placement heading.
   poses:
-    - {name: right, camera_xy: [0.40, -0.18], yaw_deg: 90}
-    - {name: left, camera_xy: [0.40, 0.02], yaw_deg: 90}
+    - {name: right, camera_xy: [0.40, -0.18], yaw_deg: -90}   # the FR5 wrist (j6) near 0
+    - {name: left, camera_xy: [0.40, 0.02], yaw_deg: -90}
 
 placement:
   heading_deg: 0    # placed fish point head toward +X (AS-52)

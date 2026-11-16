@@ -107,6 +107,27 @@ def test_forward_kinematics_from_a_urdf_and_of_the_fr5():
     assert np.allclose(FR5.fk(solve_ik(target)), target, atol=1e-6)
 
 
+def test_inverse_kinematics_keeps_the_posture_and_link_poses_chain_up():
+    seed = SEED.copy()
+    for xyz, yaw in (
+        ((0.40, -0.10, 0.30), 1.0),
+        ((0.55, 0.10, 0.20), 0.4),
+        ((0.30, -0.30, 0.40), 2.0),
+    ):
+        target = CELL.tip_of_tcp(poses.tool_down(xyz, yaw))
+        q = FR5.ik(target, seed)
+        assert q is not None and np.allclose(FR5.fk(q), target, atol=1e-6)
+        assert np.abs(q - seed)[:5].max() < math.pi  # the same posture (the wrist turns)
+        seed = q
+    assert FR5.ik(CELL.tip_of_tcp(poses.tool_down((2.0, 0.0, 0.3), 0.0)), SEED) is None  # too far
+    links = FR5.link_poses(seed)
+    assert (
+        len(links) == 7
+        and np.allclose(links[0], np.eye(4))
+        and np.allclose(links[-1], FR5.fk(seed))
+    )
+
+
 # ---------------------------------------------------------------------------
 # Workcell
 # ---------------------------------------------------------------------------

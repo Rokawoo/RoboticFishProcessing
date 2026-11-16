@@ -54,6 +54,47 @@ class Chain:
                 t = t @ joint.motion(float(positions[joint.name]))
         return t
 
+    def link_poses(self, positions: Mapping[str, float] | Sequence[float]) -> list[np.ndarray]:
+        """T_base_link of the base link and of each joint's child link, base to tip."""
+        if not isinstance(positions, Mapping):
+            positions = dict(zip(self.joint_names, positions))
+        t = np.eye(4)
+        poses = [t]
+        for joint in self.joints:
+            t = t @ joint.origin
+            if joint.kind != "fixed":
+                t = t @ joint.motion(float(positions[joint.name]))
+            poses.append(t)
+        return poses
+
+    def ik(
+        self, target: np.ndarray, seed: Sequence[float], iterations: int = 200
+    ) -> np.ndarray | None:
+        """
+        Joint positions (joint_names order) putting the tip at `target`, found from `seed` by
+        damped least squares, so the arm keeps the seed's posture. Each angle is taken the
+        nearest way round to the seed. None if it doesn't converge or a joint limit is hit.
+        """
+        seed = np.array(seed, float)
+        q = seed.copy()
+        lower = np.array([j.lower for j in self.joints if j.kind != "fixed"])
+        upper = np.array([j.upper for j in self.joints if j.kind != "fixed"])
+        for _ in range(iterations):
+            now = self.fk(q)
+            error = _twist(now, target)
+            if np.linalg.norm(error[:3]) < 1e-7 and np.linalg.norm(error[3:]) < 1e-6:
+                q = q - 2 * np.pi * np.round((q - seed) / (2 * np.pi))
+                q = np.where(q > upper, q - 2 * np.pi, np.where(q < lower, q + 2 * np.pi, q))
+                return q if ((q >= lower) & (q <= upper)).all() else None
+            jacobian = np.empty((6, len(q)))
+            for i in range(len(q)):
+                bumped = q.copy()
+                bumped[i] += 1e-6
+                jacobian[:, i] = _twist(now, self.fk(bumped)) / 1e-6
+            step = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + 1e-6 * np.eye(6), error)
+            q = q + np.clip(step, -0.3, 0.3)
+        return None
+
     def limit_violation(self, positions: Mapping[str, float], margin: float = 0.0) -> str | None:
         for joint in self.joints:
             if joint.kind in ("revolute", "prismatic"):
@@ -81,6 +122,15 @@ class Chain:
             links.append(link)
             link = element.find("parent").get("link")
         return cls(tuple(reversed(joints)), base_link, tip_link, tuple(reversed(links)))
+
+
+def _twist(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """6-vector taking pose a to pose b: translation, then rotation vector (base frame)."""
+    r = b[:3, :3] @ a[:3, :3].T
+    angle = np.arccos(np.clip((np.trace(r) - 1) / 2, -1.0, 1.0))
+    axis = np.array([r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1]])
+    rotation = axis / 2 if angle < 1e-6 else axis / (2 * np.sin(angle)) * angle
+    return np.concatenate([b[:3, 3] - a[:3, 3], rotation])
 
 
 def wrist_angle_at(chain: Chain, joints: Mapping[str, float], tip_pose: np.ndarray) -> float | None:
