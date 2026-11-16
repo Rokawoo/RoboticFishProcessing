@@ -168,7 +168,10 @@ class FishLocator:
         self, frame: Frame, detections: list[Detection], t_base_camera: np.ndarray
     ) -> FishList:
         order = sorted(detections, key=lambda d: (d.polygon[:, 0].mean(), d.polygon[:, 1].mean()))
-        overlaps = _overlaps([d.polygon for d in order], self.settings.overlap_margin_px)
+        # A weak detection (often a second outline of part of the same fish) mustn't make a
+        # fish look crowded: only detections that are trusted count as neighbors.
+        trusted = [d.conf >= self.settings.min_confidence for d in order]
+        overlaps = _overlaps([d.polygon for d in order], self.settings.overlap_margin_px, trusted)
         fish = [
             self._fish(i + 1, detection, overlaps[i], frame, t_base_camera)
             for i, detection in enumerate(order)
@@ -357,12 +360,14 @@ def _in_area(xy, area: Area | None) -> bool:
     return x0 <= xy[0] <= x1 and y0 <= xy[1] <= y1
 
 
-def _overlaps(polygons: list[np.ndarray], margin_px: float) -> list[bool]:
-    """For each outline, whether it touches or overlaps another (Table VS-1)."""
+def _overlaps(polygons: list[np.ndarray], margin_px: float, trusted: list[bool]) -> list[bool]:
+    """For each outline, whether it touches or overlaps another trusted one (Table VS-1)."""
     flags = [False] * len(polygons)
     boxes = [(p.min(axis=0) - margin_px, p.max(axis=0) + margin_px) for p in polygons]
     for i in range(len(polygons)):
         for j in range(i + 1, len(polygons)):
+            if not (trusted[i] and trusted[j]):
+                continue
             (a0, a1), (b0, b1) = boxes[i], boxes[j]
             if (a0 > b1).any() or (b0 > a1).any():
                 continue

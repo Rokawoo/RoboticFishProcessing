@@ -267,6 +267,16 @@ def test_empty_frames_and_touching_fish():
     assert [fish.overlap for fish in apart.fish] == [False, False]
 
 
+def test_a_weak_partial_detection_does_not_make_a_fish_look_crowded():
+    frame, detections = render([(0.40, -0.10, ALONG_Y, 0.9)])
+    head = detections[0].polygon[: len(detections[0].polygon) // 4]  # part of the same fish
+    for confidence, crowded in ((0.3, False), (0.8, True)):
+        extra = Detection(0, confidence, detections[0].box, head)
+        fish = locator().locate(frame, [detections[0], extra], CAMERA).fish
+        whole = max(fish, key=lambda f: f.confidence if f.confidence == 0.9 else -1)
+        assert whole.confidence == 0.9 and whole.overlap is crowded
+
+
 def test_a_fish_must_be_at_the_same_place_in_every_frame_of_an_observation():
     settings = VisionSettings()
 
