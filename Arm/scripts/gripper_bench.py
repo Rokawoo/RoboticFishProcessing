@@ -16,7 +16,7 @@ The gripper section of Arm/configs/workcell.yaml (--workcell) says what switches
     driver: http        the same board over Wi-Fi; no ROS
     driver: controller  the FR5 control box I/O with a vacuum switch (Table AS-4); needs
                         ROS 2 and: ros2 run fairino_hardware ros2_cmd_server
-Except for status, starting this tool turns the vacuum off first.
+status and watch only read the vacuum; on, off and pulse turn it off first.
 """
 
 import argparse
@@ -92,7 +92,12 @@ def main() -> None:
         else:
             where = settings.serial_port if settings.driver == "serial" else settings.http_host
             print(f"Gripper: valve board ({settings.driver}) at {where}")
-        gripper = make_gripper(settings, io, workcell.grasp.release_timeout)
+        gripper = make_gripper(
+            settings,
+            io,
+            workcell.grasp.release_timeout,
+            start_off=action not in ("status", "watch"),
+        )
         if action == "on":
             gripper.vacuum_on()
             print("✅ Vacuum on. Press the cups on a fish: they should hold it.")

@@ -915,3 +915,18 @@ def test_contact_force_is_read_from_joint_torques():
     assert arm.contact_force() is None  # nothing to feel unless a surface is set
     arm.contact_surface = 0.50
     assert arm.contact_force(zero=True) == 0.0 and arm.contact_force() == 0.0
+
+
+def test_looking_at_the_valve_does_not_switch_it_and_late_answers_are_skipped():
+    board = Board()
+    board.valve = True  # a fish may be on the cups
+    looking = ValveGripper(SerialValve("COM7", open_port=lambda *a: board), start_off=False)
+    assert board.valve and looking.state() == GripperState.NO_SEAL  # read, not switched
+    assert "OFF" not in board.received
+    inverted = Board()  # inverted wiring: valve off = vacuum on
+    other = ValveGripper(SerialValve("COM7", open_port=lambda *a: inverted), True, start_off=False)
+    assert other.state() == GripperState.NO_SEAL
+    stale = Board()
+    valve = SerialValve("COM7", open_port=lambda *a: stale)
+    stale.lines.append("OK ON")  # a late answer to some earlier command
+    assert valve.off() is False and not stale.valve  # this command's own answer is read

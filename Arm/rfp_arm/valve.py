@@ -79,6 +79,7 @@ class SerialValve:
     def send(self, command: str) -> str:
         """Send one command line; the board's reply line ('OK ...' or 'ERR ...')."""
         try:
+            self._link.reset_input_buffer()  # a late answer to an earlier command isn't this one's
             self._link.write((command + "\n").encode("ascii"))
             self._link.flush()
             deadline = self._clock() + self._timeout

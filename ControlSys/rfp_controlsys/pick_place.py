@@ -282,7 +282,9 @@ def check(arm, io: FairinoIO, vision: VisionSystem, workcell: Workcell) -> None:
     fault = io.fault()
     print(f"   fault: {fault or 'none'}")
     try:
-        gripper = make_gripper(workcell.gripper, io, workcell.grasp.release_timeout)
+        gripper = make_gripper(
+            workcell.gripper, io, workcell.grasp.release_timeout, start_off=False
+        )
         switch = "" if gripper.has_switch else " (no vacuum switch: the camera confirms a hold)"
         print(f"Gripper ({workcell.gripper.driver}): {gripper.state().value}{switch}")
     except ArmError as e:

@@ -97,17 +97,23 @@ class ValveGripper:
     The gripper as built: six cups under one vacuum, switched by the valve board
     (valve.py). The board confirms each switch but can't tell whether the cups hold a
     fish, so `has_switch` is False: only the camera can confirm a hold or see a drop.
-    Making one turns the vacuum off, for a known start.
     """
 
     has_switch = False
 
-    def __init__(self, valve, inverted: bool = False):
-        """`valve`: a SerialValve or HttpValve. `inverted`: vacuum while the valve is off."""
+    def __init__(self, valve, inverted: bool = False, start_off: bool = True):
+        """`valve`: a SerialValve or HttpValve. `inverted`: vacuum while the valve is off.
+        `start_off`: turn the vacuum off now, for a known start; False: only read the valve
+        (tools that look, as a held fish would drop)."""
         self._valve = valve
         self._inverted = inverted
-        self._vacuum = False
-        self._switch(False)
+        if start_off:
+            self._switch(False)
+        else:
+            try:
+                self._vacuum = self._valve.is_on() != inverted
+            except ValveError as e:
+                raise ArmError(E_COMM, str(e)) from None
 
     def vacuum_on(self) -> None:
         self._switch(True)
@@ -140,16 +146,21 @@ class ValveGripper:
         self._vacuum = vacuum
 
 
-def make_gripper(settings: GripperSettings, io: "GripperIO | None", release_timeout: float = 1.0):
-    """The real gripper the settings describe. `io`: the control box I/O, for 'controller'."""
+def make_gripper(
+    settings: GripperSettings,
+    io: "GripperIO | None",
+    release_timeout: float = 1.0,
+    start_off: bool = True,
+):
+    """The real gripper the settings describe. `io`: the control box I/O, for 'controller'.
+    `start_off`: the valve board's gripper starts with the vacuum off; False: as it is."""
     try:
         if settings.driver == "serial":
             valve = SerialValve(settings.serial_port, settings.serial_baud, settings.valve_timeout)
-            return ValveGripper(valve, settings.valve_inverted)
+            return ValveGripper(valve, settings.valve_inverted, start_off)
         if settings.driver == "http":
-            return ValveGripper(
-                HttpValve(settings.http_host, settings.valve_timeout), settings.valve_inverted
-            )
+            valve = HttpValve(settings.http_host, settings.valve_timeout)
+            return ValveGripper(valve, settings.valve_inverted, start_off)
     except ValveError as e:
         raise ArmError(E_COMM, str(e)) from None
     if io is None:
