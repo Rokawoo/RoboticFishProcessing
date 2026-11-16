@@ -770,25 +770,46 @@ def test_plans_that_wind_the_wrist_are_refused_but_unwinding_is_allowed():
     assert "turns the wrist past its range" in "; ".join(workcell_from_mapping(taught).problems())
 
 
-def test_grasp_takes_the_direction_with_the_least_wrist_twist():
-    fish = fish_pose(heading_deg=100.0)
+def fake_wrist(now_deg: float, offset_deg: float):
+    """An arm whose wrist is at `now_deg` and would be at the tool's yaw + `offset_deg`."""
 
-    def plan_with(wrist, cell=CELL):
-        return plan_grasp(cell, fish, True, 0.60, 0.10, SLOT, math.radians(90), wrist=wrist)
+    def wrist(pose=None):
+        if pose is None:
+            return math.radians(now_deg)
+        return poses.wrap(poses.yaw_of(pose) + math.radians(offset_deg))
 
-    # an arm whose wrist is already at +80 deg when the tool's yaw is 100 deg: grasping
-    # the other way round (yaw -80) and turning to the slot stays nearer the middle
-    def offset_wrist(pose):
-        return poses.wrap(poses.yaw_of(pose) - math.radians(20))
+    return wrist
 
+
+def test_grasp_takes_the_way_round_that_turns_the_wrist_least():
+    def plan_with(wrist, heading_deg=100.0, known=True, cell=CELL):
+        fish = fish_pose(heading_deg=heading_deg)
+        return plan_grasp(cell, fish, known, 0.60, 0.10, SLOT, math.radians(90), wrist=wrist)
+
+    def path(plan):
+        return [round(math.degrees(a)) for a in plan.wrist]
+
+    # Wrist at -14 deg. Gripped one way it goes to 21, then 156 at the slot: back at -14 it
+    # has swept 170 deg. The other way: -159, then -24: 145 deg, though 3 deg nearer a limit.
+    p = plan_with(fake_wrist(-14, 156), heading_deg=-135)
+    assert path(p) == [-14, -159, -24] and round(math.degrees(p.wrist_sweep)) == 145
+    assert round(math.degrees(poses.yaw_of(p.pregrasp))) == 45  # the fish's tail end ahead
+    assert round(math.degrees(poses.yaw_of(p.lower))) == 180  # its head still toward +X
+    # sweeps of 89 and 91 deg count as equal: the way that stays nearer the middle
+    assert path(plan_with(fake_wrist(3, 92), heading_deg=0)) == [3, -88, -88]
+
+    # Head end unknown: the fish goes in either way round, whichever turns the wrist less;
+    # here the longer turn of the fish (-100 deg, not +80), as the grasp already turned it
+    unknown = plan_with(fake_wrist(0, -40), known=False)
+    assert path(unknown) == [0, 60, -40] and round(math.degrees(unknown.turn)) == -100
+
+    # an arm that can't tell: the wrist is taken to turn with the tool's yaw
     assert round(math.degrees(poses.yaw_of(plan_with(None).pregrasp))) == 100
-    turned = plan_with(lambda pose: poses.wrap(poses.yaw_of(pose) + math.radians(150)))
-    assert round(math.degrees(poses.yaw_of(turned.pregrasp))) == -80
-    assert round(math.degrees(poses.yaw_of(plan_with(offset_wrist).pregrasp))) == 100
-    assert round(math.degrees(poses.yaw_of(plan_with(lambda pose: None).pregrasp))) == 100
+    blind = plan_with(lambda pose=None: None)
+    assert round(math.degrees(poses.yaw_of(blind.pregrasp))) == 100 and blind.wrist is None
     tight = make_workcell(lambda d: d["tool"].update(wrist_range_deg=[-30, 30]))
     with pytest.raises(ArmError, match="wrist would turn to .* vacuum tube"):
-        plan_with(None, tight)
+        plan_with(None, cell=tight)
     arm = SimArm(CELL)
     assert arm.wrist_angle() == pytest.approx(0.0)  # where it starts
     assert arm.wrist_angle(

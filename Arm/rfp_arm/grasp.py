@@ -36,6 +36,9 @@ from rfp_arm.interfaces import (
 from rfp_arm.poses import rot_z, tilt_from_down, tool_down, wrap, yaw_of
 from rfp_arm.workcell import Workcell
 
+# Wrist arcs (rad) this close count as equal: then the one nearer the range's middle
+WRIST_TIE = math.radians(5.0)
+
 STEPS = ("pre-grasp", "vacuum on", "approach", "confirm hold", "lift", "carry", "lower",
          "release", "retreat")  # fmt: skip
 
@@ -54,6 +57,14 @@ class GraspPlan:
     turn: float  # rad the fish is turned between pick and place
     dry_run: bool
     surface: np.ndarray  # the cups just touching the fish where vision saw its surface
+    # the last joint's angle (rad) now, at the grasp and at the slot, as the arm predicted
+    # them; it returns to the first. None if the arm can't tell.
+    wrist: tuple[float, float, float] | None = None
+
+    @property
+    def wrist_sweep(self) -> float | None:
+        """The arc (rad) the wrist sweeps; it turns twice that over the cycle."""
+        return None if self.wrist is None else max(self.wrist) - min(self.wrist)
 
     def at_depth(self, depth: float) -> np.ndarray:
         """The TCP pose `depth` m past the fish's surface along the approach (< 0: short of it)."""
@@ -86,10 +97,10 @@ def plan_grasp(
     """
     The poses of Table AS-1. `grasp_pose` is the fish's grasp pose from the fish list (on
     the fish, z = approach direction, x = along the body toward the head); `tool_yaw` is
-    the TCP's yaw now, at the observation pose. `wrist` (Arm.wrist_angle) tells the last
-    joint's angle at a TCP pose; without it the wrist is taken to turn with the tool's yaw
-    from the middle of its range. Raises ArmError(E_MOTION) if the fish or a pose is
-    outside the limits.
+    the TCP's yaw now, at the observation pose, where the arm returns after the place.
+    `wrist` (Arm.wrist_angle) tells the last joint's angle now (None) and at a TCP pose;
+    without it the wrist is taken to turn with the tool's yaw from the middle of its range.
+    Raises ArmError(E_MOTION) if the fish or a pose is outside the limits.
     """
     g = workcell.grasp
     point = grasp_pose[:3, 3]
@@ -106,8 +117,7 @@ def plan_grasp(
 
     heading = yaw_of(grasp_pose)
     turn = wrap(workcell.placement_heading - heading)
-    if not heading_known and abs(turn) > math.pi / 2:  # either end may be the head: turn less
-        turn = wrap(turn + math.pi)
+    turns = [turn] if heading_known else [turn, wrap(turn + math.pi)]  # either end: head
 
     x, y, z = point
     table = workcell.table_z
@@ -115,30 +125,56 @@ def plan_grasp(
     lift_z = max(lift_z, z + g.lift_margin)
     release_z = table + max(thickness, 0.0) + g.release_clearance
 
-    # The cups fit the body both ways round. The wrist turns to the grasp and then with
-    # the fish to the slot: take the way that keeps it nearest the middle of its range,
-    # so the vacuum tube never winds up.
+    # The cups fit the body both ways round, and a fish whose head end isn't known may go
+    # into the slot either way round. Each way the wrist turns from where it is to the
+    # grasp, with the fish to the slot, and back to where it is now (the observation pose):
+    # twice the arc it sweeps. Take the smallest arc inside the wrist's range (the vacuum
+    # tube); of arcs within a few degrees of it, the one that stays nearest the middle.
     low, high = workcell.wrist_range
     middle = (low + high) / 2
+    now = wrist(None) if wrist else None
     ways = []
     for flip in (0.0, math.pi):
-        grasp_yaw = wrap(heading + flip)
-        place_yaw = wrap(grasp_yaw + turn)
-        at_grasp = tool_down((x, y, lift_z), grasp_yaw)
-        at_slot = tool_down((slot[0], slot[1], lift_z), place_yaw)
-        angles = [wrist(at_grasp), wrist(at_slot)] if wrist else [None]
-        if None in angles:  # the arm can't tell: the wrist turns as the tool's yaw does
-            start = wrap(grasp_yaw - tool_yaw)
-            angles = [middle + start, middle + start + turn]
-        ways.append((max(abs(a - middle) for a in angles), flip, place_yaw, angles))
-    _, flip, place_yaw, angles = min(ways, key=lambda way: way[0])
-    worst = max(angles, key=lambda a: abs(a - middle))
-    if not low <= worst <= high:
+        for fish_turn in turns:
+            grasp_yaw = wrap(heading + flip)
+            place_yaw = wrap(grasp_yaw + fish_turn)
+            angles = None
+            if wrist and now is not None:
+                at_grasp = wrist(tool_down((x, y, lift_z), grasp_yaw))
+                at_slot = wrist(tool_down((slot[0], slot[1], lift_z), place_yaw))
+                if at_grasp is not None and at_slot is not None:
+                    angles = (now, at_grasp, at_slot)
+            predicted = angles is not None
+            if not predicted:  # the arm can't tell: the wrist turns as the tool's yaw does
+                start = middle + wrap(grasp_yaw - tool_yaw)
+                angles = (middle, start, start + fish_turn)
+            targets = angles[1:]
+            ways.append(
+                {
+                    "inside": all(low <= a <= high for a in targets),
+                    "sweep": max(angles) - min(angles),
+                    "peak": max(abs(a - middle) for a in targets),
+                    "worst": max(targets, key=lambda a: abs(a - middle)),
+                    "flip": flip,
+                    "turn": fish_turn,
+                    "place_yaw": place_yaw,
+                    "wrist": tuple(float(a) for a in angles) if predicted else None,
+                }
+            )
+    inside = [way for way in ways if way["inside"]]
+    if not inside:
+        worst = min(ways, key=lambda way: way["peak"])["worst"]
         raise ArmError(
             E_MOTION,
             f"the wrist would turn to {math.degrees(worst):.0f} deg (range "
             f"{math.degrees(low):.0f} to {math.degrees(high):.0f}: the vacuum tube)",
         )
+    smallest = min(way["sweep"] for way in inside)
+    way = min(
+        (way for way in inside if way["sweep"] <= smallest + WRIST_TIE),
+        key=lambda way: way["peak"],
+    )
+    flip, turn, place_yaw = way["flip"], way["turn"], way["place_yaw"]
     # The cups meet the fish along the grasp pose's z axis; `flip` turns them about it.
     surface = grasp_pose.copy()
     surface[:3, :3] = grasp_pose[:3, :3] @ rot_z(flip)
@@ -154,6 +190,7 @@ def plan_grasp(
         turn=turn,
         dry_run=dry_run,
         surface=surface,
+        wrist=way["wrist"],
     )
     plan.pregrasp = plan.at_depth(-g.pregrasp_distance)
     plan.approach_end = plan.at_depth(-g.dry_run_standoff if dry_run else g.press_distance)

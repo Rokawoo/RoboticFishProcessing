@@ -29,7 +29,7 @@ Settings: the `simulation` section of [control_panel.yaml](../control_panel.yaml
 - Lying on its side, the printed catfish stands 0.29 × its length high with its fins. Seen from 450 mm (AS-11), a fish that tall and longer than about 0.55 m doesn't fit whole in one camera view, so VS-15 can't be met for the spec's 0.60–0.75 m fish there. Hence `fish_length: 0.55`; for longer fish the cell needs a higher observation pose or more views.
 - A fish already placed, seen at the edge of the frame, kept the run from ending; fish outside the pick area no longer count (SY-22).
 - The rendered fish matches the camera model to the pixel, but vision measures this fish about 18% long: it puts the outline at half the fish's thickness, while the ends of the printed fish (lying on its side) are about 12 cm up. Length checks and slot spacing should allow for it, or the outline's points should be placed with their own depth.
-- Turning the fish to the placement heading while the base swings to the slot costs about 110° of wrist in this layout, whichever way round the cups grasp it: the tube's ±170° range is enough, but not by much.
+- Turning the fish to the placement heading while the base swings to the slot costs the wrist up to about 180° when the head end is known, whichever way round the cups grasp it. Over 1000 random fish the wrist turned 193° per cycle on average (there and back) and reached 170° at most: the tube's ±170° range is enough, ±135° would refuse about one fish in five, ±90° two in five (fish with an unknown head end always fit in ±90°).
 
 ## Other simulators
 

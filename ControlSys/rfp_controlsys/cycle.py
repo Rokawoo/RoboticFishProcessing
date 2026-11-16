@@ -410,6 +410,13 @@ class PickPlaceCycle:
                 cell, fish.grasp_pose, fish.heading_known, fish.total_length, fish.thickness,
                 cell.slots[self._slot], self._tool_yaw, self.dry_run, self.arm.wrist_angle,
             )  # fmt: skip
+            if plan.wrist is not None:
+                path = [round(math.degrees(a)) for a in plan.wrist]
+                row["wrist_deg"] = "/".join(str(a) for a in path)
+                self.console.info(
+                    f"wrist (j6) {path[0]} -> {path[1]} -> {path[2]} -> {path[0]} deg: "
+                    f"sweeps {math.degrees(plan.wrist_sweep):.0f} deg"
+                )
             self.sequence.run(plan)
         except ArmError as error:
             row.update(result="failed", failure_code=error.code, detail=error.message,
