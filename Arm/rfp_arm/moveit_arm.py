@@ -289,29 +289,45 @@ class MoveItArm:
 
     # -- moves ---------------------------------------------------------------
     def move_joints(self, joints: Sequence[float], tick: Tick | None = None) -> None:
-        from moveit_msgs.msg import Constraints, JointConstraint
-
         names = self.workcell.joints
         if len(joints) != len(names):
             raise ArmError(E_MOTION, f"{len(names)} joint positions needed, got {len(joints)}")
         now = self.joints()
         if all(abs(now[n] - q) < 2e-3 for n, q in zip(names, joints)):
             return
+        target = self.workcell.tcp_of_tip(self._chain.fk(dict(zip(names, joints))))
+        self._ptp("joint move", self._joint_goal(joints), target, tick)
+
+    def move_ptp(self, tcp_pose: np.ndarray, tick: Tick | None = None) -> None:
+        """To a TCP pose in the posture the arm has now: the joint solution comes from the
+        robot model, seeded with the present joints, so the wrist ends where wrist_angle()
+        said; MoveIt's own IK (a pose goal) only if that finds none."""
+        if self._there(tcp_pose):
+            return
+        now = self.joints()
+        seed = [now[name] for name in self._chain.joint_names]
+        joints = self._chain.ik(self.workcell.tip_of_tcp(tcp_pose), seed)
+        if joints is not None:
+            goal = self._joint_goal(dict(zip(self._chain.joint_names, joints)))
+        else:
+            goal = self._pose_goal(tcp_pose)
+        self._ptp("point-to-point move", goal, tcp_pose, tick)
+
+    def _joint_goal(self, joints):
+        """Goal constraints for joint positions, given in workcell order or by name."""
+        from moveit_msgs.msg import Constraints, JointConstraint
+
+        names = self.workcell.joints
+        values = [joints[n] for n in names] if isinstance(joints, dict) else list(joints)
         goal = Constraints()
-        for name, position in zip(names, joints):
+        for name, position in zip(names, values):
             item = JointConstraint()
             item.joint_name = name
             item.position = float(position)
             item.tolerance_above = item.tolerance_below = 1e-3
             item.weight = 1.0
             goal.joint_constraints.append(item)
-        target = self.workcell.tcp_of_tip(self._chain.fk(dict(zip(names, joints))))
-        self._ptp("joint move", goal, target, tick)
-
-    def move_ptp(self, tcp_pose: np.ndarray, tick: Tick | None = None) -> None:
-        if self._there(tcp_pose):
-            return
-        self._ptp("point-to-point move", self._pose_goal(tcp_pose), tcp_pose, tick)
+        return goal
 
     def move_lin(
         self, tcp_pose: np.ndarray, speed: float, accel: float, tick: Tick | None = None

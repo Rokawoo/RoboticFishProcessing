@@ -151,14 +151,31 @@ def test_joint_and_point_to_point_moves_are_planned_checked_and_run(ros):
     assert request.pipeline_id == "pilz_industrial_motion_planner" and request.planner_id == "PTP"
     assert request.group_name == "fairino5_v6_group" and request.start_state.is_diff
     assert request.max_velocity_scaling_factor == CELL.motion.ptp_velocity_scale
-    goal = request.goal_constraints[0]
+    goal = request.goal_constraints[0]  # joints from the robot model, in the present posture
+    names = [j.joint_name for j in goal.joint_constraints]
+    planned = np.array([j.position for j in goal.joint_constraints])
+    assert names == list(CELL.joints) and not goal.position_constraints
+    assert np.allclose(CELL.tcp_of_tip(FR5.fk(planned)), target, atol=1e-6)
+    assert np.abs(planned - HOME)[:5].max() < 1.0  # no flip to another posture
+    assert len(robot.executed) == 1
+
+    class NoSolution(type(arm._chain)):  # the model's IK finds nothing: MoveIt's (a pose goal)
+        def ik(self, target, seed, iterations=200):
+            return None
+
+    model = arm._chain
+    arm._chain = NoSolution(model.joints, model.base_link, model.tip_link, model.links)
+    arm.move_ptp(down(0.40, -0.05, 0.20))
+    goal = robot.requests[-1].goal_constraints[0]
     assert goal.position_constraints[0].link_name == "wrist3_link"  # the tip link, not the TCP
     tip = goal.position_constraints[0].constraint_region.primitive_poses[0].position
     assert tip.z == pytest.approx(0.20 + 0.22)  # the TCP is 220 mm past the tip link
-    assert len(robot.executed) == 1
+    arm._chain = model
+    arm.move_ptp(target)
 
+    requests = len(robot.requests)
     arm.move_ptp(target)  # already there: nothing is planned
-    assert len(robot.requests) == 1
+    assert len(robot.requests) == requests
     arm.move_joints(HOME)
     assert np.allclose(robot.joints, HOME, atol=1e-6) and robot.requests[-1].planner_id == "PTP"
     joints = robot.requests[-1].goal_constraints[0].joint_constraints
