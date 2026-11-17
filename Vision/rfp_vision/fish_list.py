@@ -3,11 +3,12 @@ The fish list (VS-40 to VS-60, IF-20): detections in one frame turned into fish 
 position, heading and size in the arm base frame {B}, each checked and flagged.
 
 Meters and radians here; `as_record()` gives the IF-1/IF-2 fields in mm and degrees for logs.
-Without a pose model the grasp point is the centroid of the outline (on the stand-in fish
-49% of the length from the snout; VS-33 asks for 40-50%), and the approach is straight down.
+Without a pose model the middle is the centroid of the outline (on the stand-in fish 49% of
+the length from the snout; VS-33 asks for 40-50%); the cups go ahead of it toward the heavier
+head, as far as they fit, and without depth the approach is straight down.
 
-With depth, a plane fitted to the fish's surface under the cup footprint gives the approach
-direction (VS-44), and the surface's slope along the body is a head/tail cue.
+With depth, a plane through the body under the six cups gives the approach direction (VS-44)
+and tells where all six seal; the surface's slope along the body is a head/tail cue.
 
 Not implemented yet: `covered` (VS-25), keypoints (VS-30, VS-62).
 """
@@ -47,6 +48,7 @@ FAILURE_ORDER = (
 )
 
 Area = tuple[tuple[float, float], tuple[float, float]]  # ((x min, x max), (y min, y max)) in {B}
+SURFACE_GRID = 160  # depth samples across a fish's image box, for its surface
 
 
 @dataclass
@@ -253,18 +255,18 @@ class FishLocator:
 
         # The cups go where the fish balances: ahead of its middle, toward the heavier head,
         # as far as they still fit on the body and all six seal; else the middle. Without the
-        # head end: the middle. Nowhere: grasp_point_off_body.
+        # head end: the middle. Nowhere: grasp_point_off_body. The cups lean onto the body's
+        # plane under them.
         grasp_xy, plane, seals = center, middle_plane, False
         ahead = s.fish.balance_ahead_share * fish.total_length if fish.heading_known else 0.0
-        shares = (1.0, 0.75, 0.5, 0.25) if ahead > 0 else ()
-        for point in [center + direction * ahead * share for share in shares] + [center]:
-            if self._footprint_fits(outline_xy, point, axis) and self._cups_reach(
-                points, point, axis
-            ):
+        steps = np.arange(ahead, 0.0, -s.grasp_step_m) if ahead > 0 else ()
+        for point in [center + direction * distance for distance in steps] + [center]:
+            if not self._footprint_fits(outline_xy, point, axis):
+                continue
+            sealed, under_cups = self._cup_contact(points, point, axis)
+            if sealed:
                 grasp_xy, seals = point, True
-                if points is not None and point is not center:
-                    fitted = self._surface_shape(points, point, axis, fish.total_length)[1]
-                    plane = fitted if fitted is not None else plane
+                plane = under_cups if under_cups is not None else plane
                 break
         approach = (0.0, 0.0, -1.0)
         if plane is not None:  # the surface's height and slope right at the grasp point
@@ -315,14 +317,15 @@ class FishLocator:
 
     def _surface_points(self, frame, polygon, t_base_camera) -> np.ndarray:
         """(n, 3) points in {B} on the fish's upper surface: the valid depth pixels inside
-        its outline, on a grid of at most about 80 x 80."""
+        its outline, on a grid of at most about SURFACE_GRID x SURFACE_GRID (about 30
+        points under each cup at a close look, enough to find a fin)."""
         s = self.settings
         h, w = frame.depth.shape[:2]
         x0, y0 = np.maximum(np.floor(polygon.min(axis=0)).astype(int), 0)
         x1, y1 = np.minimum(np.ceil(polygon.max(axis=0)).astype(int) + 1, (w, h))
         if x1 <= x0 or y1 <= y0:
             return np.zeros((0, 3))
-        step = max(1, int(max(x1 - x0, y1 - y0)) // 80)
+        step = max(1, int(max(x1 - x0, y1 - y0)) // SURFACE_GRID)
         inside = polygon_mask(polygon - (x0, y0), (y1 - y0, x1 - x0))[::step, ::step].astype(bool)
         depth = frame.depth[y0:y1:step, x0:x1:step]
         keep = inside & (depth >= s.depth_range_m[0]) & (depth <= s.depth_range_m[1])
@@ -361,29 +364,48 @@ class FishLocator:
         away = center - middle[:2]
         return rise, (normal, middle[2] - (normal[0] * away[0] + normal[1] * away[1]) / normal[2])
 
-    def _cups_reach(self, points: np.ndarray | None, point_xy, axis) -> bool:
-        """Whether all six cups (3 x 2, 40 mm, filling the footprint) would seal here: the
-        surface under each, against a plane through them, within the bellows' stroke. A fin
-        or bump under one cup stops the press before the others touch."""
+    def _cup_contact(self, points: np.ndarray | None, point_xy, axis):
+        """
+        Whether all six cups (3 x 2, filling the footprint) would seal with the footprint's
+        middle at `point_xy`, and the body's plane under them as (upward normal, height at
+        `point_xy`), None without depth. The plane goes through the body under each cup (its
+        median); the cups lean onto it (if allowed and not too steep, else straight down).
+        Each cup's lip meets the highest surface under it first (a high percentile, so one
+        stray point doesn't count): something standing well above the body there, like a fin,
+        keeps that cup off the fish. Pressed until the last cup touches, the first is
+        compressed by the difference between their heights: that must be within the stroke.
+        """
         s = self.settings
         if points is None or len(points) == 0:
-            return True  # no depth: the footprint check alone
+            return True, None  # no depth: the footprint check alone
         half_long, half_wide = (v / 2 - s.cup_diameter_m / 2 for v in s.cup_footprint_m)
-        normal = np.array([-axis[1], axis[0]])
+        side = np.array([-axis[1], axis[0]])
         offset = points[:, :2] - point_xy
-        along, across = offset @ axis, offset @ normal
-        heights = []
+        along, across = offset @ axis, offset @ side
+        under = []
         for a in (-half_long, 0.0, half_long):
             for b in (-half_wide, half_wide):
                 near = np.hypot(along - a, across - b) <= s.cup_diameter_m / 2
                 if near.sum() < 3:
-                    return False  # a cup over nothing seen
-                heights.append((a, b, float(np.median(points[near, 2]))))
-        cups = np.array(heights)
-        design = np.column_stack([cups[:, 0], cups[:, 1], np.ones(len(cups))])
-        fit, *_ = np.linalg.lstsq(design, cups[:, 2], rcond=None)
-        residual = cups[:, 2] - design @ fit
-        return float(residual.max() - residual.min()) <= s.cup_stroke_m
+                    return False, None  # a cup over nothing seen
+                under.append((a, b, near))
+        middles = np.array([(a, b, np.median(points[near, 2])) for a, b, near in under])
+        design = np.column_stack([middles[:, 0], middles[:, 1], np.ones(len(middles))])
+        fit, *_ = np.linalg.lstsq(design, middles[:, 2], rcond=None)
+        gradient = fit[0] * axis + fit[1] * side  # dz/dx, dz/dy in {B}
+        normal = np.array([-gradient[0], -gradient[1], 1.0])
+        normal /= np.linalg.norm(normal)
+        tilt = math.acos(min(1.0, normal[2]))
+        lean = s.align_to_surface and tilt <= math.radians(s.max_surface_tilt_deg)
+        slope = fit[:2] if lean else np.zeros(2)  # the plane the cups are pressed onto
+        lips = []
+        for (a, b, near), body in zip(under, middles[:, 2] - design @ fit):
+            flat = points[near, 2] - np.column_stack([along[near], across[near]]) @ fit[:2]
+            if np.percentile(flat - fit[2], 90) - body > s.cup_lip_conform_m:
+                return False, None  # a fin or a step under this cup's lip
+            pressed = points[near, 2] - np.column_stack([along[near], across[near]]) @ slope
+            lips.append(float(np.percentile(pressed, 90)))
+        return max(lips) - min(lips) <= s.cup_stroke_m, (normal, float(fit[2]))
 
     def _footprint_fits(self, outline_xy, point_xy, axis) -> bool:
         """Whether the cup footprint, centered on the grasp point along the body, is on the fish."""

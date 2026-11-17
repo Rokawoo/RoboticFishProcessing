@@ -36,7 +36,7 @@ class SimSettings:
     # Its cup centers along the tool's x and y (m), for the seal: as import_gripper.py measured
     cup_rows: tuple[float, ...] = (-0.08, 0.0, 0.08)
     cup_columns: tuple[float, ...] = (-0.03, 0.03)
-    cup_stroke: float = 0.012  # how far a cup compresses
+    cup_stroke: float = 0.030  # how far a cup compresses: the 40 mm bellows to about 10 mm
     cup_stiffness: float = 500.0  # N/m per cup
     seal_cups: int = 5  # cups that must touch for the vacuum to hold the fish
     seal_gap: float = 0.002  # m: a cup face this close to the fish touches it

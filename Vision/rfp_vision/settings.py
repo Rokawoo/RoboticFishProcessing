@@ -80,7 +80,7 @@ class StandIn(FishType):
     center of mass lies 0.126 x the measured length ahead of the measured middle."""
 
     length_range_m: tuple[float, float] = (0.80, 1.00)
-    width_range_m: tuple[float, float] = (0.15, 0.22)
+    width_range_m: tuple[float, float] = (0.14, 0.25)  # 0.17-0.23 by how it lies (its fins)
     thickness_range_m: tuple[float, float] = (0.15, 0.21)
     balance_ahead_share: float = 0.126
 
@@ -126,8 +126,15 @@ class VisionSettings:
     stand_in: StandIn = field(default_factory=StandIn)
     catfish: Catfish = field(default_factory=Catfish)
     cup_footprint_m: tuple[float, float] = (0.20, 0.10)  # along and across the body
+    # Where all six cups don't seal at the balance point (the fins), they move back toward
+    # the middle in steps this long until they do
+    grasp_step_m: float = 0.01
     cup_diameter_m: float = 0.04  # six of them, 3 x 2, filling the footprint
-    cup_stroke_m: float = 0.012  # unevenness under the cups the bellows take up and still seal
+    # The unevenness under the cups the bellows take up and still all seal: they compress
+    # from 40 mm to about 10 mm, less 5 mm the last cup to touch is still pressed by
+    cup_stroke_m: float = 0.025
+    # What a cup's lip takes up of a bump under it (a fin): more and that cup stays off the fish
+    cup_lip_conform_m: float = 0.006
     overlap_margin_px: float = 6.0  # outlines this close touch (Table VS-1)
 
     # Stability over the frames of one observation (VS-52)

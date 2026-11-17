@@ -202,9 +202,8 @@ def test_virtual_camera_sees_the_table_and_the_fish_where_they_are():
         assert seen.vision_ok, seen.failures
         assert np.linalg.norm(seen.middle[:2] - fish.pose[:2, 3]) < 0.015
         ahead = (seen.grasp_point[:2] - seen.middle[:2]) @ fish.pose[:2, 0]  # toward the head
-        # toward the balance point, as far as all six cups (200 mm) still fit on this one
-        share = ahead / (0.126 * seen.total_length)
-        assert min(abs(share - step) for step in (1.0, 0.75, 0.5)) < 0.05
+        # toward the balance point, as far as all six cups (200 mm) still seal on this one
+        assert 0.03 < ahead <= 0.126 * seen.total_length + 0.001
         error = math.remainder(seen.heading - yaw_of(fish.pose), math.tau)
         assert abs(error) < math.radians(8)  # head end found from the shape and the slope
     finally:

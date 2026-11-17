@@ -40,7 +40,7 @@ check_size: true
 fish_type: stand_in
 stand_in:                   # the 0.79 m printed catfish as vision measures it (simulation):
   length_range_m: [0.80, 1.00]      #   ~0.90 m: it reads ~14% long (its ends are raised)
-  width_range_m: [0.15, 0.22]       #   ~0.18 m across at its middle
+  width_range_m: [0.14, 0.25]       #   ~0.18 m across at its middle (0.23 by its fins)
   thickness_range_m: [0.15, 0.21]   #   ~0.17 m tall. Other stand-ins: measure with
                                     #   pick_place.py --mode observe and set these
   balance_ahead_share: 0.126        # where it balances (the cups still seal there at 0.79 m)
@@ -51,9 +51,14 @@ catfish:                    # Table SY-1 +- 10%
   balance_ahead_share: 0.065        # it balances ~0.11 ahead, but the cups must seal behind
                                     # its pectoral fins (0.06-0.09 for 0.55-0.79 m): tune
 cup_footprint_m: [0.20, 0.10]    # along and across the body (the gripper's CAD model)
+grasp_step_m: 0.01               # where the cups don't all seal at the balance point (the
+                                 # fins), they move back toward the middle in these steps
 cup_diameter_m: 0.04             # six of them, 3 x 2, filling the footprint
-cup_stroke_m: 0.012              # unevenness under the cups the bellows take up and still seal:
-                                 # the cups move toward the head only as far as it allows
+cup_stroke_m: 0.025              # the unevenness under the cups the bellows take up and still
+                                 # all seal: they compress from 40 mm to about 10 mm, less 5 mm
+                                 # the last cup to touch is still pressed by
+cup_lip_conform_m: 0.006         # a bump under one cup's lip (a fin) taller than this keeps
+                                 # that cup off the fish: the spot isn't used
 overlap_margin_px: 6
 
 # A fish is valid only if it is at the same place in this many frames in a row (VS-52)

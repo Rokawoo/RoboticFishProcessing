@@ -274,15 +274,47 @@ def test_the_cups_go_only_where_all_six_can_seal():
     xy = grid.reshape(-1, 2)
     axis, at = np.array([1.0, 0.0]), np.zeros(2)
 
-    def reach(z):
-        return locator()._cups_reach(np.column_stack([xy, z]), at, axis)
+    def reach(z, **settings):
+        return locator(**settings)._cup_contact(np.column_stack([xy, z]), at, axis)
 
-    assert reach(0.10 + 0 * xy[:, 0])  # flat
-    assert reach(0.10 + 0.2 * xy[:, 0])  # sloping: the cups lean onto it
+    sealed, (normal, height) = reach(0.10 + 0 * xy[:, 0])  # flat
+    assert sealed and np.allclose(normal, (0, 0, 1)) and height == pytest.approx(0.10)
+    sealed, (normal, height) = reach(0.10 + 0.2 * xy[:, 0])  # sloping: the cups lean onto it
+    assert sealed and math.degrees(math.acos(normal[2])) == pytest.approx(11.3, abs=0.1)
+    assert not reach(0.10 + 0.2 * xy[:, 0], align_to_surface=False)[0]  # straight down: 40 mm
     long, wide = (v / 2 - 0.02 for v in VisionSettings().cup_footprint_m)  # a corner cup
-    bump = np.hypot(xy[:, 0] - long, xy[:, 1] - wide) < 0.02  # a fin under it
-    assert not reach(0.10 + 0.02 * bump)
-    assert not locator()._cups_reach(np.column_stack([xy, 0.1 + 0 * xy[:, 0]])[:100], at, axis)
+    corner = np.hypot(xy[:, 0] - long, xy[:, 1] - wide) < 0.02
+    # the body higher under it: the cups lean toward it and the bellows take up the rest
+    assert reach(0.10 + 0.015 * corner)[0]
+    assert not reach(0.10 + 0.04 * corner)[0]  # past their stroke
+    fin = corner & (np.abs(xy[:, 1] - wide) < 0.004)  # a thin fin standing up under it
+    assert not reach(0.10 + 0.015 * fin)[0]  # the cup's lip would rest on it
+    assert reach(0.10 + 0.015 * fin, cup_lip_conform_m=1.0)[0]  # that check off
+    few = np.column_stack([xy, 0.1 + 0 * xy[:, 0]])[:100]  # a cup over nothing seen
+    assert locator()._cup_contact(few, at, axis) == (False, None)
+
+
+def test_the_cups_stop_behind_a_fin_on_the_way_to_the_balance_point():
+    x, y, heading = 0.40, -0.10, ALONG_Y
+    toward_head = np.array([math.cos(heading), math.sin(heading)])
+
+    def ahead_of_middle(fin_at=None) -> float:
+        frame, detections = render([(x, y, heading, 0.9)])
+        if fin_at is not None:  # a fin 10 mm thick and 30 mm tall across the body
+            rows, columns = np.nonzero(frame.depth < frame.depth.max() - 0.01)
+            on_top = pixels_on_plane(K, CAMERA, np.column_stack([columns, rows]), 0.10)
+            along = (on_top[:, :2] - (x, y)) @ toward_head
+            fin = np.abs(along - fin_at) < 0.005
+            frame.depth[rows[fin], columns[fin]] -= 0.03
+        fish = locator().locate(frame, detections, CAMERA).fish[0]
+        assert fish.vision_ok, fish.failures
+        return float((fish.grasp_point[:2] - fish.middle[:2]) @ toward_head)
+
+    balance = Catfish().balance_ahead_share * 0.6
+    assert ahead_of_middle() == pytest.approx(balance, abs=0.01)  # where it balances
+    # 110 mm ahead the fin would be under the front cups (80 mm ahead of the grasp point,
+    # 40 mm across): they move back toward the middle until it is clear of them
+    assert ahead_of_middle(fin_at=0.11) < 0.015
 
 
 def test_a_rejected_fish_keeps_where_it_was_seen_for_a_closer_look():
@@ -553,9 +585,9 @@ def test_surface_slope_tilts_the_grasp_and_helps_tell_head_from_tail():
 
     level = locator(align_to_surface=False).locate(frame, detections, CAMERA).fish[0]
     assert np.allclose(level.grasp_pose[:3, 2], (0, 0, -1)) and level.surface_tilt > 0.05
-    frame, detections = render([middle], slope=0.50)  # steeper than the cups may lean
-    steep = locator().locate(frame, detections, CAMERA).fish[0]
-    assert np.allclose(steep.grasp_pose[:3, 2], (0, 0, -1))
+    frame, detections = render([middle], slope=0.50)  # steeper than the cups may lean:
+    steep = locator().locate(frame, detections, CAMERA).fish[0]  # pressed straight down, the
+    assert steep.failure_code == "grasp_point_off_body"  # cup rows' heights differ by 80 mm
     # measured where the cups go; at the middle that is the slope itself (toward the narrower
     # head the cups' footprint also takes in the body's rounded sides)
     at_middle = locator(catfish=Catfish(balance_ahead_share=0.0))

@@ -28,7 +28,7 @@ gripper_model: models/gripper.stl  # cups, plate, camera, bracket: from its CAD 
                                 # import_gripper.py, which prints the values below
 cup_rows: [-0.08, 0.0, 0.08]    # cup centers along the tool's x (m): 3 x 2 cups
 cup_columns: [-0.03, 0.03]      # and along its y
-cup_stroke: 0.012               # how far a cup compresses
+cup_stroke: 0.030               # how far a cup compresses: the 40 mm bellows to about 10 mm
 cup_stiffness: 500.0            # N/m per cup
 seal_cups: 5                    # cups that must touch for the vacuum to hold the fish
 seal_gap: 0.002                 # m: a cup face this close to the fish touches it
