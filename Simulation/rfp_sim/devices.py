@@ -44,6 +44,7 @@ class VirtualArm:
         self._zero = 0.0
         self._stop = False
         self.moves: list[tuple[str, float]] = []  # (kind, seconds) of each move run
+        self.wrist_turns: list[float] = []  # rad the last joint turned in each move run
 
     # -- state -------------------------------------------------------------------
     def tcp_pose(self) -> np.ndarray:
@@ -131,6 +132,7 @@ class VirtualArm:
             if reason or self._stop:
                 raise MotionAborted(reason or "stopped")
         self.moves.append((kind, float(times[-1])))
+        self.wrist_turns.append(float(abs(positions[-1][-1] - positions[0][-1])))
 
 
 class VirtualGripper:

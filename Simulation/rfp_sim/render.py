@@ -70,6 +70,24 @@ def without_camera_body(mesh: pv.PolyData, t_tip_camera: np.ndarray) -> pv.PolyD
     return mesh.extract_cells(~around).extract_surface(algorithm="dataset_surface")
 
 
+def add_arm(plotter: pv.Plotter, chain, meshes: dict) -> list:
+    """One actor per link (base first), in the link's frame: its mesh, or a plain tube to the
+    next joint. Place them with chain.link_poses (actor.user_matrix)."""
+    actors = []
+    for k, name in enumerate(["base_link", *chain.links]):
+        if name in meshes:
+            mesh = meshes[name]
+        else:
+            mesh = pv.Sphere(radius=0.05)
+            if k < len(chain.joints) and np.linalg.norm(chain.joints[k].origin[:3, 3]) > 1e-6:
+                mesh = mesh.merge(_tube((0, 0, 0), chain.joints[k].origin[:3, 3], 0.04))
+            if k == 0:
+                mesh = mesh.merge(pv.Cylinder(center=(0, 0, 0.03), direction=(0, 0, 1),
+                                              radius=0.08, height=0.06))  # fmt: skip
+        actors.append(plotter.add_mesh(mesh, color=LINK_COLOR, smooth_shading=True))
+    return actors
+
+
 class Scene:
     """The cell's actors in one plotter; update() moves them to the world's state."""
 
@@ -130,22 +148,7 @@ class Scene:
             color=(0.22, 0.23, 0.25))  # fmt: skip
 
     def _add_arm(self, meshes: dict) -> list:
-        """One actor per link, in the link's frame: its mesh, or a plain tube to the next joint."""
-        chain = self.world.chain
-        names = ["base_link", *chain.links]
-        actors = []
-        for k, name in enumerate(names):
-            if name in meshes:
-                mesh = meshes[name]
-            else:
-                mesh = pv.Sphere(radius=0.05)
-                if k < len(chain.joints) and np.linalg.norm(chain.joints[k].origin[:3, 3]) > 1e-6:
-                    mesh = mesh.merge(_tube((0, 0, 0), chain.joints[k].origin[:3, 3], 0.04))
-                if k == 0:
-                    mesh = mesh.merge(pv.Cylinder(center=(0, 0, 0.03), direction=(0, 0, 1),
-                                                  radius=0.08, height=0.06))  # fmt: skip
-            actors.append(self.plotter.add_mesh(mesh, color=LINK_COLOR, smooth_shading=True))
-        return actors
+        return add_arm(self.plotter, self.world.chain, meshes)
 
     def _add_gripper(self):
         """The gripper's CAD model (cups, plate, camera, bracket) in the tip link frame."""
@@ -204,7 +207,7 @@ class VirtualCamera:
         self.last_masks: list[np.ndarray] = []  # one per fish in view (labels only)
         size = max(3, round(OPENING_PX * s.width / 1280) | 1)
         self._opening = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
-        self._rng = np.random.default_rng(7)
+        self.reseed(7)
         self._count = 0
         self.plotter = pv.Plotter(off_screen=True, window_size=(s.width, s.height))
         self.plotter.set_background("black")
@@ -212,6 +215,10 @@ class VirtualCamera:
         self.plotter.show(auto_close=False)
         vertical = 2 * math.atan(self.intrinsics.cy / self.intrinsics.fy)
         self.plotter.camera.view_angle = math.degrees(vertical)
+
+    def reseed(self, seed: int) -> None:
+        """Restart the depth noise: the same seed, the same noise from here on."""
+        self._rng = np.random.default_rng(seed)
 
     def _aim(self) -> None:
         pose = self.world.camera_pose()  # optical frame: z out of the lens, x right, y down

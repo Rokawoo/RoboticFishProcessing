@@ -131,6 +131,7 @@ def run_scene(bench: Bench, seed: int) -> list[dict]:
     for fish in world.fish:
         fish.held = None
     world.set_joints(world.start_joints())
+    bench.session.camera.reseed(seed)  # the scene's own noise, whatever came before it
     start = {fish.name: fish.pose.copy() for fish in world.fish}
 
     wrist = {"last": float(world.joints[-1]), "travel": 0.0}
@@ -172,6 +173,7 @@ def run_scene(bench: Bench, seed: int) -> list[dict]:
         ),
         "looks": bench.vision.looks,
         "wrist_travel_deg": round(math.degrees(wrist["travel"])),
+        "wrist_turn_max_deg": round(math.degrees(max(arm.wrist_turns, default=0.0))),
         "sim_time_s": round(sum(seconds for _, seconds in arm.moves) + waited["s"], 1),
         "compute_s": round(time.monotonic() - started, 1),
     }
@@ -263,6 +265,7 @@ def summarize(rows: list[dict]) -> dict:
         "wrist_travel_deg_per_placed": (
             round(sum(s["wrist_travel_deg"] for s in scenes) / len(placed)) if placed else None
         ),
+        "wrist_turn_max_deg": max((s["wrist_turn_max_deg"] for s in scenes), default=0),
         "sim_time_s_per_placed": (
             round(sum(s["sim_time_s"] for s in scenes) / len(placed), 1) if placed else None
         ),
@@ -319,7 +322,10 @@ def report_lines(summary: dict, baseline: dict | None = None) -> list[str]:
         f"failures:           {f['failures'] or 'none'}",
         f"scenes ended:       {f['ended']}",
         f"looks per fish:     {num('looks_per_fish')}",
-        f"wrist travel:       {num('wrist_travel_deg_per_placed')} deg per placed fish",
+        (
+            f"wrist travel:       {num('wrist_travel_deg_per_placed')} deg per placed fish, "
+            f"at most {num('wrist_turn_max_deg')} in one move"
+        ),
         f"simulated time:     {num('sim_time_s_per_placed')} s per placed fish (moves and waits)",
     ]
     if baseline is not None and baseline.get("outcomes") != f["outcomes"]:
