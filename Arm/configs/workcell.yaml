@@ -37,7 +37,7 @@ camera:
   # The camera's optical frame (z out of the lens, x right, y down in the image) in the
   # tip link frame: the hand-eye calibration result (AS-60). Keep the lens at least 70 mm
   # above the cup faces: the D405 measures no depth closer than that.
-  mount: {xyz: [0.0, -0.090, 0.130], rpy_deg: [0, 0, 0]}
+  mount: {xyz: [0.0, 0, 0.101629], rpy_deg: [0, 0, 0]}
   calibrated: false               # true once calibrated and checked (AS-61); real runs need it
   calibration_version: nominal-0  # recorded in the run log (AS-64)
 
