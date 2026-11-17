@@ -233,12 +233,12 @@ def test_tool_camera_and_held_fish_must_stay_in_the_zones():
     assert problem(0.4, 0.0, 0.3) == ""
     assert "leave the work zone" in problem(1.4, 0.0, 0.3)
     assert "leave the work zone" in problem(0.4, 0.0, 1.05)  # above it
-    assert "exclusion zone 'operator side'" in problem(1.05, 0.0, 0.3)
+    assert "exclusion zone 'operator side'" in problem(1.10, 0.0, 0.3)
     assert "TCP would be 2.0 mm above the table" in problem(0.4, 0.0, 0.002)
     assert problem(0.4, 0.0, 0.006) == ""  # 5 mm clearance
     # a fish hangs along the tool's x axis: both of its ends count
-    assert problem(0.7, 0.0, 0.3, yaw=math.pi / 2, fish=0.7) == ""
-    assert "fish end would enter the exclusion zone" in problem(0.7, 0.0, 0.3, yaw=0.0, fish=0.7)
+    assert problem(0.75, 0.0, 0.3, yaw=math.pi / 2, fish=0.7) == ""
+    assert "fish end would enter the exclusion zone" in problem(0.75, 0.0, 0.3, yaw=0.0, fish=0.7)
     assert "fish end would leave the work zone" in problem(0.4, -0.6, 0.3, math.pi / 2, fish=0.7)
     # beside the table the floor doesn't apply, and a path may start there
     assert problem(-0.6, 0.0, -0.2, work_zone=False) == ""
@@ -535,7 +535,8 @@ def test_grasp_plan_refuses_what_the_limits_forbid():
 
     assert "outside the pick area" in refused(x=0.70)
     assert "above the table" in refused(thickness=0.0)  # the cups would be pressed into the table
-    assert "fish end would enter the exclusion zone" in refused(length=1.3)
+    # lying along X near the far edge: lifted, its end reaches the operator's side
+    assert "fish end would enter the exclusion zone" in refused(x=0.50, heading_deg=0, length=1.2)
     tilted = fish_pose()
     tilted[:3, :3] = tilted[:3, :3] @ poses.rot_x(math.radians(30))
     with pytest.raises(ArmError, match="off vertical"):
@@ -851,12 +852,13 @@ def test_grasp_takes_the_way_round_that_turns_the_wrist_least():
     def path(plan):
         return [round(math.degrees(a)) for a in plan.wrist]
 
-    # Wrist at -14 deg. Gripped one way it goes to 21, then 156 at the slot: back at -14 it
-    # has swept 170 deg. The other way: -159, then -24: 145 deg, though 3 deg nearer a limit.
+    # Wrist at -14 deg. Gripped one way it goes to 21, then 156 at the slot; the other way
+    # to -159, then -24 turns it less in all, but the empty gripper 159 deg out has the
+    # camera toward the arm: within 90 deg of the middle where a way allows
     p = plan_with(fake_wrist(-14, 156), heading_deg=-135)
-    assert path(p) == [-14, -159, -24] and round(math.degrees(p.wrist_sweep)) == 145
-    assert round(math.degrees(poses.yaw_of(p.pregrasp))) == 45  # the fish's tail end ahead
-    assert round(math.degrees(poses.yaw_of(p.lower))) == 180  # its head still toward +X
+    assert path(p) == [-14, 21, 156] and not p.reset_first
+    assert round(math.degrees(poses.yaw_of(p.pregrasp))) == -135  # the cups' x to the head
+    assert round(math.degrees(poses.yaw_of(p.lower))) == 0  # its head toward +X
     # sweeps of 89 and 91 deg count as equal: the way that stays nearer the middle
     assert path(plan_with(fake_wrist(3, 92), heading_deg=0)) == [3, -88, -88]
     # clear of the range's ends (+-170) if a way allows: 159 deg rather than 151 to -165
@@ -879,6 +881,54 @@ def test_grasp_takes_the_way_round_that_turns_the_wrist_least():
     assert arm.wrist_angle(
         poses.tool_down((0.4, 0.0, 0.3), poses.yaw_of(arm.tcp_pose()) + 0.5)
     ) == (pytest.approx(0.5))
+
+
+def test_the_wrist_turns_a_held_fish_at_most_half_a_turn_and_no_move_further():
+    def plan_with(wrist, heading_deg):
+        fish = fish_pose(heading_deg=heading_deg)
+        return plan_grasp(CELL, fish, True, 0.60, 0.10, SLOT, 0.0, wrist=wrist)
+
+    def path(plan):
+        return [round(math.degrees(a)) for a in plan.wrist]
+
+    # Placed, the wrist ends at -19 or 161 (the cups either way round). Held the near way
+    # (-84 at the grasp) the fish would turn 245 deg, past half a turn: so the far way, the
+    # empty gripper at 96, past its 90 deg band, the fish turned 115
+    assert path(plan_with(fake_wrist(0, -19), heading_deg=115)) == [0, 96, -19]
+    # The grasp 200 deg from where the wrist is (as after a closer look on the far side):
+    # it turns back to its middle where it is first, then to the grasp
+    far = plan_with(fake_wrist(120, 0), heading_deg=-80)
+    assert path(far) == [120, -80, 0] and far.reset_first
+    # whatever the fish and the wrist: a held fish turns at most 180 deg, the wrist stays in
+    # its range, and no move turns it more than 180
+    rng = np.random.default_rng(3)
+    planned = 0
+    for _ in range(300):
+        now, offset, heading = rng.uniform(-90, 90), rng.uniform(-180, 180), rng.uniform(-180, 180)
+        try:
+            p = plan_with(fake_wrist(now, offset), heading)
+        except ArmError:
+            continue  # refused: nothing runs
+        planned += 1
+        start, grasp, slot = (math.degrees(a) for a in p.wrist)
+        assert abs(slot - grasp) <= 180 + 1e-6 and max(abs(grasp), abs(slot)) <= 170
+        assert abs(grasp - start) <= 180 or p.reset_first
+    assert planned > 250
+
+
+def test_a_long_turn_to_the_grasp_goes_back_to_the_middle_first():
+    rig = Rig()
+    here = rig.arm.tcp_pose()  # the wrist at 0 here
+    rig.arm.move_ptp(poses.tool_down(here[:3, 3], poses.yaw_of(here) + math.radians(120)))
+    assert math.degrees(rig.arm.wrist_angle()) == pytest.approx(120)
+    fish = fish_pose(heading_deg=-170)  # the grasp at -80: 200 deg away
+    p = plan_grasp(CELL, fish, True, 0.60, 0.10, SLOT, 0.0, wrist=rig.arm.wrist_angle)
+    assert p.reset_first
+    rig.sequence.run(p)
+    turned_back = rig.arm.moves[1][1]
+    assert np.allclose(turned_back[:3, 3], here[:3, 3])  # where it was, the wrist at 0
+    assert rig.arm.wrist_angle(turned_back) == pytest.approx(0.0, abs=1e-6)
+    assert math.degrees(rig.arm.wrist_angle(rig.arm.moves[2][1])) == pytest.approx(-80, abs=1)
 
 
 # ---------------------------------------------------------------------------

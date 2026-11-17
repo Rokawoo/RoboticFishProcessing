@@ -38,6 +38,13 @@ from rfp_arm.workcell import Workcell
 
 # Wrist arcs (rad) this close count as equal: then the one nearer the range's middle
 WRIST_TIE = math.radians(5.0)
+# The empty gripper stays this close to the wrist's middle where it can: the cups are
+# symmetric, so one way round always is, and there the camera is on the side away from the
+# arm (j6 near +-180 turns it toward the arm). A fish that must arrive the far way round for
+# its slot can need more (see plan_grasp).
+EMPTY_WRIST = math.radians(90.0)
+HELD_TURN = math.radians(180.0)  # a held fish is turned at most half a turn
+WRIST_MOVE = math.radians(180.0)  # no single move turns the wrist further
 # Plans keep the wrist this far (rad) inside its range when a way round allows: the tilted
 # approach turns it up to 14 deg from where it was predicted (straight down; 10 deg in 95%
 # of grasps), and the tube twists less. In the placeholder cell some way always allows it.
@@ -62,9 +69,12 @@ class GraspPlan:
     dry_run: bool
     surface: np.ndarray  # the cups just touching the fish where vision saw its surface
     # the last joint's angle (rad) now, at the grasp and at the slot, as the arm predicted
-    # them; it returns to the first. None if the arm can't tell.
+    # them. None if the arm can't tell.
     wrist: tuple[float, float, float] | None = None
     middle_x: float = 0.0  # m along the TCP's x axis from the cups to the fish's middle
+    # the wrist turns back to its middle where it is before the pre-grasp: the turn to the
+    # grasp is longer than WRIST_MOVE from where it is
+    reset_first: bool = False
 
     @property
     def wrist_sweep(self) -> float | None:
@@ -133,14 +143,24 @@ def plan_grasp(
     lift_z = max(lift_z, z + g.lift_margin)
     release_z = table + max(thickness, 0.0) + g.release_clearance
 
-    # The cups fit the body both ways round, and a fish whose head end isn't known may go
-    # into the slot either way round. Each way the wrist turns from where it is to the
-    # grasp, with the fish to the slot, and back to where it is now (the observation pose):
-    # twice the arc it sweeps. Take the smallest arc inside the wrist's range (the vacuum
-    # tube), clear of its ends if a way allows; of arcs within a few degrees of it, the one
-    # that stays nearest the middle.
+    # Which way round: the cups fit the body both ways, and a fish whose head end isn't
+    # known may go into the slot either way. j6 has one angle per tool angle (its range is
+    # under a turn), so the ways differ only in the angles they ask for. For the vacuum tube
+    # and against long wrist turns:
+    # - a held fish is turned at most HELD_TURN, the wrist inside its range;
+    # - the empty gripper stays within EMPTY_WRIST of the range's middle where the fish
+    #   allows. Placed, the wrist ends at one of two angles half a turn apart (the cups either
+    #   way round); a fish that must arrive the far way round to be turned less than half a
+    #   turn needs the empty wrist further, as far as that takes;
+    # - no move turns the wrist more than WRIST_MOVE: a longer turn to the grasp first turns
+    #   it back to the middle where it is (reset_first); after the place the arm goes back
+    #   to its observation pose, near the middle.
+    # Of the ways allowed: clear of the range's ends (predictions miss by up to ~14 deg),
+    # the empty gripper within its band, the least turning in all (to the grasp, to the
+    # slot, back to the middle); of those within a few degrees, the one nearest the middle.
     low, high = workcell.wrist_range
     center = (low + high) / 2
+    move_limit = min(WRIST_MOVE, math.radians(workcell.motion.max_joint_travel_deg) - WRIST_MARGIN)
     now = wrist(None) if wrist else None
     behind = np.zeros(2) if middle is None else np.asarray(middle, float)[:2] - point[:2]
 
@@ -165,13 +185,22 @@ def plan_grasp(
             if not predicted:  # the arm can't tell: the wrist turns as the tool's yaw does
                 start = center + wrap(grasp_yaw - tool_yaw)
                 angles = (center, start, start + fish_turn)
-            targets = angles[1:]
+            begin, grasp_at, slot_at = angles
+            reset_first = predicted and abs(grasp_at - begin) > move_limit
+            if reset_first:  # by way of the middle
+                to_grasp = abs(begin - center) + abs(grasp_at - center)
+            else:
+                to_grasp = abs(grasp_at - begin)
+            targets = (grasp_at, slot_at)
             ways.append(
                 {
                     "inside": all(low <= a <= high for a in targets),
-                    "sweep": max(angles) - min(angles),
+                    "held": abs(slot_at - grasp_at),
+                    "empty": abs(grasp_at - center),
+                    "travel": to_grasp + abs(slot_at - grasp_at) + abs(slot_at - center),
                     "peak": max(abs(a - center) for a in targets),
                     "worst": max(targets, key=lambda a: abs(a - center)),
+                    "reset_first": reset_first,
                     "flip": flip,
                     "turn": fish_turn,
                     "place_yaw": place_yaw,
@@ -187,10 +216,26 @@ def plan_grasp(
             f"the wrist would turn to {math.degrees(worst):.0f} deg (range "
             f"{math.degrees(low):.0f} to {math.degrees(high):.0f}: the vacuum tube)",
         )
-    roomy = [way for way in inside if way["peak"] <= (high - low) / 2 - WRIST_MARGIN] or inside
-    smallest = min(way["sweep"] for way in roomy)
+    allowed = [way for way in inside if way["held"] <= HELD_TURN + 1e-6]
+    if not allowed:
+        held = min(way["held"] for way in inside)
+        raise ArmError(
+            E_MOTION,
+            f"the fish would be turned {math.degrees(held):.0f} deg on the gripper (at most "
+            f"{math.degrees(HELD_TURN):.0f} inside the wrist's range)",
+        )
+
+    def kind(way: dict) -> tuple[bool, bool]:
+        return (
+            way["peak"] > (high - low) / 2 - WRIST_MARGIN,
+            way["empty"] > EMPTY_WRIST + 1e-6,
+        )
+
+    best = min(kind(way) for way in allowed)
+    allowed = [way for way in allowed if kind(way) == best]
+    least = min(way["travel"] for way in allowed)
     way = min(
-        (way for way in roomy if way["sweep"] <= smallest + WRIST_TIE),
+        (way for way in allowed if way["travel"] <= least + WRIST_TIE),
         key=lambda way: way["peak"],
     )
     flip, turn, place_yaw, place = way["flip"], way["turn"], way["place_yaw"], way["place"]
@@ -211,6 +256,7 @@ def plan_grasp(
         surface=surface,
         wrist=way["wrist"],
         middle_x=float(behind @ surface[:2, 0]) / max(float(np.hypot(*surface[:2, 0])), 1e-9),
+        reset_first=way["reset_first"],
     )
     plan.pregrasp = plan.at_depth(-g.pregrasp_distance)
     plan.approach_end = plan.at_depth(-g.dry_run_standoff if dry_run else g.press_distance)
@@ -275,6 +321,8 @@ class GraspSequence:
         vacuum = not plan.dry_run
         self._release_z = plan.lower[2, 3]
         self._begin("pre-grasp")
+        if plan.reset_first:
+            self._move(self._reset_wrist)
         self._move(lambda: self.arm.move_ptp(plan.pregrasp, self._moving))
         if vacuum:
             self._begin("vacuum on")  # before the cups reach the fish (CS-44)
@@ -307,6 +355,26 @@ class GraspSequence:
         self._begin("retreat")
         self._move(lambda: self._lin(plan.retreat, m.free_speed))
         self.step = ""
+
+    def _reset_wrist(self) -> None:
+        """Turn the wrist back to its middle where the tool is (about the vertical), so the
+        turn to the grasp that follows is shorter than WRIST_MOVE."""
+        low, high = self.workcell.wrist_range
+        middle = (low + high) / 2
+        here, now = self.arm.tcp_pose(), self.arm.wrist_angle()
+        if now is None:
+            return
+        for turn in (middle - now, now - middle):  # which way the tool turns: the arm's build
+            pose = here.copy()
+            pose[:3, :3] = rot_z(turn) @ here[:3, :3]
+            predicted = self.arm.wrist_angle(pose)
+            if predicted is not None and abs(predicted - middle) < math.radians(5):
+                break
+        else:
+            return
+        if problem := self.workcell.pose_problem(pose):
+            raise ArmError(E_MOTION, f"turning the wrist back: {problem}")
+        self.arm.move_ptp(pose, self._moving)
 
     def let_go(self) -> None:
         """Vacuum off and forget the fish (after a failed grasp or a drop)."""

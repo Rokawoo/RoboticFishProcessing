@@ -25,7 +25,7 @@ from rfp_arm.interfaces import (
     Gripper,
     MotionAborted,
 )
-from rfp_arm.poses import yaw_of
+from rfp_arm.poses import wrap, yaw_of
 from rfp_arm.workcell import ObservationPose, Workcell
 from rfp_vision.camera import CameraError
 from rfp_vision.fish_list import Fish, FishList, heading_difference, match_fish
@@ -212,7 +212,9 @@ class PickPlaceCycle:
             self._next_pose()
             if self._unusable >= len(poses):  # a full pass with fish but none to pick
                 self._unusable = 0
-                self._pause("Fish are on the table but none can be picked: " + _why(in_area))
+                # why, as the last look saw it (a closer look sees more than the first)
+                seen = [f for f in fish_list.fish if self._maybe_in_pick_area(f)] or in_area
+                self._pause("Fish are on the table but none can be picked: " + _why(seen))
             return True
         self._unusable = 0
         if self._slot >= len(self.workcell.slots):
@@ -313,11 +315,14 @@ class PickPlaceCycle:
 
     def _close_pose(self, seen_at: tuple[float, float, float]) -> ObservationPose | None:
         """The look centered on a fish seen at (x, y, body axis): of the two ways to turn the
-        camera along the fish, the one inside the limits whose wrist turns least."""
+        camera along the fish, the one inside the limits with the wrist nearest its middle.
+        There the camera is on the side away from the arm, and the grasp that follows takes
+        the same way round (plan_grasp keeps the empty gripper near the middle too), so the
+        wrist doesn't turn round to look and back to grab."""
         cell = self.workcell
         x, y, axis = seen_at
         low, high = cell.wrist_range
-        now = self.arm.wrist_angle()
+        middle = (low + high) / 2
         options = []
         for yaw in (axis, axis + math.pi):
             camera = cell.close_look_camera((x, y), yaw)
@@ -327,8 +332,11 @@ class PickPlaceCycle:
             wrist = self.arm.wrist_angle(tcp)
             if wrist is not None and not low <= wrist <= high:
                 continue
-            turn = abs(wrist - now) if wrist is not None and now is not None else 0.0
-            options.append((turn, camera))
+            if wrist is not None:
+                away = abs(wrist - middle)
+            else:  # the arm can't tell: the least turn of the tool from now
+                away = abs(wrap(yaw_of(tcp) - yaw_of(self.arm.tcp_pose())))
+            options.append((away, camera))
         if not options:
             return None
         camera = min(options, key=lambda option: option[0])[1]
@@ -564,6 +572,8 @@ class PickPlaceCycle:
             where = f"x {fish.middle[0] * 1000:.0f}, y {fish.middle[1] * 1000:.0f} mm"
             self.report.skipped.append(where)
             self.console.info(f"fish at {where} is skipped for the rest of the run")
+        if not sequence.step:  # refused while planning: nothing moved, nothing to fault
+            return
         self._failed_in_row += 1
         if self._failed_in_row >= s.max_failed_cycles:  # CS-63, CS-64
             self._failed_in_row = 0

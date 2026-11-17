@@ -345,6 +345,42 @@ def test_unreachable_fish_are_skipped_and_the_others_picked():
     assert len(report.skipped) == 1 and B not in [f[:2] for f in rig.table.fish]
 
 
+def test_a_plan_refused_for_where_a_fish_lies_skips_it_without_pausing(monkeypatch):
+    from rfp_arm.interfaces import E_MOTION
+    from rfp_controlsys import cycle as cycle_module
+
+    real = cycle_module.plan_grasp
+
+    def refuse(workcell, grasp_pose, *args, **kwargs):
+        if min(math.dist(grasp_pose[:2, 3], at) for at in (A, C)) < 0.01:
+            raise ArmError(E_MOTION, "lift pose: fish end would enter the exclusion zone")
+        return real(workcell, grasp_pose, *args, **kwargs)
+
+    monkeypatch.setattr(cycle_module, "plan_grasp", refuse)
+    rig = Rig(A, C, B)
+    report = rig.run()
+    # each retried (vision measures again), then skipped; nothing moved, so plans refused
+    # in a row don't pause the run as failed cycles would: the third fish is still picked
+    assert report.failures == {"E_MOTION": 6} and report.successes == 1
+    assert len(report.skipped) == 2 and not any("in a row" in a for a in rig.operator.alerts)
+
+
+def test_a_closer_look_says_why_a_fish_it_sees_whole_is_not_picked():
+    class Closer(Table):
+        def observe(self, t_base_camera, on_frame=None):
+            observation = super().observe(t_base_camera, on_frame)
+            close = t_base_camera[2, 3] > 0.55  # the closer look: the whole fish, too wide
+            for f in observation.fish_list.fish:
+                code = "geometry_out_of_range" if close else "out_of_frame"
+                f.failures, f.failure_code, f.seen_at = (code,), code, (*A, 0.0)
+            return observation
+
+    rig = Rig((*A, {"code": "out_of_frame"}))
+    rig.table.__class__ = Closer
+    report = rig.run()
+    assert "fish 1: geometry_out_of_range" in report.ended  # not the first look's out_of_frame
+
+
 def test_a_full_placement_zone_pauses_the_run():
     rig = Rig(A, B, C, answers=[True])
     report = rig.run()
