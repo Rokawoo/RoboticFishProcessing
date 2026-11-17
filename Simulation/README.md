@@ -44,9 +44,9 @@ With the gripper as built (its CAD model: six 40 mm cups 160 x 60 mm apart on 4.
 | + 20 mm stroke, no cup on a fin, the cups lean onto the plane through them | 34 / 40 | 15 mm | 37 mm toward the tail |
 | + back from the balance point in 10 mm steps (each scene's camera noise from its seed from here) | 34 / 40 | 13 mm | 32 mm |
 | + stand-in width limit 0.25 m, refused plans don't pause the run | **37 / 40** | 13 mm | 31 mm |
-| + the bellows' 30 mm (40 mm to about 10), the wrist rules: a held fish turned at most 180 deg, the empty gripper within 90 of the middle where it can, no move over 180 | 35 / 40 (two fish vision never picked flip between runs) | 13 mm | 31 mm |
+| + the bellows' 30 mm (40 mm to about 10), the wrist rules: a held fish turned at most 180 deg, the empty gripper within 90 of the middle where it can, no move over 180 | 35-37 / 40 (two fish vision never picks flip between runs) | 13 mm | 31 mm |
 
-The 0.55 m small fish (`--fish-length 0.55 --placement view --any-size`) with the stand-in's own balance share: 6 of 20 with the old gripper (lost on the lift), 19 of 20 now, the search backing off from the fins by itself. Two fish a scene (`--fish 2`, 20 scenes): 23 of 40 placed (16 with the old slots), no move refused for the wrist.
+The 0.55 m small fish (`--fish-length 0.55 --placement view --any-size`) with the stand-in's own balance share: 6 of 20 with the old gripper (lost on the lift), 19 of 20 now, the search backing off from the fins by itself. Two fish a scene (`--fish 2`, 20 scenes): 23 of 40 placed (16 with the old slots), no move refused for the wrist. The largest single wrist move: 173 deg with one fish a scene, 177 with two (at most 180 planned, 200 allowed).
 
 ## Found with it
 
