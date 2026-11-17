@@ -252,16 +252,17 @@ class FishLocator:
             failed.add("wrong_heading")
 
         # The cups go where the fish balances: ahead of its middle, toward the heavier head,
-        # as far as they still fit on the body. Without the head end: the middle.
-        grasp_xy, plane = center, middle_plane
+        # as far as they still fit on the body and all six seal; else the middle. Without the
+        # head end: the middle. Nowhere: grasp_point_off_body.
+        grasp_xy, plane, seals = center, middle_plane, False
         ahead = s.fish.balance_ahead_share * fish.total_length if fish.heading_known else 0.0
-        for share in (1.0, 0.75, 0.5, 0.25) if ahead > 0 else ():
-            point = center + direction * ahead * share
+        shares = (1.0, 0.75, 0.5, 0.25) if ahead > 0 else ()
+        for point in [center + direction * ahead * share for share in shares] + [center]:
             if self._footprint_fits(outline_xy, point, axis) and self._cups_reach(
                 points, point, axis
             ):
-                grasp_xy = point
-                if points is not None:
+                grasp_xy, seals = point, True
+                if points is not None and point is not center:
                     fitted = self._surface_shape(points, point, axis, fish.total_length)[1]
                     plane = fitted if fitted is not None else plane
                 break
@@ -285,7 +286,7 @@ class FishLocator:
             float(self.table_z), float(self.table_z + max(fish.thickness, middle_height)),
         )  # fmt: skip
 
-        if not self._footprint_fits(outline_xy, surface[:2], axis):
+        if not seals:  # the cups would hang off the body, or not all of them reach it
             failed.add("grasp_point_off_body")
         size_ok = not s.check_size or (
             _within(fish.total_length, s.fish.length_range_m)

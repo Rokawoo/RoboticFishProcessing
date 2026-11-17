@@ -24,10 +24,10 @@ download_robot_meshes: true     # fetch FAIRINO's FR5 meshes once (no license: n
                                 # false or no network: the arm is drawn as plain tubes
 speed: 1.0                      # simulated seconds per real second; 0: as fast as it renders
 step_s: 0.05                    # simulated seconds between drawn arm poses
-cup_rows: [-0.05, 0.0, 0.05]    # cup centers along the tool's x (m): 3 x 2 cups (HW-31)
-cup_columns: [-0.0225, 0.0225]  # and along its y
-cup_radius: 0.02
-cup_length: 0.04                # bellows, from the plate to the cup faces
+gripper_model: models/gripper.stl  # cups, plate, camera, bracket: from its CAD model by
+                                # import_gripper.py, which prints the values below
+cup_rows: [-0.08, 0.0, 0.08]    # cup centers along the tool's x (m): 3 x 2 cups
+cup_columns: [-0.03, 0.03]      # and along its y
 cup_stroke: 0.012               # how far a cup compresses
 cup_stiffness: 500.0            # N/m per cup
 seal_cups: 5                    # cups that must touch for the vacuum to hold the fish

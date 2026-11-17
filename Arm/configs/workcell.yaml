@@ -22,7 +22,8 @@ robot:
 tool:
   # TCP in the tip link frame (AS-65): center of the cup footprint, in the plane of the
   # uncompressed cup faces; z out of the cups, x along the footprint's long side.
-  tcp: {xyz: [0.0, 0.0, 0.220], rpy_deg: [0, 0, 0]}
+  # 145.8 mm past the flange on the gripper's CAD model (Simulation/import_gripper.py).
+  tcp: {xyz: [0.0, 0.0, 0.2458], rpy_deg: [0, 0, 0]}
   # How far the last joint (j6) may turn. The vacuum tube runs into the gripper, so the
   # wrist must never wind a full turn: plans that leave this range are refused, each grasp
   # takes the way round that turns it least (and keeps 10 degrees clear of the ends if it
@@ -31,13 +32,14 @@ tool:
   wrist_range_deg: [-170, 170]
   # Cups, bracket and camera as one box in the tip link frame, for MoveIt's collision
   # checks. Keep its far end short of the cup faces, or reaching a fish counts as a hit.
-  body: {x: [-0.08, 0.08], y: [-0.13, 0.06], z: [0.06, 0.20]}
+  body: {x: [-0.100, 0.100], y: [-0.123, 0.050], z: [0.100, 0.226]}
 
 camera:
   # The camera's optical frame (z out of the lens, x right, y down in the image) in the
   # tip link frame: the hand-eye calibration result (AS-60). Keep the lens at least 70 mm
-  # above the cup faces: the D405 measures no depth closer than that.
-  mount: {xyz: [0.0, 0, 0.101629], rpy_deg: [0, 0, 0]}
+  # above the cup faces: the D405 measures no depth closer than that. Nominal: the middle
+  # of the D405's front face on the gripper's CAD model, 83 mm above the cup faces.
+  mount: {xyz: [0.0, -0.104, 0.163], rpy_deg: [0, 0, 0]}
   calibrated: false               # true once calibrated and checked (AS-61); real runs need it
   calibration_version: nominal-0  # recorded in the run log (AS-64)
 

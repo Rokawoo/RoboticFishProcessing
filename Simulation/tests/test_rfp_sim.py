@@ -30,15 +30,19 @@ def settings(**changes) -> SimSettings:
 
 
 def world_with_fish(**changes) -> World:
-    world = World(CELL, settings(**changes), stand_in_fish(0.55))
+    world = World(CELL, settings(**changes), stand_in_fish(0.65))
     assert world.place_fish(1, 3) == []
     return world
 
 
-def press_onto(world: World, fish: Fish, depth: float) -> None:
-    """Put the cups `depth` m below the fish's top at its middle (the arm, by IK)."""
+EVEN = -0.03  # m along the stand-in from its middle where all six cups (160 mm) reach it
+
+
+def press_onto(world: World, fish: Fish, depth: float, along: float = EVEN) -> None:
+    """Put the cups `depth` m below the fish's top, `along` from its middle (the arm, by IK)."""
     top = fish.model.mesh.bounds[5]
-    tcp = tool_down((*fish.pose[:2, 3], CELL.table_z + top - depth), yaw_of(fish.pose))
+    xy = fish.pose[:2, 3] + fish.pose[:2, 0] * along
+    tcp = tool_down((*xy, CELL.table_z + top - depth), yaw_of(fish.pose))
     world.set_joints(world.chain.ik(CELL.tip_of_tcp(tcp), world.joints))
 
 
@@ -111,10 +115,10 @@ def test_cups_feel_the_fish_and_the_vacuum_holds_it_only_when_they_touch():
     assert all(g is not None and 0.0 < g < 0.04 for g in gaps) and world.contact_force() == 0.0
     world.set_vacuum(True)
     assert world.holding is None  # not touching: nothing to hold
-    press_onto(world, fish, 0.005)  # 5 mm pressed in
+    press_onto(world, fish, 0.008)  # 8 mm pressed in
     assert world.holding is fish  # the vacuum was on: it sealed on touching
     force = world.contact_force()
-    press_onto(world, fish, 0.010)
+    press_onto(world, fish, 0.011)
     assert world.contact_force() > force > 1.0  # springs: more pressure, more force
     assert fish.pose[2, 3] == CELL.table_z  # the table holds it up while pressed
     press_onto(world, fish, -0.10)  # lifted 10 cm
@@ -128,14 +132,14 @@ def test_a_fish_can_be_dropped_on_purpose_to_test_drop_detection():
     world = world_with_fish(drop="lift")
     fish = world.fish[0]
     world.set_vacuum(True)
-    press_onto(world, fish, 0.005)
+    press_onto(world, fish, 0.008)
     press_onto(world, fish, -0.05)
     assert world.holding is fish
     press_onto(world, fish, -0.12)  # 8 cm above where it was grabbed: dropped
     assert world.holding is None and fish.pose[2, 3] == CELL.table_z
     world.set_vacuum(False)
     world.set_vacuum(True)
-    press_onto(world, fish, 0.005)
+    press_onto(world, fish, 0.008)
     press_onto(world, fish, -0.15)
     assert world.holding is fish  # only the first time
 
@@ -198,7 +202,9 @@ def test_virtual_camera_sees_the_table_and_the_fish_where_they_are():
         assert seen.vision_ok, seen.failures
         assert np.linalg.norm(seen.middle[:2] - fish.pose[:2, 3]) < 0.015
         ahead = (seen.grasp_point[:2] - seen.middle[:2]) @ fish.pose[:2, 0]  # toward the head
-        assert ahead == pytest.approx(0.126 * seen.total_length, abs=0.005)
+        # toward the balance point, as far as all six cups (200 mm) still fit on this one
+        share = ahead / (0.126 * seen.total_length)
+        assert min(abs(share - step) for step in (1.0, 0.75, 0.5)) < 0.05
         error = math.remainder(seen.heading - yaw_of(fish.pose), math.tau)
         assert abs(error) < math.radians(8)  # head end found from the shape and the slope
     finally:
@@ -309,7 +315,7 @@ def test_the_benchmark_scores_each_fish_against_the_truth():
     from rfp_sim.benchmark import build_bench, report_lines, run_scene, summarize
     from rfp_vision.settings import StandIn, VisionSettings
 
-    sim = settings(fish_model="none.stl", fish_length=0.55, placement="view", seed=3,
+    sim = settings(fish_model="none.stl", fish_length=0.65, placement="view", seed=3,
                    download_robot_meshes=False)  # fmt: skip  # the plain stand-in shape
     vision = VisionSettings(check_size=False, stand_in=StandIn(balance_ahead_share=0.0))
     bench = build_bench(CELL, vision, ControlSettings(settle_s=0.0), sim, None, False)
@@ -417,8 +423,6 @@ def test_fr5_meshes_are_downloaded_once_and_checked(tmp_path, monkeypatch):
 
 
 def test_the_camera_has_no_depth_at_the_fish_edges_like_the_d405():
-    from rfp_sim.render import bellows_cup
-
     world = world_with_fish(width=640, height=360)
     holes = VirtualCamera(world, {}, labels=True)
     whole = VirtualCamera(world, {}, labels=True)
@@ -441,9 +445,73 @@ def test_the_camera_has_no_depth_at_the_fish_edges_like_the_d405():
     finally:
         holes.close()
         whole.close()
-    cup = bellows_cup(0.02, 0.04)
-    x0, x1, y0, y1, z0, z1 = cup.bounds
-    assert max(x1 - x0, y1 - y0) == pytest.approx(0.04, abs=0.002) and z0 >= -1e-6 and z1 <= 0.0401
+
+
+def test_the_drawn_gripper_matches_the_settings():
+    """The CAD model's cups are where the TCP, the seal and vision's footprint put them, and
+    the camera sits on the model's camera, looking out of it."""
+    from rfp_sim.assets import load_gripper
+    from rfp_sim.render import without_camera_body
+    from rfp_sim.settings import gripper_path
+    from rfp_vision.settings import load_settings as vision_settings
+
+    settings = load_settings(panel=None)
+    gripper = load_gripper(gripper_path(settings))
+    assert CELL.tcp[2, 3] == pytest.approx(gripper.tcp_z, abs=0.0005)
+    assert np.allclose(CELL.tcp[:2, 3], 0) and np.allclose(CELL.tcp[:3, 2], (0, 0, 1))
+    layout = sorted((x, y) for x in settings.cup_rows for y in settings.cup_columns)
+    assert np.allclose(sorted(map(tuple, gripper.cups)), layout, atol=0.0005)
+    vision = vision_settings(panel=None)
+    span = gripper.cups.max(axis=0) - gripper.cups.min(axis=0) + 2 * gripper.cup_radius
+    assert np.allclose(vision.cup_footprint_m, span, atol=0.001)
+    assert vision.cup_diameter_m == pytest.approx(2 * gripper.cup_radius, abs=0.001)
+    low, high = np.array(gripper.mesh.bounds).reshape(3, 2).T
+    body = CELL.tool_box
+    assert body.x[0] <= low[0] + 1e-3 and body.x[1] >= high[0] - 1e-3  # MoveIt's box holds it
+    assert body.y[0] <= low[1] + 1e-3 and body.y[1] >= high[1] - 1e-3
+    assert body.z[1] < gripper.tcp_z  # short of the cup faces
+    # the lens on the model's surface, and nothing of the gripper ahead of it once its own
+    # housing is left out
+    lens = CELL.camera[:3, 3]
+    _, nearest = gripper.mesh.find_closest_cell(lens, return_closest_point=True)
+    assert np.linalg.norm(nearest - lens) < 0.002
+    seen = without_camera_body(gripper.mesh, CELL.camera)
+    local = (seen.points - lens) @ CELL.camera[:3, :3]
+    ahead = local[local[:, 2] > 0.0]
+    half_width = math.tan(math.radians(settings.hfov_deg / 2))
+    half_height = half_width * settings.height / settings.width
+    in_view = (np.abs(ahead[:, 0]) < half_width * ahead[:, 2]) & (
+        np.abs(ahead[:, 1]) < half_height * ahead[:, 2]
+    )
+    assert not in_view.any()  # the cups stay just outside the image (33 deg off the axis)
+
+
+def test_a_gripper_model_is_imported_into_the_tip_link_frame():
+    from rfp_sim.assets import FLANGE_Z, import_gripper
+
+    # millimeters, cups down (-z), the flange disk on top off the origin, a camera on an arm
+    parts = [pv.Cylinder(center=(10, 20, 75), direction=(0, 0, 1), radius=40, height=10),
+             pv.Box((-90, 110, -10, 50, 0, 70)),
+             pv.Box((-11, 31, -100, -10, 30, 50))]  # fmt: skip
+    parts += [
+        pv.Cylinder(center=(10 + x, 20 + y, -30), direction=(0, 0, 1), radius=20, height=60)
+        for x in (-80, 0, 80)
+        for y in (-30, 30)
+    ]
+    cad = pv.merge([p.triangulate() for p in parts])
+    gripper = import_gripper(cad)
+    assert gripper.tcp_z == pytest.approx(FLANGE_Z + 0.140)
+    assert gripper.mesh.points[:, 2].min() == pytest.approx(FLANGE_Z)
+    assert np.allclose(sorted(map(tuple, gripper.cups)),
+                       sorted((x, y) for x in (-0.08, 0, 0.08) for y in (-0.03, 0.03)),
+                       atol=1e-3)  # fmt: skip
+    assert gripper.cup_radius == pytest.approx(0.02, abs=1e-3)
+    camera = gripper.mesh.points[gripper.mesh.points[:, 1] < -0.05]
+    assert camera[:, 0].mean() == pytest.approx(0.0, abs=0.002)  # turned over about y
+    turned = import_gripper(cad, turn_deg=90)
+    assert turned.mesh.points[:, 0].max() > 0.1  # the camera arm now along +x
+    side = import_gripper(cad.rotate_x(-90, inplace=False), up="+y")  # the cups along -y
+    assert side.tcp_z == pytest.approx(FLANGE_Z + 0.140) and len(side.cups) == 6
 
 
 def test_the_vacuum_tube_coils_round_the_wrist_as_it_turns():

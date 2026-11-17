@@ -4,31 +4,32 @@ from the camera's pose on the arm, as frames the real vision code reads, and the
 shows the whole cell in a 3D window (and can record it).
 """
 
+import functools
 import math
 import time
+from pathlib import Path
 from typing import ClassVar
 
 import cv2
 import numpy as np
 import pyvista as pv
-from rfp_arm.poses import from_parts
 from rfp_vision.camera import Frame
 from rfp_vision.detector import Detection
 from rfp_vision.geometry import Intrinsics
 
+from rfp_sim.assets import GripperModel, load_gripper
+from rfp_sim.settings import gripper_path
 from rfp_sim.world import World
 
 TEXTURE_PX_PER_MM = 1.5
 HOLE_PITCH_MM = 25.0  # the table is an optical breadboard: M6 holes on a 25 mm grid
 HOLE_RADIUS_MM = 3.0
 LINK_COLOR = (0.92, 0.92, 0.94)
-CUP_COLOR = (0.12, 0.12, 0.12)
-METAL_COLOR = (0.7, 0.72, 0.75)
-CAMERA_COLOR = (0.2, 0.2, 0.22)
+GRIPPER_COLOR = (0.62, 0.63, 0.66)
 TUBE_COLOR = (0.18, 0.4, 0.8)
 OPENING_PX = 15  # at 1280 px wide (about 9 mm at the table): barbels go, fins stay
-FLANGE = np.array([0.0, 0.0, 0.10])  # the FR5's flange face in its last link's frame
-PLATE_THICKNESS = 0.016
+CAMERA_BODY_M = 0.06  # the camera's own view leaves out the gripper this close behind the lens
+TUBE_START_Z = 0.17  # tip link z where the vacuum tube leaves the gripper's plate
 TABLE_THICKNESS = 0.04
 FLOOR_DROP = 0.75  # m from the table top to the floor
 TUBE_RADIUS = 0.058  # m from the wrist's axis where the vacuum tube winds round it
@@ -56,18 +57,17 @@ def _tube(a, b, radius: float) -> pv.PolyData:
     return pv.Cylinder(center=(a + b) / 2, direction=b - a, radius=radius, height=length)
 
 
-def bellows_cup(radius: float, length: float) -> pv.PolyData:
-    """A 1.5-fold bellows suction cup along +z, from its fitting (z = 0) to its face."""
-    up = (0.0, 0.0, 1.0)
-    neck = pv.Cylinder(center=(0, 0, 0.15 * length), direction=up, radius=0.45 * radius,
-                       height=0.3 * length)  # fmt: skip
-    fold = pv.ParametricTorus(ringradius=0.7 * radius, crosssectionradius=0.3 * radius)
-    fold = fold.translate((0, 0, 0.42 * length), inplace=False)
-    body = pv.Cylinder(center=(0, 0, 0.6 * length), direction=up, radius=0.62 * radius,
-                       height=0.35 * length)  # fmt: skip
-    lip = pv.Cone(center=(0, 0, 0.88 * length), direction=(0, 0, -1), height=0.24 * length,
-                  radius=radius, resolution=24, capping=True)  # fmt: skip
-    return pv.merge([neck, fold.triangulate(), body, lip])
+@functools.lru_cache(maxsize=4)
+def cached_gripper(path: Path) -> GripperModel:
+    return load_gripper(path)
+
+
+def without_camera_body(mesh: pv.PolyData, t_tip_camera: np.ndarray) -> pv.PolyData:
+    """The gripper less what lies around and behind the lens (the camera's own housing),
+    which a camera placed inside it would see instead of the table."""
+    local = (mesh.cell_centers().points - t_tip_camera[:3, 3]) @ t_tip_camera[:3, :3]
+    around = (np.linalg.norm(local, axis=1) < CAMERA_BODY_M) & (local[:, 2] < 0.01)
+    return mesh.extract_cells(~around).extract_surface(algorithm="dataset_surface")
 
 
 class Scene:
@@ -108,7 +108,6 @@ class Scene:
         ]
         self.links = self._add_arm(robot_meshes)
         self.gripper = self._add_gripper()
-        self.gripper[-1].visibility = camera_body
         self.tube = None
         if tube:
             self.tube = pv.PolyData()
@@ -148,46 +147,21 @@ class Scene:
             actors.append(self.plotter.add_mesh(mesh, color=LINK_COLOR, smooth_shading=True))
         return actors
 
-    def _add_gripper(self) -> list:
-        """Flange adapter, stem, plate, six bellows cups and the camera on its bracket, in
-        the tip link's frame (the FR5's flange face is 100 mm along its z)."""
-        cell, s = self.world.workcell, self.world.settings
-        tcp = cell.tcp
-        axis = tcp[:3, 2]
-        plate_center = tcp[:3, 3] - axis * (s.cup_length + PLATE_THICKNESS / 2)
-        cup = bellows_cup(s.cup_radius, s.cup_length)
-        cups = [
-            cup.transform(tcp @ from_parts(np.eye(3), (x, y, -s.cup_length)), inplace=False)
-            for x in s.cup_rows
-            for y in s.cup_columns
-        ]
-        span_x = max(s.cup_rows) - min(s.cup_rows) + 2 * s.cup_radius + 0.02
-        span_y = max(s.cup_columns) - min(s.cup_columns) + 2 * s.cup_radius + 0.02
-        half = PLATE_THICKNESS / 2
-        plate = pv.Box((-span_x / 2, span_x / 2, -span_y / 2, span_y / 2, -half, half))
-        plate = plate.transform(from_parts(tcp[:3, :3], plate_center), inplace=False)
-        adapter = _tube(FLANGE, FLANGE + (0, 0, 0.012), 0.0315)  # ISO 9409-1-50 size disk
-        stem = _tube(FLANGE + (0, 0, 0.012), plate_center - axis * half, 0.022)
-        camera = pv.Box((-0.021, 0.021, -0.021, 0.021, -0.0115, 0.0115))  # the D405: 42x42x23
-        camera = camera.transform(cell.camera, inplace=False)
-        on_stem = np.array([0.0, 0.0, cell.camera[2, 3]])
-        bracket = _tube(cell.camera[:3, 3], on_stem, 0.008)
-        add = self.plotter.add_mesh
-        return [
-            add(pv.merge(cups), color=CUP_COLOR, smooth_shading=True),
-            add(plate.merge(stem).merge(bracket).merge(adapter), color=METAL_COLOR),
-            add(camera, color=CAMERA_COLOR),
-        ]
+    def _add_gripper(self):
+        """The gripper's CAD model (cups, plate, camera, bracket) in the tip link frame."""
+        mesh = cached_gripper(gripper_path(self.world.settings)).mesh
+        if not self.camera_body:
+            mesh = without_camera_body(mesh, self.world.workcell.camera)
+        return self.plotter.add_mesh(mesh, color=GRIPPER_COLOR, smooth_shading=True, specular=0.2)
 
     def tube_centerline(self, poses: list[np.ndarray]) -> np.ndarray:
         """The vacuum tube: from the plate it winds round the wrist by as much as the wrist
         (j6) has turned from where the tube hangs free, then runs to the forearm."""
-        world, cell, s = self.world, self.world.workcell, self.world.settings
+        world = self.world
         tip, forearm = poses[-1], poses[3]
-        plate_top = cell.tcp[:3, :3] @ (0, 0, -(s.cup_length + PLATE_THICKNESS)) + cell.tcp[:3, 3]
         twist = float(world.joints[-1]) - world.relaxed_wrist
         f = np.linspace(0.0, 1.0, 24)
-        z = plate_top[2] + (WRIST_Z - plate_top[2]) * f
+        z = TUBE_START_Z + (WRIST_Z - TUBE_START_Z) * f
         angle = math.pi / 2 - twist * f  # leaves the plate on the side away from the camera
         around = np.column_stack([TUBE_RADIUS * np.cos(angle), TUBE_RADIUS * np.sin(angle), z])
         helix = around @ tip[:3, :3].T + tip[:3, 3]
@@ -202,18 +176,15 @@ class Scene:
         poses = self.world.chain.link_poses(self.world.joints)
         for actor, pose in zip(self.links, poses):
             actor.user_matrix = pose
-        tip = poses[-1]
-        for actor in self.gripper:
-            actor.user_matrix = tip
+        self.gripper.user_matrix = poses[-1]
         if self.tube is not None:
             line = pv.lines_from_points(self.tube_centerline(poses))
             self.tube.copy_from(line.tube(radius=0.006, n_sides=10))
 
     def set_visible(self, table: bool, arm: bool, fish: list[bool]) -> None:
         self.table.visibility = table
-        for actor in self.links + self.gripper[:-1]:
+        for actor in [*self.links, self.gripper]:
             actor.visibility = arm
-        self.gripper[-1].visibility = arm and self.camera_body
         for actor, shown in zip(self.fish, fish):
             actor.visibility = shown
 

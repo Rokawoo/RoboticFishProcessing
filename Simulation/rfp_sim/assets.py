@@ -5,6 +5,7 @@ or downloaded once and kept in Simulation/models/fr5/), else plain shapes.
 """
 
 import hashlib
+import math
 import os
 import urllib.error
 import urllib.request
@@ -120,6 +121,84 @@ def _center_of_mass(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     if abs(total) < 1e-9:
         return vertices.mean(axis=0)
     return ((a + b + c) / 4.0 * volumes[:, None]).sum(axis=0) / total
+
+
+@dataclass
+class GripperModel:
+    """The gripper (cups, plate, camera and its bracket) in the FR5's tip link frame: z out
+    of the flange toward the cups, the flange face at z = FLANGE_Z."""
+
+    mesh: pv.PolyData  # m
+    tcp_z: float  # m: the plane of the cup faces (the cups point along +z)
+    cups: np.ndarray  # (n, 2) m: cup centers in x, y
+    cup_radius: float  # m
+
+
+FLANGE_Z = 0.10  # the FR5's flange face in its last link's frame
+GRIPPER_TRIANGLES = 100_000  # an imported gripper is cut down to this many (file size, speed)
+
+
+def import_gripper(
+    mesh: pv.PolyData,
+    units: str = "millimeter",
+    up: str = "+z",
+    turn_deg: float = 0.0,
+    triangles: int = GRIPPER_TRIANGLES,
+) -> GripperModel:
+    """
+    A gripper from its CAD file into the tip link frame. `up`: the CAD axis from the cups
+    toward the flange. The gripper's end farthest along it is the face bolted to the
+    flange; its middle goes on the flange's axis. `turn_deg` turns the gripper about that
+    axis, as bolting it on another way round would.
+    """
+    mesh = mesh.triangulate().scale(UNITS[units], inplace=False)
+    toward_arm = np.array(AXES[up], float)
+    if toward_arm[2] > 0.5:  # cups down in the CAD file: turn it over about y
+        rotation = np.diag([-1.0, 1.0, -1.0])
+    else:  # the shortest turn taking `up` to -z
+        axis = np.cross(toward_arm, (0.0, 0.0, -1.0))
+        angle = math.acos(float(np.clip(-toward_arm[2], -1.0, 1.0)))
+        rotation = _axis_angle(axis / np.linalg.norm(axis), angle)
+    turn = math.radians(turn_deg)
+    rotation = _axis_angle(np.array([0.0, 0.0, 1.0]), turn) @ rotation
+    points = np.asarray(mesh.points) @ rotation.T
+    face = points[points[:, 2] < points[:, 2].min() + 0.0005]
+    middle = (face[:, :2].min(axis=0) + face[:, :2].max(axis=0)) / 2
+    mesh.points = points - [middle[0], middle[1], points[:, 2].min() - FLANGE_Z]
+    if mesh.n_cells > triangles:
+        mesh = mesh.decimate(1.0 - triangles / mesh.n_cells)
+    return measure_gripper(mesh)
+
+
+def _axis_angle(axis: np.ndarray, angle: float) -> np.ndarray:
+    k = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    return np.eye(3) + math.sin(angle) * k + (1 - math.cos(angle)) * k @ k
+
+
+def measure_gripper(mesh: pv.PolyData) -> GripperModel:
+    """The cups of a gripper mesh in the tip link frame: each cup lip's ring in the plane
+    farthest along z."""
+    tcp_z = float(mesh.points[:, 2].max())
+    lips = mesh.clip("z", origin=(0, 0, tcp_z - 0.001), invert=False)
+    lips = lips.extract_surface(algorithm="dataset_surface").connectivity("all")
+    region = lips.point_data["RegionId"]
+    cups, radii = [], []
+    for i in np.unique(region):
+        ring = np.asarray(lips.points[region == i])[:, :2]
+        center = (ring.min(axis=0) + ring.max(axis=0)) / 2
+        cups.append(center)
+        radii.append(float(np.linalg.norm(ring - center, axis=1).max()))
+    order = np.lexsort(np.array(cups).T[::-1]) if cups else []
+    return GripperModel(mesh, tcp_z, np.array(cups)[order], float(np.median(radii or [0.0])))
+
+
+def load_gripper(path: Path) -> GripperModel:
+    """A gripper written by import_gripper.py: meters, in the tip link frame."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"gripper model not found: {path} (make it with Simulation/import_gripper.py)"
+        )
+    return measure_gripper(pv.read(path).triangulate())
 
 
 def stand_in_fish(length: float) -> FishModel:

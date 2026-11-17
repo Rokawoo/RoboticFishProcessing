@@ -337,7 +337,7 @@ def test_arm_faults_stop_the_run_until_the_operator_resets():
 def test_unreachable_fish_are_skipped_and_the_others_picked():
     rig = Rig(A, B)
     rig.arm.fail = lambda kind, target: (
-        "no IK solution" if kind == "ptp" and abs(target[0, 3] - A[0]) < 0.01 else None
+        "no IK solution" if kind == "ptp" and np.hypot(*(target[:2, 3] - A)) < 0.01 else None
     )
     rig.table.before_observation[14] = lambda: rig.table.fish.clear()  # then end the run
     report = rig.run()

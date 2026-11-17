@@ -241,7 +241,7 @@ def test_each_failed_check_gives_its_code_and_clears_the_poses():
 
     def blob(frame, detections):
         angles = np.linspace(0, 2 * math.pi, 60, endpoint=False)
-        ellipse = [640 + 300 * np.cos(angles), 360 + 100 * np.sin(angles)]
+        ellipse = [640 + 330 * np.cos(angles), 360 + 140 * np.sin(angles)]  # cups fit on it
         detections[0].polygon = np.column_stack(ellipse)
 
     assert code(middle, change=blob) == "wrong_heading"
@@ -254,6 +254,13 @@ def test_each_failed_check_gives_its_code_and_clears_the_poses():
     assert code(middle, change=sliver, require_heading=False, check_size=False) == (
         "grasp_point_off_body"
     )
+
+    def lumpy(frame, detections):  # 3 cm steps every ~6 cm: no spot where all six cups seal
+        rows, columns = np.indices(frame.depth.shape)
+        on_fish = frame.depth < frame.depth.max() - 0.01
+        frame.depth[on_fish] -= 0.03 * (((rows // 90) + (columns // 90)) % 2)[on_fish]
+
+    assert code(middle, change=lumpy) == "grasp_point_off_body"
     assert code(middle, catfish=Catfish(length_range_m=(0.2, 0.5))) == "geometry_out_of_range"
     assert code(middle, fish_type="stand_in") == "geometry_out_of_range"  # printed ones are bigger
     # VS-68: of several failed checks, the first in the table's order is the code
@@ -272,7 +279,8 @@ def test_the_cups_go_only_where_all_six_can_seal():
 
     assert reach(0.10 + 0 * xy[:, 0])  # flat
     assert reach(0.10 + 0.2 * xy[:, 0])  # sloping: the cups lean onto it
-    bump = np.hypot(xy[:, 0] - 0.05, xy[:, 1] - 0.0225) < 0.02  # a fin under one cup
+    long, wide = (v / 2 - 0.02 for v in VisionSettings().cup_footprint_m)  # a corner cup
+    bump = np.hypot(xy[:, 0] - long, xy[:, 1] - wide) < 0.02  # a fin under it
     assert not reach(0.10 + 0.02 * bump)
     assert not locator()._cups_reach(np.column_stack([xy, 0.1 + 0 * xy[:, 0]])[:100], at, axis)
 

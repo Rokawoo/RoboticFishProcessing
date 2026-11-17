@@ -66,9 +66,9 @@ class FishType:
 @dataclass
 class Catfish(FishType):
     """Real catfish: Table SY-1 +- 10%. A catfish balances ~0.11 of its length ahead of its
-    middle, but the 140 mm cup array must still seal behind the pectoral fins: on the catfish
-    model all six cups do up to 0.062 of the length ahead at 0.55 m, 0.094 at 0.79 m. Tune on
-    real fish: one that tips head-down when lifted wants more."""
+    middle, but the cup array must still seal behind the pectoral fins: on the catfish
+    model all six (a 140 mm array then) did up to 0.062 of the length ahead at 0.55 m, 0.094
+    at 0.79 m. Tune on real fish: one that tips head-down when lifted wants more."""
 
     balance_ahead_share: float = 0.065
 
@@ -125,7 +125,7 @@ class VisionSettings:
     fish_type: str = "stand_in"  # the fish being picked (FISH_TYPES)
     stand_in: StandIn = field(default_factory=StandIn)
     catfish: Catfish = field(default_factory=Catfish)
-    cup_footprint_m: tuple[float, float] = (0.14, 0.085)  # along and across the body (HW-31)
+    cup_footprint_m: tuple[float, float] = (0.20, 0.10)  # along and across the body
     cup_diameter_m: float = 0.04  # six of them, 3 x 2, filling the footprint
     cup_stroke_m: float = 0.012  # unevenness under the cups the bellows take up and still seal
     overlap_margin_px: float = 6.0  # outlines this close touch (Table VS-1)

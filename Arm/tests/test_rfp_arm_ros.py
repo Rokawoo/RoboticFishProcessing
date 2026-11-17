@@ -118,7 +118,8 @@ def test_connect_reads_the_model_and_limits_and_loads_the_scene(ros):
     tool = robot.scene.robot_state.attached_collision_objects[0]
     assert tool.link_name == "wrist3_link" and tool.object.header.frame_id == "wrist3_link"
     assert tool.touch_links == ["wrist2_link", "wrist3_link"] and robot.scene.robot_state.is_diff
-    assert tool.object.primitives[0].dimensions == pytest.approx([0.16, 0.19, 0.14])
+    body = CELL.tool_box
+    assert tool.object.primitives[0].dimensions == pytest.approx(body.size)
 
 
 def test_connect_says_what_is_missing(ros):
@@ -169,7 +170,7 @@ def test_joint_and_point_to_point_moves_are_planned_checked_and_run(ros):
     goal = robot.requests[-1].goal_constraints[0]
     assert goal.position_constraints[0].link_name == "wrist3_link"  # the tip link, not the TCP
     tip = goal.position_constraints[0].constraint_region.primitive_poses[0].position
-    assert tip.z == pytest.approx(0.20 + 0.22)  # the TCP is 220 mm past the tip link
+    assert tip.z == pytest.approx(0.20 + CELL.tcp[2, 3])  # the TCP is past the tip link
     arm._chain = model
     arm.move_ptp(target)
 

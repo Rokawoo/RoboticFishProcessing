@@ -63,7 +63,7 @@ Subsystems talk only through the interfaces of Requirement Spec Section 2.7. Roo
 |---|---|
 | Robot | FAIRINO FR5 6-axis cobot (5 kg payload, 922 mm reach) |
 | Camera | Intel RealSense D405 RGB-D on the tool flange (eye-in-hand) |
-| Gripper | Six bellows suction cups (3 × 2) on one vacuum line, switched by a solenoid valve on an ESP32 board |
+| Gripper | Six 40 mm bellows suction cups (3 × 2, 160 × 60 mm between centers) on one vacuum line, switched by a solenoid valve on an ESP32 board |
 | Compute | PC with an NVIDIA GPU (24 GB or more), Gigabit Ethernet to the FR5 |
 | Platform | Ubuntu 22.04, ROS 2 Humble, Python 3.10 |
 | Motion | MoveIt 2 with the Pilz planner, [frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2) |

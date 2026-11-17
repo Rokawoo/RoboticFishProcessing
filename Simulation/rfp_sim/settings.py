@@ -30,10 +30,12 @@ class SimSettings:
     download_robot_meshes: bool = True  # fetch FAIRINO's FR5 meshes once (models/fr5/)
     speed: float = 1.0  # simulated time per real second; 0: as fast as it renders
     step_s: float = 0.05  # simulated seconds between rendered arm poses
-    cup_rows: tuple[float, ...] = (-0.05, 0.0, 0.05)  # cup centers along the tool's x (m)
-    cup_columns: tuple[float, ...] = (-0.0225, 0.0225)  # and along its y
-    cup_radius: float = 0.02
-    cup_length: float = 0.04  # bellows, from the plate to the cup faces
+    # The gripper as drawn: cups, plate, camera and bracket in the tip link frame (m), from
+    # its CAD model by import_gripper.py, relative to Simulation/
+    gripper_model: str = "models/gripper.stl"
+    # Its cup centers along the tool's x and y (m), for the seal: as import_gripper.py measured
+    cup_rows: tuple[float, ...] = (-0.08, 0.0, 0.08)
+    cup_columns: tuple[float, ...] = (-0.03, 0.03)
     cup_stroke: float = 0.012  # how far a cup compresses
     cup_stiffness: float = 500.0  # N/m per cup
     seal_cups: int = 5  # cups that must touch for the vacuum to hold the fish
@@ -75,4 +77,9 @@ def load_settings(path: Path | None = None, panel: Path | None = None) -> SimSet
 
 def model_path(settings: SimSettings) -> Path:
     path = Path(settings.fish_model)
+    return path if path.is_absolute() else SIM_DIR / path
+
+
+def gripper_path(settings: SimSettings) -> Path:
+    path = Path(settings.gripper_model)
     return path if path.is_absolute() else SIM_DIR / path

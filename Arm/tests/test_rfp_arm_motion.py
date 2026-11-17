@@ -243,7 +243,7 @@ def test_tool_camera_and_held_fish_must_stay_in_the_zones():
     # beside the table the floor doesn't apply, and a path may start there
     assert problem(-0.6, 0.0, -0.2, work_zone=False) == ""
     assert "exclusion" in problem(1.05, 0.0, 0.3, work_zone=False)
-    low_camera = make_workcell(lambda d: d["camera"]["mount"].update(xyz=[0.0, -0.09, 0.25]))
+    low_camera = make_workcell(lambda d: d["camera"]["mount"].update(xyz=[0.0, -0.09, 0.27]))
     assert "camera would be" in low_camera.pose_problem(poses.tool_down((0.4, 0.0, 0.02), 0.0))
 
 
@@ -735,11 +735,9 @@ def test_simulated_arm_applies_the_limits():
     with pytest.raises(ArmError, match="speed limit"):
         arm.move_lin(poses.tool_down((0.4, 0, 0.3), 0.0), 0.5, 0.5)
     with pytest.raises(ArmError, match="exclusion zone"):  # a straight line through a zone
-        blocked = make_workcell(
-            lambda d: d["zones"]["exclusion"].append(
-                {"name": "post", "x": [0.38, 0.42], "y": [0.10, 0.14], "z": [0.0, 1.0]}
-            )
-        )
+        x, y = (start[:2, 3] + (0.40, 0.40)) / 2  # half way there
+        post = {"name": "post", "x": [x - 0.02, x + 0.02], "y": [y - 0.02, y + 0.02]}
+        blocked = make_workcell(lambda d: d["zones"]["exclusion"].append({**post, "z": [0, 1]}))
         SimArm(blocked).move_lin(poses.tool_down((0.40, 0.40, 0.36), 0.0), 0.1, 0.5)
     assert np.allclose(arm.tcp_pose(), start) and arm.moves == []
     with pytest.raises(MotionAborted, match="enough"):
