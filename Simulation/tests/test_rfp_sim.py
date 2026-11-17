@@ -534,3 +534,43 @@ def test_the_vacuum_tube_coils_round_the_wrist_as_it_turns():
         assert "tube twisted +150" in viewer.text.GetText(2)  # 2: upper left
     finally:
         viewer.close()
+
+
+# ---------------------------------------------------------------------------
+# The layout editor (pick_place.py --mode setup)
+# ---------------------------------------------------------------------------
+def test_the_layout_editor_turns_moves_checks_and_saves(tmp_path):
+    import shutil
+
+    from rfp_arm.layout import load_layout_data
+    from rfp_arm.workcell import DEFAULT_FILE, PANEL_FILE
+    from rfp_sim.layout_editor import LayoutEditor
+
+    workcell, panel = tmp_path / "workcell.yaml", tmp_path / "control_panel.yaml"
+    shutil.copy(DEFAULT_FILE, workcell)
+    shutil.copy(PANEL_FILE, panel)
+    said = []
+    editor = LayoutEditor(workcell, panel, off_screen=True, log=said.append)
+    try:
+        assert not [f for f in editor.findings if f.error]  # the shipped layout works
+        slot = list(editor.layout.slots[1])
+        editor._moved_slot(1, (0.38, 0.62, 0.0))  # dragged out of reach when carrying
+        assert any(f.error and f.text.startswith("slot 2") for f in editor.findings)
+        assert editor.save() == [] and "click Save again" in editor.message  # asks first
+        editor._moved_slot(1, (*slot, 0.0))
+        editor.add_slot()
+        assert len(editor.layout.slots) == 3
+        editor.remove_slot()
+        first = list(editor.layout.slots[0])
+        editor.turn(1)  # the table a quarter turn round the arm
+        assert editor.layout.slots[0] == pytest.approx([-first[1], first[0]])
+        written = editor.save()
+        assert "placement.slots in workcell.yaml" in written and "Saved" in said[-2]
+        _, saved = load_layout_data(workcell, panel)
+        assert saved.heading_deg == pytest.approx(90.0)  # in the panel, which overrides it
+        assert saved.slots == editor.layout.slots
+        assert not any(f.error for f in editor.findings)
+        editor.undo()
+        assert editor.layout.slots == saved.slots  # undo goes back to what was saved
+    finally:
+        editor.plotter.close()

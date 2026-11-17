@@ -20,7 +20,8 @@ ControlSys sees only `interfaces.py`: an `Arm`, a `Gripper` and the error codes 
 | Module | What it does | ROS |
 |---|---|---|
 | `workcell.py` | Loads and checks `workcell.yaml`; says why a tool pose isn't allowed: work zone, exclusion zones, table clearance, ends of a held fish (SF-10) | no |
-| `grasp.py` | `plan_grasp`: the poses of Table AS-1 for a fish and a slot, with the cups the way round that turns j6 least (vacuum tube). `GraspSequence`: runs them: approach along the fish's surface normal (up to 15°), the last centimeters felt by joint torque, hold confirmed by the camera; stops at a failed step with its error code (AS-20, AS-70) | no |
+| `layout.py` | The cell's layout (zones, slots, heading, observation poses): turned about the arm, checked against what the arm reaches and the camera sees (`check_layout`, printed by every mode), saved line by line (`pick_place.py --mode setup` edits it in 3D) | no |
+| `grasp.py` | `plan_grasp`: the poses of Table AS-1 for a fish and a slot, the way round that keeps a held fish's turn within 180°, the empty gripper within 90° of the wrist's middle where the fish allows (the camera away from the arm) and every wrist move within 180° (vacuum tube). `GraspSequence`: runs them: approach along the fish's surface normal (up to 15°), the last centimeters felt by joint torque, hold confirmed by the camera; stops at a failed step with its error code (AS-20, AS-70) | no |
 | `gripper.py` | `ValveGripper`: the ESP32 valve board (`driver: serial` or `http`), on/off only. `SuctionGripper`: control box I/O with a vacuum switch, the spec's variant (`driver: controller`, Table AS-4). Simulated and dry-run grippers | no |
 | `valve.py` | The valve board over USB (`SerialValve`) or Wi-Fi (`HttpValve`) | no |
 | `contact.py` | Force along the tool axis from joint torques (no force sensor); tune with `pick_place.py --mode feel` | no |

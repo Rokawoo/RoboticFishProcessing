@@ -7,6 +7,7 @@ is clear.
 
 Usage:
     python pick_place.py                                  # pick the mode (model, camera) in popups
+    python pick_place.py --mode setup                     # lay out the cell in a 3D window
     python pick_place.py --mode observe                   # camera, detections, fish positions
     python pick_place.py --mode offline --device clip.mp4 --any-size --cycles 2
     python pick_place.py --mode sim3d                     # 3D virtual cell, virtual camera
@@ -17,6 +18,10 @@ Usage:
     python pick_place.py --mode run                       # THE ARM MOVES, with vacuum
 
 Modes, in the order to bring a cell up (SF-43):
+    setup     Nothing moves. The cell's layout in a 3D window around the arm: drag the table,
+              pick area, placement zone, slots, keep-out zones and observation poses, turn it
+              all about the arm; every change is checked against what the arm reaches and the
+              camera sees. Saves the workcell file (and the control panel where it overrides it).
     observe   Nothing moves. Shows what the camera and the model see and where each fish is
               in the arm's frame (with MoveIt running: from the arm's real pose).
     offline   The whole cycle with a simulated arm and gripper, no ROS: for recorded videos.
@@ -73,6 +78,7 @@ from rfp_arm.fairino import FairinoIO
 from rfp_arm.gripper import NoGripper, SimGripper, make_gripper
 from rfp_arm.interfaces import ArmError, GripperState
 from rfp_arm.sim import SimArm
+from rfp_arm.workcell import DEFAULT_FILE as WORKCELL_FILE
 from rfp_arm.workcell import Workcell, WorkcellError, describe, load_workcell
 from rfp_vision.camera import CameraError, list_realsense, open_camera
 from rfp_vision.detector import MODELS_DIR, FishDetector, find_weights, list_runs
@@ -90,6 +96,7 @@ from rfp_controlsys.settings import PANEL_FILE, ControlSettings, run_defaults
 from rfp_controlsys.settings import load_settings as load_control_settings
 
 MODES = {
+    "setup": "lay out the cell in a 3D window (zones, slots, views), checked as you go",
     "observe": "camera, detections and fish positions; nothing moves",
     "offline": "the whole cycle with a simulated arm and gripper, no ROS (recorded videos)",
     "sim3d": "3D simulation: virtual arm, gripper, camera and fish, in a 3D window; no ROS",
@@ -450,6 +457,9 @@ def main() -> None:
         parser.error(f"control panel: unknown mode '{run['mode']}'")
     mode = args.mode or run["mode"] or pick_mode()
     model = args.model or (Path(run["model"]) if run["model"] else None)
+    if mode == "setup":
+        setup(args)
+        return
     if mode == "sim3d":
         sim3d(args, run, model, cycles)
         return
@@ -470,6 +480,8 @@ def main() -> None:
     print("=" * 60)
     print(f"Workcell: {workcell.source}" + ("" if workcell.verified else "  (NOT verified)"))
     for line in describe(workcell):
+        print(f"          {line}")
+    for line in layout_report(workcell, vision_settings):  # fix with --mode setup
         print(f"          {line}")
     print(f"Model:    {weights}")
     vision = build_vision(device, weights, vision_settings, workcell)
@@ -526,6 +538,37 @@ def main() -> None:
             link.close()
 
 
+def setup(args) -> None:
+    """The layout editor (Simulation/rfp_sim/layout_editor.py). Nothing moves."""
+    try:
+        from rfp_sim.layout_editor import edit_layout
+    except ImportError as e:
+        sys.exit(f"❌ The layout editor needs pyvista ({e}): pip install pyvista")
+    print("=" * 60)
+    print(f"PICK AND PLACE: setup ({MODES['setup']})")
+    print("=" * 60)
+    workcell_file = args.workcell or WORKCELL_FILE
+    print(f"Workcell: {workcell_file}; control panel: {args.panel}")
+    print("Drag the boxes' handles and the balls; the buttons turn the layout, the placement")
+    print("heading, add or remove slots, and save. Close the window when done.")
+    try:
+        edit_layout(workcell_file, args.panel)
+    except (WorkcellError, FileNotFoundError, ValueError, KeyError) as e:
+        sys.exit(f"❌ {e}")
+
+
+def layout_report(workcell: Workcell, vision_settings: VisionSettings) -> list[str]:
+    """What keeps the layout from working, one line each (rfp_arm.layout.check_layout)."""
+    from rfp_arm.layout import CameraView, FishSize, check_layout
+
+    size = vision_settings.fish
+    longest = size.length_range_m[1]
+    fish = FishSize(longest, size.width_range_m[1], size.thickness_range_m[1],
+                    size.balance_ahead_share * longest)  # fmt: skip
+    view = CameraView(vision_settings.hfov_deg, vision_settings.width, vision_settings.height)
+    return [("❌ " if f.error else "⚠️  ") + f.text for f in check_layout(workcell, fish, view)]
+
+
 def sim3d(args, run: dict, model: Path | None, cycles: int | None) -> None:
     """The cycle in the 3D virtual cell (Simulation/). Nothing real moves."""
     try:
@@ -546,6 +589,8 @@ def sim3d(args, run: dict, model: Path | None, cycles: int | None) -> None:
     print("=" * 60)
     print(f"PICK AND PLACE: sim3d ({MODES['sim3d']})")
     print("=" * 60)
+    for line in layout_report(workcell, vision_settings):  # fix with --mode setup
+        print(f"Layout:   {line}")
     window = run["window"] and not args.no_window
     session = build_session(workcell, sim_settings, show=window, video=args.video)
     console = Console(window=window, step=args.step or run["step"])

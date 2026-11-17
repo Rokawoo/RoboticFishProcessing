@@ -63,7 +63,7 @@ Subsystems talk only through the interfaces of Requirement Spec Section 2.7. Roo
 |---|---|
 | Robot | FAIRINO FR5 6-axis cobot (5 kg payload, 922 mm reach) |
 | Camera | Intel RealSense D405 RGB-D on the tool flange (eye-in-hand) |
-| Gripper | Six 40 mm bellows suction cups (3 × 2, 160 × 60 mm between centers) on one vacuum line, switched by a solenoid valve on an ESP32 board |
+| Gripper | Six 40 mm bellows suction cups (3 × 2, 160 × 60 mm between centers; the bellows compress from 40 mm to about 10) on one vacuum line, switched by a solenoid valve on an ESP32 board |
 | Compute | PC with an NVIDIA GPU (24 GB or more), Gigabit Ethernet to the FR5 |
 | Platform | Ubuntu 22.04, ROS 2 Humble, Python 3.10 |
 | Motion | MoveIt 2 with the Pilz planner, [frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2) |
@@ -110,6 +110,19 @@ Details: [Simulation/README.md](Simulation/README.md).
 
 [Arm/configs/workcell.yaml](Arm/configs/workcell.yaml) holds the cell's geometry and limits, in meters and degrees; the `workcell` section of [control_panel.yaml](control_panel.yaml) overrides any of it. It ships with placeholder values and `verified: false`: the real arm won't move until the cell is measured and `verified: true`.
 
+### Lay it out in 3D
+
+```bash
+python main.py --mode setup
+```
+
+The arm and gripper with the table (gray), pick area (green), placement zone (blue) with its slots and the fish placed there, keep-out zones (red), the observation poses (orange balls) with what each camera view covers, and two rings: how far the cups reach at a fish's top, and when carrying a fish (0.5 m up for the stand-ins). Nothing moves.
+
+- **Drag** a box's face handles to size it, its middle handle to move it; drag a ball to move a slot or an observation pose.
+- **Buttons:** turn the whole layout 90° about the arm (the table on another side), turn the placement heading, add or remove a slot, undo, save.
+- **Checked on every change:** red is what can't work (out of the arm's reach, a placed fish off the table), yellow what may not (a fish that can't be lifted there, part of the pick area no view sees, slots closer than a fish is wide). Save with red left asks for a second click.
+- **Save** changes only the layout's lines (comments stay; a `.bak` copy of each file is kept), in control_panel.yaml where it overrides the workcell file. A `verified` cell becomes unverified: check the new zones on the real cell. Every mode prints the same checks when it starts.
+
 ### Which way is which
 
 Everything is in the **arm's base frame**: origin in the middle of the arm's base, z up. The controller uses the same frame:
@@ -125,11 +138,11 @@ The placeholder layout, from above. `o-->` is a slot: where a placed fish's midd
 
 ```
  y (m)
-  0.72        |                   +-----------------------+
-              |                   | placement zone (blue) |
-  0.60        |                   |         o--> slot 2   |
-  0.40        |                   |         o--> slot 1   |
-  0.30        |                   +-----------------------+
+  0.72        |           +-------------------------------+
+              |           | placement zone (blue)         |
+  0.57        |           |   o--> slot 2                 |
+  0.37        |           |               o--> slot 1     |
+  0.30        |           +-------------------------------+
   0.15        |               +-------------------------------+
               |               | pick area (green):            |
               |               | fish are expected here        |
@@ -143,14 +156,14 @@ The placeholder layout, from above. `o-->` is a slot: where a placed fish's midd
 |---|---|---|
 | `zones.pick_area` | Where fish are expected: a fish's middle must be inside to be picked | Fish outside are ignored |
 | `zones.placement` | Where fish are placed | Must not overlap the pick area |
-| `placement.slots` | Each placed fish's middle, filled in order | At least 2, inside the placement zone, more than a fish's width apart across the heading (0.2 m for 0.55 m fish). All full: the run pauses until they're cleared |
+| `placement.slots` | Each placed fish's middle, filled in order | At least 2, inside the placement zone, more than a fish's width apart across the heading (0.2 m for 0.55 m fish), within reach when carrying (0.675 m from the arm's axis at 0.5 m up, with the tool up to 126 mm past the slot toward the head: the cups hold a stand-in ahead of its middle). All full: the run pauses until they're cleared |
 | `placement.heading_deg` | Which way placed fish's heads point | |
 | `zones.work` | The table: tool, camera and both ends of a held fish stay inside | Must hold both zones, with half a fish length (about 0.4 m) to spare around the pick area |
 | `table.z` | Height of the table top | 0 if the arm stands on the table |
 | `zones.exclusion` | Boxes the arm never enters (operator, equipment) | |
 | `observation.poses` | Where the camera looks down from, `observation.height` above the table | Together they must see the whole pick area. From 0.45 m the camera sees about 0.85 × 0.50 m, long side along `yaw_deg`. Prefer taught `joints_deg`, with j6 near 0 |
 | `observation.close_height` | Camera height for a closer look at a fish cut off at the image's edge | The image's long side spans about 1.9 × (height − the fish's height): 0.62 holds the 0.79 m stand-in |
-| `tool.wrist_range_deg` | How far j6 may turn (vacuum tube) | j6 = 0 where the tube hangs untwisted |
+| `tool.wrist_range_deg` | How far j6 may turn (vacuum tube) | j6 = 0 where the tube hangs untwisted. Plans turn a held fish at most 180°, keep the empty gripper within 90° of the middle where they can and turn the wrist at most 180° in one move; the arm returns to the middle after each place |
 | `tool.tcp`, `camera.mount` | Cup faces' middle and camera lens, measured on the gripper | Then `camera.calibrated: true` |
 | `gripper` | What switches the vacuum: `driver: serial` and `serial_port` for the valve board | Test: `python Arm/scripts/gripper_bench.py status` |
 
@@ -158,7 +171,7 @@ The placeholder layout, from above. `o-->` is a slot: where a placed fish's midd
 
 **Measuring:** bring the middle of the cups over the point, pointing straight down, and run `pick_place.py --mode check` (MoveIt and the command server running, [below](#run-it-on-the-arm)). It prints the cups' position as `TCP (mm)` and the joints as `joints (deg)` (for `joints_deg`). The pendant shows the flange, not the cups: same x and y when pointing down, different z.
 
-**Checking:** every mode refuses a workcell that doesn't fit together (zone outside the work zone, overlapping zones, slot outside its zone, observation pose past the wrist range) and says why. Without the arm:
+**Checking:** every mode refuses a workcell that doesn't fit together (zone outside the work zone, overlapping zones, slot outside its zone, observation pose past the wrist range) and says why, and prints what `--mode setup` checks (reach, views, fish ends). Without the arm:
 
 ```bash
 python -c "from rfp_arm.workcell import load_workcell, describe; print(*describe(load_workcell()), sep='\n')"

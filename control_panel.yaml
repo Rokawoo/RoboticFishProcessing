@@ -40,7 +40,7 @@ workcell:
   tool:
     wrist_range_deg: [-170, 170]   # how far the last joint may turn (vacuum tube)
   placement:
-    heading_deg: 0              # placed fish point head toward +X
+    heading_deg: 0              # where placed fish point their heads: from +X toward +Y
 
 vision:
   min_confidence: 0.50          # weaker detections are flagged low_confidence

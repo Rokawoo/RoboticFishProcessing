@@ -31,6 +31,7 @@ from rfp_controlsys.settings import ControlSettings, load_settings
 from rfp_vision.camera import Frame
 from rfp_vision.fish_list import Fish, FishList
 from rfp_vision.geometry import Intrinsics, pose_down
+from rfp_vision.settings import VisionSettings
 from rfp_vision.vision_system import Observation
 
 CELL = load_workcell()
@@ -379,6 +380,12 @@ def test_a_closer_look_says_why_a_fish_it_sees_whole_is_not_picked():
     rig.table.__class__ = Closer
     report = rig.run()
     assert "fish 1: geometry_out_of_range" in report.ended  # not the first look's out_of_frame
+
+
+def test_every_mode_starts_by_saying_what_keeps_the_layout_from_working():
+    lines = pick_place.layout_report(CELL, VisionSettings())  # the largest stand-ins
+    assert lines and all(line.startswith(("❌", "⚠️")) for line in lines)
+    assert not [line for line in lines if line.startswith("❌")]  # the placeholder layout works
 
 
 def test_a_full_placement_zone_pauses_the_run():

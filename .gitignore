@@ -300,3 +300,6 @@ Simulation/benchmarks/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Backups the layout editor keeps of the files it saves (pick_place.py --mode setup)
+*.yaml.bak

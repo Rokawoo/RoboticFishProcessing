@@ -82,17 +82,22 @@ class Chain:
         return poses
 
     def ik(
-        self, target: np.ndarray, seed: Sequence[float], iterations: int = 200
+        self,
+        target: np.ndarray,
+        seed: Sequence[float],
+        iterations: int = 200,
+        steps: bool = True,
     ) -> np.ndarray | None:
         """
         Joint positions (joint_names order) putting the tip at `target`, found from `seed` by
-        damped least squares (in steps about the base if one solve can't get there), so the
-        arm keeps the seed's posture. Each angle is taken the nearest way round to the seed.
-        None if it doesn't converge or a joint limit is hit.
+        damped least squares (in steps about the base if one solve can't get there, unless
+        `steps` is False: quicker where the seed already faces the target), so the arm keeps
+        the seed's posture. Each angle is taken the nearest way round to the seed. None if it
+        doesn't converge or a joint limit is hit.
         """
         seed = np.array(seed, float)
         q = self._solve(target, seed, iterations)
-        if q is None:  # a long move: one solve overshoots into another posture, or nowhere
+        if q is None and steps:  # a long move: one solve overshoots into another posture
             q = self._solve_in_steps(target, seed, iterations)
         if q is None:
             return None

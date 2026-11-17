@@ -52,9 +52,9 @@ zones:
   # point, so the table has to be that much larger than the pick area on every side.
   work: {x: [-0.40, 1.30], y: [-0.85, 0.85], height: 1.0}
   pick_area: {x: [0.20, 0.60], y: [-0.35, 0.15]}             # SY-15
-  placement: {x: [0.25, 0.55], y: [0.30, 0.72]}              # AS-51
+  placement: {x: [0.15, 0.55], y: [0.30, 0.72]}              # AS-51
   exclusion:                                                 # SF-12
-    - {name: operator side, x: [1.00, 1.30], y: [-0.85, 0.85], z: [0.0, 1.5]}
+    - {name: operator side, x: [1.00, 1.30], y: [-0.85, 0.85], z: [0.00, 1.50]}
 
 observation:
   height: 0.45      # camera above the table (AS-11)
@@ -75,10 +75,10 @@ observation:
   close_height: 0.62
 
 placement:
-  heading_deg: 0    # placed fish point head toward +X (AS-52)
+  heading_deg: 0    # where placed fish point their heads: degrees from +X toward +Y (AS-52)
   slots:            # slot centers, filled in this order (AS-56)
-    - [0.38, 0.40]
-    - [0.38, 0.60]
+    - [0.36, 0.37]
+    - [0.20, 0.57]
 
 motion:
   tcp_speed_max: 0.25           # m/s, every motion (SF-21, AS-42); plans above it are refused
