@@ -61,6 +61,9 @@ class FishType:
     # The head is heavier: the fish balances this far ahead of its outline's middle, as a
     # share of its measured length. The cups go there when the head end is known (0: middle)
     balance_ahead_share: float = 0.11
+    # Lifted, a rigid fish hangs only its own height below the cups, so it can be carried
+    # low where nothing lies under its way; one that bends (a real fish) droops
+    rigid: bool = False
 
 
 @dataclass
@@ -83,6 +86,7 @@ class StandIn(FishType):
     width_range_m: tuple[float, float] = (0.14, 0.25)  # 0.17-0.23 by how it lies (its fins)
     thickness_range_m: tuple[float, float] = (0.15, 0.21)
     balance_ahead_share: float = 0.126
+    rigid: bool = True  # printed
 
 
 FISH_TYPES = ("stand_in", "catfish")

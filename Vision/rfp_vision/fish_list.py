@@ -76,6 +76,9 @@ class Fish:
     # (x, y, body axis yaw) of the outline on the table in {B}, kept when vision rejects the
     # fish (e.g. cut off at the image's edge), so the arm can take a closer look at it
     seen_at: tuple[float, float, float] | None = None
+    # (n, 2) the outline in {B}: where on the table it lies, also when rejected (what a
+    # carried fish must not pass over)
+    outline: np.ndarray | None = None
 
     @property
     def grasp_point(self) -> np.ndarray | None:
@@ -230,7 +233,7 @@ class FishLocator:
         outline = pixels_on_plane(frame.intrinsics, t_base_camera, polygon, outline_z)
         if not np.isfinite(outline).all():
             return _finish(fish, failed | {"geometry_out_of_range"})
-        outline_xy = outline[:, :2]
+        outline_xy = fish.outline = outline[:, :2]
         center, axis = fish_heading.body_axis(outline_xy)
         fish.seen_at = (float(center[0]), float(center[1]), math.atan2(axis[1], axis[0]))
         along = fish_heading.along_axis(outline_xy, center, axis)[:, 0]

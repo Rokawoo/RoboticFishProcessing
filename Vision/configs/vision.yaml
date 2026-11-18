@@ -44,12 +44,15 @@ stand_in:                   # the 0.79 m printed catfish as vision measures it (
   thickness_range_m: [0.15, 0.21]   #   ~0.17 m tall. Other stand-ins: measure with
                                     #   pick_place.py --mode observe and set these
   balance_ahead_share: 0.126        # where it balances (the cups still seal there at 0.79 m)
+  rigid: true                       # printed: it hangs only its own height below the cups,
+                                    #   so it is carried low where nothing is under its way
 catfish:                    # Table SY-1 +- 10%
   length_range_m: [0.54, 0.825]
   width_range_m: [0.0945, 0.154]
   thickness_range_m: [0.081, 0.132]
   balance_ahead_share: 0.065        # it balances ~0.11 ahead, but the cups must seal behind
                                     # its pectoral fins (0.06-0.09 for 0.55-0.79 m): tune
+  rigid: false                      # it droops: carried at the workcell's lift_length_share
 cup_footprint_m: [0.20, 0.10]    # along and across the body (the gripper's CAD model)
 grasp_step_m: 0.01               # where the cups don't all seal at the balance point (the
                                  # fins), they move back toward the middle in these steps
