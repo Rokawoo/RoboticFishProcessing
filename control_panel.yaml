@@ -9,7 +9,7 @@
 # pick_place.py's command line (an option given on the command line wins).
 
 run:
-  mode: null          # observe | offline | sim | check | feel | dry-run | run; null: ask
+  mode: null          # setup | observe | offline | sim3d | sim | check | feel | dry-run | run; null: ask
   device: null        # realsense | a serial number | a camera index | a video; null: the D405
   model: null         # training run folder or .pt file; null: the newest run
   cycles: null        # stop after this many grasps; null: until the pick area is clear

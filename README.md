@@ -72,15 +72,72 @@ Subsystems talk only through the interfaces of Requirement Spec Section 2.7. Roo
 
 ## Getting started
 
+From a fresh clone to the arm picking fish in the 3D simulation. Windows or Linux; no ROS, arm or camera needed.
+
+**1. Install what the setup can't**
+
+- [Git](https://git-scm.com/downloads).
+- [Miniconda](https://docs.conda.io/en/latest/miniconda.html) (or Anaconda). On Windows the setup offers to install it with winget if it's missing; on Linux the setup also needs `python3`.
+- With an NVIDIA GPU: its driver, 580 or newer (CUDA 13.0). Without one, everything still runs; the fish model just runs on the CPU, slowly.
+
+**2. Clone the repository**
+
 ```bash
 git clone https://github.com/Rokawoo/RoboticFishProcessing.git
 cd RoboticFishProcessing
-.\setup.ps1           # Windows (PowerShell)
-./setup.sh            # Linux; the robot PC: ./setup.sh --robot
-conda activate rfp    # the robot PC: source .venv/bin/activate
 ```
 
-The setup checks each step first and does only what's missing, so run it again after a pull: the Python environment (conda `rfp`, Python 3.10, from `requirements.txt`), the git hooks (ruff on every commit), the simulation's FR5 meshes, and a check of the GPU and the settings. `--check` only reports. `--robot` also installs ROS 2 Humble, MoveIt 2, ros2_control and librealsense, gives you the serial port and clones FAIRINO's driver ([the rest](#run-it-on-the-arm)). If PowerShell won't run scripts: `powershell -ExecutionPolicy Bypass -File .\setup.ps1`.
+**3. Run the setup**
+
+```bash
+.\setup.ps1     # Windows (PowerShell)
+./setup.sh      # Linux
+```
+
+It creates the conda environment `rfp` (Python 3.10 and everything in `requirements.txt`; the first run downloads several GB, mostly PyTorch), installs the git hooks (ruff on every commit), points VS Code at the environment, downloads the FR5 meshes for the simulation, and checks the GPU and the settings. It ends with `Set up.`, or lists what is `[missing]` and what to do about it.
+
+- If PowerShell won't run scripts: `powershell -ExecutionPolicy Bypass -File .\setup.ps1`.
+- `--check` only reports; `--test` also runs the tests at the end.
+- Each step is checked first and done only if missing, so run it again after every pull.
+
+**4. Activate the environment**, in every new terminal:
+
+```bash
+conda activate rfp
+```
+
+**5. Check that it works** (optional):
+
+```bash
+pytest -q
+```
+
+Tests that need a display, a RealSense camera or the SAM weights are skipped without them.
+
+**6. Run the 3D simulation**
+
+```bash
+python main.py --mode sim3d
+```
+
+Two windows open: the virtual cell in 3D, and the camera's view with what the fish model found. The arm looks over the table, picks each fish and sets it down in a slot. When it's done, close the 3D window (or press q in it). `main.py` runs `ControlSys/rfp_controlsys/pick_place.py` with the same options; without `--mode`, it asks in a popup. Details: [Run it in the 3D simulation](#run-it-in-the-3d-simulation).
+
+**7. Change something**
+
+- More fish, other scenes, faster: `fish_count`, `seed` and `speed` in the `simulation` section of [control_panel.yaml](control_panel.yaml), then step 6 again.
+- The cell's layout (table, pick area, slots): `python main.py --mode setup`, see [Lay it out in 3D](#lay-it-out-in-3d).
+- A change to vision, planning or the cycle: run `python Simulation/benchmark.py` before and after it, and compare the two runs with `--compare` (the [benchmark](#run-it-in-the-3d-simulation)).
+
+**8. Where next**
+
+| To | Read |
+|---|---|
+| Label data and train the fish model | [Vision/README.md](Vision/README.md) |
+| Measure and set up the real cell | [Set up the workcell](#set-up-the-workcell) |
+| Run it on the arm (robot PC, `./setup.sh --robot`) | [Run it on the arm](#run-it-on-the-arm) |
+| Work on the code: the rules it depends on | [CLAUDE.md](CLAUDE.md) and each subsystem's README |
+
+Notes:
 
 - The fish model is in Git: each training run's `weights/best.pt` (the rest of a run, the data and the logs stay out). Train a new one: [Vision/README.md](Vision/README.md#building-the-fish-model).
 - PyTorch comes with CUDA 13.0 (NVIDIA driver 580+; `requirements.txt` has the older-driver option).
