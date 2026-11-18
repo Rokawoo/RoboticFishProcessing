@@ -134,9 +134,9 @@ def test_a_fish_can_be_dropped_on_purpose_to_test_drop_detection():
     fish = world.fish[0]
     world.set_vacuum(True)
     press_onto(world, fish, 0.008)
-    press_onto(world, fish, -0.05)
+    press_onto(world, fish, -0.015)
     assert world.holding is fish
-    press_onto(world, fish, -0.12)  # 8 cm above where it was grabbed: dropped
+    press_onto(world, fish, -0.03)  # 4 cm above where it was grabbed: dropped
     assert world.holding is None and fish.pose[2, 3] == CELL.table_z
     world.set_vacuum(False)
     world.set_vacuum(True)

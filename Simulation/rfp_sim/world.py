@@ -191,7 +191,7 @@ class World:
             return False
         moved = tcp[:3, 3] - self._grabbed_at
         if self._drop == "lift":
-            return moved[2] > 0.08
+            return moved[2] > 0.03  # a low carry lifts a fish only a few centimeters
         return float(np.hypot(moved[0], moved[1])) > 0.15  # "carry"
 
     # -- laying fish out ---------------------------------------------------------------

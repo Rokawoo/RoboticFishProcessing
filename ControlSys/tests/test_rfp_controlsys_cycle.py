@@ -12,6 +12,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("cv2")
 pytest.importorskip("yaml")
 
+from rfp_arm.carry import Footprint
 from rfp_arm.gripper import NoGripper, SimGripper
 from rfp_arm.interfaces import E_PROTECTIVE_STOP, ArmError, GripperState
 from rfp_arm.sim import SimArm
@@ -38,14 +39,18 @@ CELL = load_workcell()
 K = Intrinsics.from_fov(320, 180, 87.0)
 
 
-def fish(fish_id, x, y, heading_deg=90.0, confidence=0.9, code="none", overlap=False, known=True):
+def fish(fish_id, x, y, heading_deg=90.0, confidence=0.9, code="none", overlap=False, known=True,
+         failures=()):  # fmt: skip
     ok = code == "none"
     pose = pose_down((x, y, 0.10), math.radians(heading_deg)) if ok else None
-    outline = np.array([[100, 60], [220, 60], [220, 120], [100, 120]], float)
+    pixels = np.array([[100, 60], [220, 60], [220, 120], [100, 120]], float)
     heading = math.radians(heading_deg) if ok else None
     bbox = (x - 0.1, x + 0.1, y - 0.3, y + 0.3, 0.0, 0.1)  # vision places failed fish too
+    axis = math.radians(heading_deg)
+    on_table = Footprint("", (x, y), axis, 0.60, 0.12).corners()  # 0.60 x 0.12 m
     return Fish(fish_id, ok, code, confidence, pose, pose, heading, 0.60, 0.12, 0.10, bbox,
-                overlap, outline, heading_known=known)  # fmt: skip
+                overlap, pixels, heading_known=known, seen_at=(x, y, axis), failures=failures,
+                outline=on_table)  # fmt: skip
 
 
 class Hold:
@@ -160,8 +165,13 @@ class Operator(Console):
 
 
 class Rig:
-    def __init__(self, *fish_at, answers=(), gripper=None, selector=None, log=None, **options):
+    def __init__(
+        self, *fish_at, answers=(), gripper=None, selector=None, log=None, rigid=False, **options
+    ):
+        """`rigid`: printed stand-ins (vision's settings say so); else the fish may droop."""
         self.table = Table(*fish_at)
+        if rigid:
+            self.table.settings = VisionSettings(fish_type="stand_in")
         self.arm = SimArm(CELL)
         self.gripper = gripper or TableGripper(self.table, self.arm)
         self.clock = Clock()
@@ -364,6 +374,56 @@ def test_a_plan_refused_for_where_a_fish_lies_skips_it_without_pausing(monkeypat
     # in a row don't pause the run as failed cycles would: the third fish is still picked
     assert report.failures == {"E_MOTION": 6} and report.successes == 1
     assert len(report.skipped) == 2 and not any("in a row" in a for a in rig.operator.alerts)
+
+
+def carries(rig: Rig) -> list[str]:
+    """What the cycle said about how high it carried each fish."""
+    return [s for s in rig.operator.states if s.startswith("carried ")]
+
+
+def test_a_rigid_fish_is_carried_low_when_the_looks_show_nothing_under_its_way():
+    rig = Rig(A, rigid=True)  # one printed fish
+    assert rig.run().successes == 1
+    assert carries(rig) == ["carried 150 mm above the table: nothing under its way"]
+    _, lift, carry, *_ = [target for kind, target in rig.arm.moves if kind == "lin"]
+    assert lift[2, 3] == pytest.approx(0.15) and carry[2, 3] == pytest.approx(0.15)  # was 0.41
+    rig = Rig(A)  # a fish that may droop: as high as before
+    rig.run()
+    assert carries(rig) == ["carried 410 mm above the table: it hangs that low"]
+    assert rig.cycle._sees_pick_area(rig.cycle._looks[0])  # from the observation pose
+    low = rig.table.observe(pose_down((0.40, -0.10, 0.20), 0.0))  # 0.2 m up: a small view
+    assert not rig.cycle._sees_pick_area(low)
+
+
+def test_what_lies_under_the_way_or_is_not_seen_keeps_the_carry_high():
+    rig = Rig(A, C, rigid=True)  # side by side
+    assert rig.run().successes == 2
+    first, second = carries(rig)
+    assert first.startswith("carried 410 mm above the table: fish ") and "under its way" in first
+    assert second == "carried 410 mm above the table: the fish in slot 1 lies under its way"
+    cut = {"code": "out_of_frame", "failures": ("out_of_frame",)}  # may reach past the image
+    rig = Rig(A, (0.50, 0.10, cut), rigid=True)
+    rig.run(max_cycles=1)
+    assert carries(rig) == ["carried 410 mm above the table: fish 2 is cut off at the image's edge"]
+
+
+def test_a_fish_left_off_the_pick_area_keeps_the_carry_high():
+    rig = Rig(A, B, rigid=True, answers=[True])
+    blocked = []
+
+    def fail(kind, target):  # the first fish can't be set down in its slot, nor put back
+        low = CELL.placement_zone.contains(target[:2, 3]) and target[2, 3] < 0.14
+        if low and len(blocked) < 3:
+            blocked.append(kind)
+            return "blocked"
+        return None
+
+    rig.arm.fail = fail
+    report = rig.run()
+    assert report.failures == {"E_MOTION": 1} and report.successes == 1
+    assert "vacuum is still on" in rig.operator.alerts[0]  # let go at the slot
+    unknown = "a fish may lie outside the pick area since a failed grasp"
+    assert carries(rig)[1] == f"carried 410 mm above the table: {unknown}"
 
 
 def test_a_closer_look_says_why_a_fish_it_sees_whole_is_not_picked():

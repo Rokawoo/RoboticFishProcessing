@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
+from rfp_arm.carry import Footprint
 from rfp_arm.grasp import (
     WRIST_MOVE,
     GraspSequence,
@@ -35,6 +36,7 @@ from rfp_arm.poses import wrap, yaw_of
 from rfp_arm.workcell import ObservationPose, Workcell
 from rfp_vision.camera import CameraError
 from rfp_vision.fish_list import Fish, FishList, heading_difference, match_fish
+from rfp_vision.geometry import inside_polygon, pixels_on_plane
 from rfp_vision.overlay import draw_fish_list
 from rfp_vision.vision_system import Observation
 
@@ -60,6 +62,12 @@ STATE_OF_STEP = {
     "retreat": "placing",
 }
 MAX_MOVED = 5  # times in a row the chosen fish isn't where it was at the re-check: pause
+# An outline this much (share of its points) inside a footprint grown this much (m) is the
+# same fish: seen again, or in part at the image's edge
+SAME_FISH_SHARE = 0.8
+SAME_FISH_GROW = 0.03
+# Steps after which a failed grasp may have left the fish off the pick area (a slot, the way)
+AFTER_LIFT = ("lift", "carry", "lower", "release", "retreat")
 
 
 class RunStopped(Exception):
@@ -168,6 +176,13 @@ class PickPlaceCycle:
         self._tool_yaw = 0.0
         self._frame = None  # the newest camera frame seen by the tick
         self._hold_text = ""
+        # What lies on the table, for a low carry: this cycle's looks, the fish placed since
+        # the placement zone was last cleared, and why the table isn't known ("": it is)
+        self._looks: list[Observation] = []
+        self._placed: list[Footprint] = []
+        self._unknown = ""
+        fish_type = getattr(getattr(vision, "settings", None), "fish", None)
+        self._rigid = bool(getattr(fish_type, "rigid", False))  # unknown: it may droop
 
     # -- the run -----------------------------------------------------------------
     def run(self, max_cycles: int | None = None) -> RunReport:
@@ -193,6 +208,7 @@ class PickPlaceCycle:
         s = self.settings
         poses = self.workcell.observation_poses
         pose = poses[self._pose_index]
+        self._looks = []
         observation = self._observe(pose)
         fish_list = observation.fish_list
         candidates = self._candidates(fish_list)
@@ -225,7 +241,7 @@ class PickPlaceCycle:
         self._unusable = 0
         if self._slot >= len(self.workcell.slots):
             self._pause("The placement zone is full (AS-56). Clear it, then resume.")
-            self._slot = 0
+            self._slot, self._placed, self._unknown = 0, [], ""
             return True  # look again: someone was at the table
 
         decision = self._decide(observation, candidates)
@@ -265,6 +281,7 @@ class PickPlaceCycle:
             observation = self.vision.observe(self.workcell.camera_of_tcp(tcp))
         except CameraError as e:
             raise RunStopped(f"camera failure: {e}") from None
+        self._looks.append(observation)
         self._frame = observation.frame
         self.vision.hold.set_background(observation.frame)  # nothing is held here
         self._show(observation)
@@ -469,6 +486,49 @@ class PickPlaceCycle:
         return fish
 
     # -- grasping ----------------------------------------------------------------
+    def _on_table(self, fish: Fish) -> tuple[Footprint | None, list[Footprint] | None, str]:
+        """For a low carry: the chosen fish's footprint, and everything else on the table as
+        this cycle's looks and this run's placements show it; None and why where it isn't
+        known. A fish cut off at the image's edge may reach anywhere past it, unless another
+        look or a slot holds all of it."""
+        if fish.outline is None or fish.seen_at is None:
+            return None, None, "where it lies isn't known"
+        carried = Footprint.around("the fish", fish.outline, fish.seen_at[2])
+        if self._unknown:
+            return carried, None, self._unknown
+        if not any(self._sees_pick_area(look) for look in self._looks):
+            return carried, None, "no look saw all of the pick area"
+        seen, cut = [], []
+        for look in self._looks:
+            for other in look.fish_list.fish:
+                if other.outline is None or other.seen_at is None:
+                    return carried, None, f"where fish {other.fish_id} lies isn't known"
+                if _mostly_in(other.outline, carried):  # the fish itself, again or in part
+                    continue
+                if "out_of_frame" in other.failures:
+                    cut.append(other)
+                else:
+                    name = f"fish {other.fish_id}"
+                    seen.append(Footprint.around(name, other.outline, other.seen_at[2]))
+        known = seen + self._placed
+        for other in cut:
+            if not any(_mostly_in(other.outline, footprint) for footprint in known):
+                return carried, None, f"fish {other.fish_id} is cut off at the image's edge"
+        return carried, known, ""
+
+    def _sees_pick_area(self, look: Observation) -> bool:
+        """Whether a look's image holds all of the pick area (on the table): every fish
+        lying there is in it, at least in part."""
+        frame = look.frame
+        w, h = frame.size
+        corners = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], float)
+        camera = look.fish_list.camera_pose
+        view = pixels_on_plane(frame.intrinsics, camera, corners, self.workcell.table_z)[:, :2]
+        area = self.workcell.pick_area
+        inside = np.array([(x, y) for x in area.x for y in area.y])
+        # millimeters: pointPolygonTest works in float32
+        return bool(np.isfinite(view).all() and inside_polygon(view * 1e3, inside * 1e3).all())
+
     def _grasp(
         self, fish: Fish, decision: Decision, pose: ObservationPose, candidates: int
     ) -> None:
@@ -508,11 +568,12 @@ class PickPlaceCycle:
             sleep=self._sleep,
             controller=self._controller,
         )
+        carried, on_table, unknown = self._on_table(fish)
         try:
             plan = plan_grasp(
                 cell, fish.grasp_pose, fish.heading_known, fish.total_length, fish.thickness,
                 cell.slots[self._slot], self._tool_yaw, self.dry_run, self.arm.wrist_angle,
-                fish.middle,
+                fish.middle, carried=carried, on_table=on_table, rigid=self._rigid,
             )  # fmt: skip
             if plan.wrist is not None:
                 path = [round(math.degrees(a)) for a in plan.wrist]
@@ -521,6 +582,10 @@ class PickPlaceCycle:
                     f"wrist (j6) {path[0]} -> {path[1]} -> {path[2]} -> {path[0]} deg: "
                     f"sweeps {math.degrees(plan.wrist_sweep):.0f} deg"
                 )
+            height = round((plan.carry[2, 3] - cell.table_z) * 1000)
+            row["carry_mm"] = height
+            why = (plan.carry_note or unknown) if cell.grasp.low_carry else ""
+            self.console.info(f"carried {height} mm above the table" + (f": {why}" if why else ""))
             self.sequence.run(plan)
         except ArmError as error:
             row.update(result="failed", failure_code=error.code, detail=error.message,
@@ -534,6 +599,11 @@ class PickPlaceCycle:
             row["result"] = "success"
             self._log_row(row, started)
             self.console.info(f"✅ fish placed in slot {self._slot + 1}")
+            if carried is not None:
+                name = f"the fish in slot {self._slot + 1}"
+                self._placed.append(carried.moved(plan.lift, plan.lower, name))
+            else:
+                self._unknown = "where a placed fish lies isn't known"
             self._slot += 1
             self.report.successes += 1
             self._failed_in_row = 0
@@ -555,6 +625,15 @@ class PickPlaceCycle:
         self._last_result, self._last_failed = code, fish.middle
         attempts = self._attempts.add(fish.middle)
         step = sequence.step or "planning"
+        # The next looks see a fish left in the pick area; one dropped elsewhere the operator
+        # is asked to clear. Set down or let go anywhere else (a slot, on the way): not known
+        where = error.tcp_pose
+        if (
+            sequence.step in AFTER_LIFT
+            and (code != E_DROP or error.still_holding)
+            and (where is None or not self.workcell.pick_area.contains(where[:2, 3]))
+        ):
+            self._unknown = "a fish may lie outside the pick area since a failed grasp"
         self.console.info(
             f"❌ {error} (step '{step}', attempt {attempts} of {s.max_attempts_per_fish})"
         )
@@ -644,6 +723,11 @@ class _VisionHold:
     def stop(self) -> None:
         self._cycle.vision.hold.stop()
         self._cycle._hold_text = ""
+
+
+def _mostly_in(outline: np.ndarray, footprint: Footprint) -> bool:
+    """Whether an outline lies within a footprint: the same fish."""
+    return float(footprint.holds(outline, SAME_FISH_GROW).mean()) >= SAME_FISH_SHARE
 
 
 def _area(polygon: np.ndarray) -> float:

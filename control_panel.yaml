@@ -38,6 +38,7 @@ workcell:
     seal_dwell: 1.0             # s for the vacuum to build up
     release_dwell: 1.0          # s for it to let go
     lift_height_max: 0.50       # m above the table
+    low_carry: true             # lower where the looks show nothing under a rigid fish's way
   tool:
     wrist_range_deg: [-170, 170]   # how far the last joint may turn (vacuum tube)
   placement:

@@ -9,6 +9,9 @@ The approach follows the grasp pose's z axis, which the Vision System lays squar
 the fish's surface (within AS-21's 15 degrees of straight down). On an arm that reports
 joint torques the last centimeters are felt: down in small steps until the fish pushes
 back, then pressed on.
+
+The fish is lifted and carried high enough to clear fish on the table, or, where the
+caller's looks show nothing under its way (rfp_arm.carry), only as high as it hangs.
 """
 
 import math
@@ -18,6 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from rfp_arm.carry import Footprint, in_the_way
 from rfp_arm.gripper import wait_for
 from rfp_arm.interfaces import (
     E_COMM,
@@ -75,6 +79,10 @@ class GraspPlan:
     # the wrist turns back to its middle where it is before the pre-grasp: the turn to the
     # grasp is longer than WRIST_MOVE from where it is
     reset_first: bool = False
+    # z a carry that can't go straight goes at (point-to-point: its path isn't a line, so
+    # not at a low carry's height); None: the carry's own
+    high_carry_z: float | None = None
+    carry_note: str = ""  # why the fish is carried as high as it is
 
     @property
     def wrist_sweep(self) -> float | None:
@@ -109,6 +117,10 @@ def plan_grasp(
     dry_run: bool = False,
     wrist: Callable[[np.ndarray], float | None] | None = None,
     middle: np.ndarray | None = None,
+    *,
+    carried: Footprint | None = None,
+    on_table: list[Footprint] | None = None,
+    rigid: bool = False,
 ) -> GraspPlan:
     """
     The poses of Table AS-1. `grasp_pose` is the fish's grasp pose from the fish list (on
@@ -117,8 +129,10 @@ def plan_grasp(
     `wrist` (Arm.wrist_angle) tells the last joint's angle now (None) and at a TCP pose;
     without it the wrist is taken to turn with the tool's yaw from the middle of its range.
     `middle`: the fish's middle in {B} where the cups grasp it elsewhere (toward its heavier
-    head): the slot gets the middle. Raises ArmError(E_MOTION) if the fish or a pose is
-    outside the limits.
+    head): the slot gets the middle. For a low carry (grasp.low_carry): `carried`, the
+    fish's footprint as it lies; `on_table`, everything else lying on the table (None: not
+    known, so not low); `rigid`: the fish doesn't bend. Raises ArmError(E_MOTION) if the
+    fish or a pose is outside the limits.
     """
     g = workcell.grasp
     point = grasp_pose[:3, 3]
@@ -261,12 +275,48 @@ def plan_grasp(
     plan.pregrasp = plan.at_depth(-g.pregrasp_distance)
     plan.approach_end = plan.at_depth(-g.dry_run_standoff if dry_run else g.press_distance)
     end = plan.approach_end[:3, 3]
-    plan.lift = tool_down((end[0], end[1], max(lift_z, end[2] + g.lift_margin)), grasp_yaw)
+    carry_z, plan.carry_note = _carry_height(workcell, plan, lift_z, carried, on_table, rigid)
+    plan.carry[2, 3], plan.high_carry_z = carry_z, lift_z
+    plan.lift = tool_down((end[0], end[1], max(carry_z, end[2] + g.lift_margin)), grasp_yaw)
     for name, pose in plan.poses().items():
         held = fish_length if name in ("lift", "carry", "lower") else 0.0
         if problem := workcell.pose_problem(pose, held, True, plan.middle_x):
             raise ArmError(E_MOTION, f"{name} pose: {problem}")
     return plan
+
+
+def _carry_height(
+    workcell: Workcell,
+    plan: GraspPlan,
+    high: float,
+    carried: Footprint | None,
+    on_table: list[Footprint] | None,
+    rigid: bool,
+) -> tuple[float, str]:
+    """(z the fish is carried at, why). Low where nothing lies under its way: its lowest
+    point lift_margin above the table; else `high`."""
+    g = workcell.grasp
+    if not g.low_carry or carried is None or on_table is None:
+        return high, ""
+    end = plan.approach_end[:3, 3]
+    # It hangs from the cups by its own height under them, and leveling the cups (they lean
+    # onto its surface) tips it: its far end goes down by up to reach x sin(tilt)
+    reach = float(np.linalg.norm(carried.corners() - end[:2], axis=1).max())
+    hang = plan.surface[2, 3] - workcell.table_z
+    hang += reach * math.sin(tilt_from_down(plan.surface))
+    if not rigid:  # its ends droop: as the high carry assumes
+        hang = max(hang, g.lift_length_share * plan.fish_length)
+    low = workcell.table_z + hang + g.lift_margin
+    if low >= high - 1e-9:
+        return high, "it hangs that low"
+    start = tool_down((end[0], end[1], low), yaw_of(plan.surface))
+    zones = [
+        Footprint.box(f"exclusion zone '{zone.name}'", zone.x, zone.y)
+        for zone in workcell.exclusion_zones
+    ]
+    if hit := in_the_way(carried, start, plan.carry, [*on_table, *zones], g.lift_margin):
+        return high, f"{hit} lies under its way"
+    return low, "nothing under its way"
 
 
 class OperatorStop(Exception):
@@ -363,7 +413,7 @@ class GraspSequence:
         self._begin("lift")
         self._move(lambda: self._lin(plan.lift, m.carry_speed))
         self._begin("carry")
-        self._move(lambda: self._carry(plan.carry))
+        self._move(lambda: self._carry(plan))
         self._begin("lower")
         self._move(lambda: self._lin(plan.lower, m.carry_speed))
         if vacuum:
@@ -443,13 +493,27 @@ class GraspSequence:
             self._lin(plan.at_depth(depth), g.feel_speed)
             self._sleep(g.feel_settle)
 
-    def _carry(self, pose: np.ndarray) -> None:
+    def _carry(self, plan: GraspPlan) -> None:
+        """Straight to the slot; if that can't be planned, point-to-point, which follows the
+        planned wrist turn. That path isn't a straight line: from a low carry it goes up to
+        the high carry's height first and comes down above the slot."""
+        speed = self.workcell.motion.carry_speed
         try:
-            self._lin(pose, self.workcell.motion.carry_speed)
+            self._lin(plan.carry, speed)
         except ArmError as e:
             if e.code != E_MOTION or not self.workcell.motion.carry_ptp_fallback:
                 raise
-            self.arm.move_ptp(pose, self._moving)
+            high = plan.high_carry_z
+            if high is None or plan.carry[2, 3] >= high - 1e-6:
+                self.arm.move_ptp(plan.carry, self._moving)
+                return
+            up = self.arm.tcp_pose()
+            up[2, 3] = max(up[2, 3], high)
+            above = plan.carry.copy()
+            above[2, 3] = high
+            self._lin(up, speed)
+            self.arm.move_ptp(above, self._moving)
+            self._lin(plan.carry, speed)
 
     def _move(self, motion: Callable[[], None]) -> None:
         """Run a motion; E_MOTION is planned again once (Table CS-1), a stop is sorted out."""

@@ -16,7 +16,7 @@ COLUMNS = (
     "run_id", "cycle", "time", "duration_s", "observation_pose", "fish_id", "decision_source",
     "decision_reason", "candidates", "grasp_x_mm", "grasp_y_mm", "grasp_z_mm", "heading_deg",
     "heading_known", "length_mm", "thickness_mm", "confidence", "tilt_deg", "contact_mm",
-    "wrist_deg", "slot", "attempt", "result", "failure_code", "failed_step", "detail",
+    "wrist_deg", "carry_mm", "slot", "attempt", "result", "failure_code", "failed_step", "detail",
 )  # fmt: skip
 
 

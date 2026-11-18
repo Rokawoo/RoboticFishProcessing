@@ -112,9 +112,16 @@ grasp:                          # Table AS-1
   pregrasp_distance: 0.10
   press_distance: 0.010
   dry_run_standoff: 0.05
+  # Lift and carry height above the table: lift_length_share x the fish's length +
+  # lift_margin, at most lift_height_max. A fish that bends hangs about that far below the
+  # cups; for a rigid one (vision's fish type) it clears the fish on the table.
   lift_length_share: 0.6
   lift_margin: 0.05
   lift_height_max: 0.50
+  # A rigid fish is carried lower where this cycle's looks show nothing on the table under
+  # its way (other fish, placed fish, exclusion zones, each lift_margin wide): its lowest
+  # point lift_margin above the table. A point-to-point carry still goes high.
+  low_carry: true
   release_clearance: 0.015
   retreat_distance: 0.10
   seal_timeout: 1.0

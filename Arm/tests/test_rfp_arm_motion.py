@@ -10,6 +10,7 @@ pytest.importorskip("yaml")
 
 from arm_helpers import SEED, FakeClock, FakeIO, make_workcell, solve_ik, workcell_data
 from rfp_arm import poses
+from rfp_arm.carry import Footprint, in_the_way
 from rfp_arm.fairino import command_text, io_bit
 from rfp_arm.grasp import STEPS, GraspSequence, OperatorStop, plan_grasp
 from rfp_arm.gripper import (
@@ -752,6 +753,107 @@ def test_simulated_arm_applies_the_limits():
     target[:3, 3] += (0.0, 0.2, -0.1)
     paced.move_lin(target, 0.1, 0.5)
     assert sum(naps) == pytest.approx(math.hypot(0.2, 0.1) / 0.1)  # the distance at 0.1 m/s
+
+
+# ---------------------------------------------------------------------------
+# Carried low where nothing lies under the way
+# ---------------------------------------------------------------------------
+def lying(x=0.40, y=-0.10, heading_deg=100.0, name="the fish", length=0.60, width=0.12):
+    """The footprint of a fish whose middle lies at (x, y)."""
+    return Footprint(name, (x, y), math.radians(heading_deg), length, width)
+
+
+def low_plan(on_table=(), cell=CELL, rigid=True, pose=None):
+    """fish_pose()'s fish (0.10 m high, its middle under the cups) with what else lies there."""
+    pose = fish_pose() if pose is None else pose
+    return plan_grasp(cell, pose, True, 0.60, 0.10, SLOT, math.radians(90), carried=lying(),
+                      on_table=list(on_table), rigid=rigid)  # fmt: skip
+
+
+def test_footprints_are_found_held_and_carried():
+    corners = lying(0.4, 0.2, 30.0, length=0.8, width=0.2).corners()
+    found = Footprint.around("fish", np.vstack([corners, corners.mean(axis=0)]), math.radians(30))
+    assert found.center == pytest.approx((0.4, 0.2)) and found.length == pytest.approx(0.8)
+    assert found.width == pytest.approx(0.2)
+    near_end = (0.4 + 0.39 * math.cos(math.radians(30)), 0.2 + 0.39 * 0.5)
+    assert list(found.holds([(0.4, 0.2), near_end, (0.4, 0.33)])) == [True, True, False]
+    assert found.holds([(0.4, 0.33)], grow=0.05).all()
+    # 0.2 m ahead of the cups, carried 1 m along +Y and turned a quarter turn: still ahead
+    ahead = lying(0.2, 0.0, 0.0)
+    moved = ahead.moved(poses.tool_down((0, 0, 0.3), 0.0), poses.tool_down((0, 1, 0.3), 1.5708))
+    assert moved.center == pytest.approx((0.0, 1.2), abs=1e-4)
+    assert moved.yaw == pytest.approx(1.5708) and moved.length == ahead.length
+
+
+def test_the_way_is_swept_with_the_turn_the_short_way():
+    stick = Footprint("stick", (0.0, 0.0), 0.0, 1.0, 0.1)  # turns about its middle
+    start = poses.tool_down((0, 0, 0.3), 0.0)
+    corner = Footprint("box", (0.35, 0.35), 0.0, 0.05, 0.05)  # 0.49 m out, at 45 deg
+    left = poses.tool_down((0, 0, 0.3), math.pi / 2)
+    assert in_the_way(stick, start, left, [corner], 0.01) == "box"  # swept, not at either end
+    right = poses.tool_down((0, 0, 0.3), -math.pi / 2)
+    assert in_the_way(stick, start, right, [corner], 0.01) is None  # turning the other way
+    beside = Footprint("beside", (0.0, 0.10), 0.0, 1.0, 0.05)  # 2.5 cm from the stick
+    assert in_the_way(stick, start, start, [beside], 0.01) is None
+    assert in_the_way(stick, start, start, [beside], 0.03) == "beside"  # within the margin
+    far = poses.tool_down((2.0, 0, 0.3), 0.0)
+    speck = Footprint("speck", (1.0, 0.04), 0.0, 0.005, 0.005)  # passed over on the way
+    assert in_the_way(stick, start, far, [speck], 0.0) == "speck"
+
+
+def test_a_rigid_fish_is_carried_low_where_nothing_lies_under_its_way():
+    p = low_plan()
+    assert p.carry_note == "nothing under its way"
+    assert p.lift[2, 3] == pytest.approx(0.15) and p.carry[2, 3] == pytest.approx(0.15)  # +50 mm
+    assert p.high_carry_z == pytest.approx(0.41) and p.lower[2, 3] == pytest.approx(0.115)
+    assert np.allclose(p.carry[:2, 3], SLOT) and np.allclose(p.lift[:2, 3], (0.40, -0.10))
+    far = lying(0.90, 0.0, 90.0, name="fish 3")  # well clear of the way, turning included
+    assert low_plan([far]).carry[2, 3] == pytest.approx(0.15)
+
+    across = lying(0.38, 0.15, 0.0, name="fish 2")  # between the fish and its slot
+    p = low_plan([across, far])
+    assert p.carry[2, 3] == pytest.approx(0.41) and p.carry_note == "fish 2 lies under its way"
+    assert p.lift[2, 3] == pytest.approx(0.41)
+    # a bin in the way: an exclusion zone is something on the table too
+    binned = make_workcell(lambda d: d["zones"]["exclusion"].append(
+        {"name": "bin", "x": [0.30, 0.50], "y": [0.18, 0.26], "z": [0.0, 0.10]}))  # fmt: skip
+    assert low_plan(cell=binned).carry_note == "exclusion zone 'bin' lies under its way"
+
+    # not known what lies there, a fish that droops, or switched off: as high as before
+    unknown = plan_grasp(CELL, fish_pose(), True, 0.60, 0.10, SLOT, math.radians(90),
+                         carried=lying())  # fmt: skip
+    assert unknown.carry[2, 3] == pytest.approx(0.41) and unknown.carry_note == ""
+    droops = low_plan(rigid=False)
+    assert droops.carry[2, 3] == pytest.approx(0.41) and droops.carry_note == "it hangs that low"
+    off = make_workcell(lambda d: d["grasp"].update(low_carry=False))
+    assert low_plan(cell=off).carry[2, 3] == pytest.approx(0.41)
+
+
+def test_leveling_the_cups_tips_a_rigid_fish_so_it_is_carried_higher():
+    p = low_plan(pose=sloping_fish(10.0))
+    reach = math.hypot(0.30, 0.06)  # the footprint's far corner from the cups
+    assert p.carry[2, 3] == pytest.approx(0.15 + reach * math.sin(math.radians(10)), abs=2e-3)
+
+
+def test_a_low_carry_that_cant_go_straight_goes_up_to_go_point_to_point():
+    p = low_plan()
+    blocked = []
+
+    def fail(kind, target):  # no straight path to the slot, the first time
+        if kind == "lin" and np.allclose(target, p.carry) and not blocked:
+            blocked.append(kind)
+            return "no straight path"
+        return None
+
+    rig = Rig()
+    rig.arm.fail = fail
+    rig.sequence.run(p)
+    assert tuple(rig.steps) == STEPS
+    kinds = [kind for kind, _ in rig.arm.moves]
+    assert kinds == ["ptp", "lin", "lin", "lin", "ptp", "lin", "lin", "lin"]
+    up, across, down = (target for _, target in rig.arm.moves[3:6])
+    assert np.allclose(up[:3, 3], (0.40, -0.10, 0.41))  # up where it was lifted
+    assert np.allclose(across[:3, 3], (*SLOT, 0.41)) and np.allclose(down, p.carry)
 
 
 # ---------------------------------------------------------------------------

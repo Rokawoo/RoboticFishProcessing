@@ -150,9 +150,15 @@ class GraspSettings:
     pregrasp_distance: float = 0.10  # above the grasp point
     press_distance: float = 0.010  # past the grasp point, compressing the bellows
     dry_run_standoff: float = 0.05  # dry run: stop this far short of the fish (CS-93)
-    lift_length_share: float = 0.6  # lift height = this share of the fish's length + margin
-    lift_margin: float = 0.05
+    # Lift and carry height: this share of the fish's length + margin above the table (a
+    # fish that bends hangs about that far below the cups; on others it clears the fish on
+    # the table), at most lift_height_max
+    lift_length_share: float = 0.6
+    lift_margin: float = 0.05  # m; also how far the low carry keeps from what is beside it
     lift_height_max: float = 0.50  # above the table, whatever the fish's length
+    # Lower where the looks show nothing on the table under the fish's way: only as high as
+    # it hangs (a rigid fish its own height, more where leveling the cups tips it) + margin
+    low_carry: bool = True
     release_clearance: float = 0.015  # cup faces above the fish's resting height (AS-24)
     retreat_distance: float = 0.10
     seal_timeout: float = 1.0  # no hold this long after the approach: E_NO_SEAL
