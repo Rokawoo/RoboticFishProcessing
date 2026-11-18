@@ -119,8 +119,14 @@ class MotionLimits:
     approach_speed: float = 0.05  # m/s, onto the fish (AS-22)
     carry_speed: float = 0.15  # m/s, straight moves with a fish
     free_speed: float = 0.15  # m/s, straight moves without a fish
-    ptp_velocity_scale: float = 0.10  # share of the joint speed limits; lowered if the TCP is fast
+    # Point-to-point: shares of the joint speed and acceleration limits, lowered where the
+    # TCP would pass tcp_speed_max. With a fish on the cups:
+    ptp_velocity_scale: float = 0.10
     ptp_acceleration_scale: float = 0.10
+    # Without one (looks, to the grasp, back): nothing to lose, and these moves are mostly
+    # the wrist turning, which hardly moves the TCP
+    free_ptp_velocity_scale: float = 0.30
+    free_ptp_acceleration_scale: float = 0.30
     max_joint_travel_deg: float = 200.0  # a plan that turns a joint further is refused
     goal_tolerance: float = 0.002  # m: a move ending further from its target failed (AS-12)
     planning_time: float = 5.0  # s
@@ -129,6 +135,12 @@ class MotionLimits:
     # A straight carry turns the tool the short way, which can wind the wrist (j6) into its
     # stop where the planned turn goes the other way round: then carry point-to-point
     carry_ptp_fallback: bool = True
+
+    def ptp_scales(self, holding: bool) -> tuple[float, float]:
+        """(velocity, acceleration) scale of a point-to-point move with or without a fish."""
+        if holding:
+            return self.ptp_velocity_scale, self.ptp_acceleration_scale
+        return self.free_ptp_velocity_scale, self.free_ptp_acceleration_scale
 
 
 @dataclass
@@ -317,8 +329,9 @@ class Workcell:
         for name in ("approach_speed", "carry_speed", "free_speed"):
             if not 0 < getattr(limits, name) <= limits.tcp_speed_max:
                 found.append(f"motion.{name} must be above 0 and at most tcp_speed_max")
-        if not 0 < limits.ptp_velocity_scale <= 1 or not 0 < limits.ptp_acceleration_scale <= 1:
-            found.append("motion.ptp_*_scale must be above 0 and at most 1")
+        scales = (*limits.ptp_scales(True), *limits.ptp_scales(False))
+        if not all(0 < scale <= 1 for scale in scales):
+            found.append("motion.*ptp_*_scale must be above 0 and at most 1")
         if self.gripper.driver not in ("serial", "http", "controller"):
             found.append("gripper.driver must be 'serial', 'http' or 'controller'")
         elif self.gripper.driver == "serial" and not self.gripper.serial_port:

@@ -360,9 +360,9 @@ class MoveItArm:
 
     def _ptp(self, what: str, goal, target: np.ndarray, tick: Tick | None) -> None:
         m = self.workcell.motion
-        scale = m.ptp_velocity_scale
+        scale, acceleration = m.ptp_scales(self._fish_length > 0)
         for _ in range(SLOWER_TRIES):
-            plan = self._plan("PTP", goal, scale, m.ptp_acceleration_scale)
+            plan = self._plan("PTP", goal, scale, acceleration)
             check = self._check(plan, target, m.tcp_speed_max)
             if not check.too_fast:
                 break

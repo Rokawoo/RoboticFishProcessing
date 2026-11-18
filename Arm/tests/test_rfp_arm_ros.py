@@ -151,7 +151,8 @@ def test_joint_and_point_to_point_moves_are_planned_checked_and_run(ros):
     request = robot.requests[0]
     assert request.pipeline_id == "pilz_industrial_motion_planner" and request.planner_id == "PTP"
     assert request.group_name == "fairino5_v6_group" and request.start_state.is_diff
-    assert request.max_velocity_scaling_factor == CELL.motion.ptp_velocity_scale
+    scales = (request.max_velocity_scaling_factor, request.max_acceleration_scaling_factor)
+    assert scales == CELL.motion.ptp_scales(holding=False) == (0.30, 0.30)  # nothing held
     goal = request.goal_constraints[0]  # joints from the robot model, in the present posture
     names = [j.joint_name for j in goal.joint_constraints]
     planned = np.array([j.position for j in goal.joint_constraints])
@@ -172,6 +173,13 @@ def test_joint_and_point_to_point_moves_are_planned_checked_and_run(ros):
     tip = goal.position_constraints[0].constraint_region.primitive_poses[0].position
     assert tip.z == pytest.approx(0.20 + CELL.tcp[2, 3])  # the TCP is past the tip link
     arm._chain = model
+    arm.move_ptp(target)
+    arm.set_held_fish(0.60)  # a fish on the cups: the slower scales
+    arm.move_ptp(down(0.40, -0.05, 0.20))
+    held = robot.requests[-1]
+    scales = (held.max_velocity_scaling_factor, held.max_acceleration_scaling_factor)
+    assert scales == CELL.motion.ptp_scales(holding=True) == (0.10, 0.10)
+    arm.set_held_fish(0.0)
     arm.move_ptp(target)
 
     requests = len(robot.requests)
@@ -378,8 +386,11 @@ def test_grasp_sequence_runs_through_moveit_and_the_controller_io(ros):
     sequence.run(plan)
     assert tuple(steps) == STEPS and not sequence.holding
     assert np.allclose(tcp(robot), plan.retreat, atol=1e-4)
-    assert [r.planner_id for r in robot.requests] == ["PTP", "LIN", "LIN", "LIN", "LIN", "LIN"]
-    approach, lift, carry = robot.requests[1:4]
+    planners = [r.planner_id for r in robot.requests]
+    ptp = planners.count("PTP")  # the pre-grasp, planned again slower where the TCP was fast
+    assert planners == ["PTP"] * ptp + ["LIN"] * 5
+    assert robot.requests[0].max_velocity_scaling_factor == CELL.motion.free_ptp_velocity_scale
+    approach, lift, carry = robot.requests[ptp : ptp + 3]
     assert approach.max_velocity_scaling_factor == pytest.approx(0.05)  # 50 mm/s (AS-22)
     assert lift.max_velocity_scaling_factor == pytest.approx(0.15)
     assert carry.max_acceleration_scaling_factor == pytest.approx(0.5 / 2.25)  # AS-43

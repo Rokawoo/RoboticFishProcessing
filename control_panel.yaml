@@ -28,7 +28,8 @@ workcell:
     approach_speed: 0.05        # m/s onto the fish
     carry_speed: 0.15           # m/s with a fish
     free_speed: 0.15            # m/s without
-    ptp_velocity_scale: 0.10    # share of the joint speed limits on point-to-point moves
+    ptp_velocity_scale: 0.10    # share of the joint speed limits, point-to-point with a fish
+    free_ptp_velocity_scale: 0.30   # ... and without one (looks, to the grasp, back)
   grasp:
     feel_contact: true          # lower the cups until the fish pushes back (real arm)
     contact_force: 15.0         # N that count as touching it      (tune: --mode feel)

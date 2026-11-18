@@ -91,8 +91,14 @@ motion:
   approach_speed: 0.05          # m/s onto the fish (AS-22)
   carry_speed: 0.15             # m/s, straight moves with a fish
   free_speed: 0.15              # m/s, straight moves without a fish
-  ptp_velocity_scale: 0.10      # point-to-point: share of the joint speed limits
+  # Point-to-point: shares of the joint speed and acceleration limits, slowed where the TCP
+  # would pass tcp_speed_max. With a fish on the cups (a carry that can't go straight):
+  ptp_velocity_scale: 0.10
   ptp_acceleration_scale: 0.10
+  # Without (to look, to the grasp, back): mostly the wrist turning, which hardly moves the
+  # TCP, so at 0.10 a half turn took 10 s. Set them to the two above to move as before.
+  free_ptp_velocity_scale: 0.30
+  free_ptp_acceleration_scale: 0.30
   max_joint_travel_deg: 200     # a plan turning a joint further is refused
   goal_tolerance: 0.002         # m (AS-12 asks for 0.001: tighten once the arm is characterized)
   planning_time: 5.0

@@ -29,7 +29,7 @@ ControlSys sees only `interfaces.py`: an `Arm`, a `Gripper` and the error codes 
 | `collision.py` | The FR5's links and the gripper as built as spheres (`configs/collision_model.yaml`, made from the meshes by `Simulation/make_collision_model.py`): whether a pose or a path runs the arm into itself. NumPy only | no |
 | `kinematics.py`, `poses.py` | FR5 kinematics from the URDF: forward, inverse (seeded, so the arm keeps its posture), j6 at a pose; pose math | no |
 | `sim.py` | Simulated arm for tests and offline runs | no |
-| `moveit_arm.py` | MoveIt 2 with Pilz: PTP/LIN plans from `/move_action`, checked by `safety.py`, run by `/execute_trajectory`; table, zones and tool in the planning scene. Cancels the move on Ctrl+C, a stop or a controller fault | yes |
+| `moveit_arm.py` | MoveIt 2 with Pilz: PTP/LIN plans from `/move_action`, checked by `safety.py`, run by `/execute_trajectory`; table, zones and tool in the planning scene. Point-to-point moves without a fish at `free_ptp_*_scale`, with one at `ptp_*_scale`, planned again slower where the TCP would pass `tcp_speed_max`. Cancels the move on Ctrl+C, a stop or a controller fault | yes |
 | `fairino.py` | Digital I/O, emergency stop and error state through frcobot_ros2's `ros2_cmd_server` | yes |
 
 Not done yet: hand-eye calibration (AS-60; `camera.mount` is typed in), the controller's speed limit and collision level from software (SF-14, SF-41: set them on the pendant), payload update (CS-45), a compliant wrist while pressing (only a hook: `grasp.press_start_commands`).

@@ -100,10 +100,10 @@ class VirtualArm:
         self._run("lin", np.array(positions), np.linspace(0, duration, steps + 1), tick)
 
     def _joint_path(self, target: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Joint-space path at the point-to-point speed scale, slowed where the TCP would
-        pass 90% of its speed limit."""
+        """Joint-space path at the point-to-point speed scale (with or without a fish),
+        slowed where the TCP would pass 90% of its speed limit."""
         start = self.world.joints
-        joint_speed = self.workcell.motion.ptp_velocity_scale * JOINT_SPEED
+        joint_speed = self.workcell.motion.ptp_scales(self._fish_length > 0)[0] * JOINT_SPEED
         steps = max(1, math.ceil(np.abs(target - start).max() / joint_speed / self.step_s))
         positions = start + (target - start) * np.linspace(0, 1, steps + 1)[:, None]
         tcp = np.array([self.workcell.tcp_of_tip(self.chain.fk(q))[:3, 3] for q in positions])
