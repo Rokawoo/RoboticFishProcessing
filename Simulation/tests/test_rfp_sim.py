@@ -539,7 +539,47 @@ def test_the_vacuum_tube_coils_round_the_wrist_as_it_turns():
 # ---------------------------------------------------------------------------
 # The layout editor (pick_place.py --mode setup)
 # ---------------------------------------------------------------------------
-def test_the_layout_editor_turns_moves_checks_and_saves(tmp_path):
+def test_dragging_a_corner_or_a_slot_and_adding_one():
+    from rfp_arm.layout import FishSize, load_layout_data
+    from rfp_sim.layout_editor import free_spot, moved, with_slot
+
+    _, layout = load_layout_data(panel_file=None)
+    pick, zone = layout.pick_area, layout.placement_zone
+    # a corner moves its two sides; the opposite corner stays, and they can't cross
+    bigger = moved(layout, ("pick_area", 1, 0), (0.652, -0.398))
+    assert bigger.pick_area == {"x": [pick["x"][0], 0.65], "y": [-0.40, pick["y"][1]]}
+    crossed = moved(layout, ("pick_area", 1, 0), (0.0, 0.5))
+    assert crossed.pick_area["x"] == pytest.approx([pick["x"][0], pick["x"][0] + 0.05])
+    assert crossed.pick_area["y"] == pytest.approx([pick["y"][1] - 0.05, pick["y"][1]])
+    # the camera's views follow the pick area, at the same place in it
+    for old, new in zip(layout.poses, bigger.poses):
+        share = [(old["camera_xy"][i] - pick[a][0]) / (pick[a][1] - pick[a][0])
+                 for i, a in enumerate("xy")]  # fmt: skip
+        assert [(new["camera_xy"][i] - bigger.pick_area[a][0])
+                / (bigger.pick_area[a][1] - bigger.pick_area[a][0])
+                for i, a in enumerate("xy")] == pytest.approx(share, abs=0.01)  # fmt: skip
+    # a slot dragged out of the placement zone takes the zone along; shrunk, it keeps them in
+    out = moved(layout, ("slot", 0), (0.60, 0.25))
+    assert out.slots[0] == [0.6, 0.25]
+    assert out.placement_zone == {"x": [zone["x"][0], 0.62], "y": [0.23, zone["y"][1]]}
+    small = moved(layout, ("placement_zone", 0, 1), (0.30, 0.50))
+    assert all(small.placement_zone["x"][0] + 0.02 <= x and y <= 0.48 for x, y in small.slots)
+    # an added slot: where a whole fish fits, clear of the others, within reach when carrying
+    fish = FishSize(0.80, 0.20, 0.20, 0.10)
+    big = moved(layout, ("work", 0, 1), (-0.40, 1.20))
+    (x, y), clear = free_spot(big, fish, reach=0.90)
+    assert clear and math.hypot(x + 0.10, y) <= 0.90
+    added, clear = with_slot(big, fish, reach=0.90)
+    assert clear and added.slots[-1] == [x, y] and len(added.slots) == 3
+    assert added.placement_zone["y"][1] >= y + 0.02  # grown to hold it
+    for sx, sy in layout.slots:  # beside each, or ahead of or behind it
+        assert abs(sy - y) >= fish.width + 0.02 - 1e-9 or abs(sx - x) >= fish.length + 0.02 - 1e-9
+    # no room left (the shipped cell, the largest stand-ins): the least overlap, said so
+    _, clear = with_slot(layout, FishSize(1.0, 0.25, 0.21, 0.126), reach=0.675)
+    assert not clear
+
+
+def test_the_layout_editor_turns_drags_checks_and_saves(tmp_path):
     import shutil
 
     from rfp_arm.layout import load_layout_data
@@ -553,19 +593,36 @@ def test_the_layout_editor_turns_moves_checks_and_saves(tmp_path):
     editor = LayoutEditor(workcell, panel, off_screen=True, log=said.append)
     try:
         assert not [f for f in editor.findings if f.error]  # the shipped layout works
+        # notes are shown in the window; hints about the heading (not edited there) aren't
+        notes = [f for f in editor.findings if not f.error and not f.minor]
+        assert any(f.minor for f in editor.findings)
+        assert editor.plotter.actors["notes"].GetInput().count("note: ") == len(notes)
         slot = list(editor.layout.slots[1])
-        editor._moved_slot(1, (0.38, 0.62, 0.0))  # dragged out of reach when carrying
+        editor.drag(("slot", 1), (0.38, 0.62))  # out of reach when carrying
         assert any(f.error and f.text.startswith("slot 2") for f in editor.findings)
+        assert editor.message == "slot 2 at (380, 620) mm"
         assert editor.save() == [] and "click Save again" in editor.message  # asks first
-        editor._moved_slot(1, (*slot, 0.0))
+        editor.drag(("slot", 1), slot)
+        balls = {handle: widget.GetCenter() for widget, handle in editor.handles}
+        assert balls[("slot", 1)][:2] == pytest.approx(slot)  # the balls follow the layout
         editor.add_slot()
         assert len(editor.layout.slots) == 3
+        assert ("slot", 2) in [handle for _, handle in editor.handles]  # a ball for it
         editor.remove_slot()
+        editor.remove_slot()  # two at least
+        assert len(editor.layout.slots) == 2
+        # a table dragged too small for any grid line still draws (it is all problems)
+        editor.drag(("work", 0, 0), (-0.39, -0.84))
+        editor.drag(("work", 1, 1), (-0.34, -0.79))
+        assert editor.layout.work["x"] == pytest.approx([-0.39, -0.34])
+        assert any(f.error for f in editor.findings)
+        editor.undo()
         first = list(editor.layout.slots[0])
         editor.turn(1)  # the table a quarter turn round the arm
         assert editor.layout.slots[0] == pytest.approx([-first[1], first[0]])
         written = editor.save()
-        assert "placement.slots in workcell.yaml" in written and "Saved" in said[-2]
+        assert "placement.slots in workcell.yaml" in written
+        assert any(line.startswith("✅ Saved") for line in said) and "sim3d" in said[-1]
         _, saved = load_layout_data(workcell, panel)
         assert saved.heading_deg == pytest.approx(90.0)  # in the panel, which overrides it
         assert saved.slots == editor.layout.slots

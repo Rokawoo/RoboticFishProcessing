@@ -173,12 +173,20 @@ Details: [Simulation/README.md](Simulation/README.md).
 python main.py --mode setup
 ```
 
-The arm and gripper with the table (gray), pick area (green), placement zone (blue) with its slots and the fish placed there, keep-out zones (red), the observation poses (orange balls) with what each camera view covers, and two rings: how far the cups reach at a fish's top, and when carrying a fish (0.5 m up for the stand-ins). Nothing moves.
+The arm and gripper over the table (gray), with the pick area (green), the placement zone (blue) with its slots and the fish placed there, keep-out zones (red), what the camera sees (yellow), and two rings for the arm's reach: picking, and carrying a fish (slots go inside it). Nothing moves.
 
-- **Drag** a box's face handles to size it, its middle handle to move it; drag a ball to move a slot or an observation pose.
-- **Buttons:** turn the whole layout 90° about the arm (the table on another side), turn the placement heading, add or remove a slot, undo, save.
-- **Checked on every change:** red is what can't work (out of the arm's reach, a placed fish off the table), yellow what may not (a fish that can't be lifted there, part of the pick area no view sees, slots closer than a fish is wide). Save with red left asks for a second click.
-- **Save** changes only the layout's lines (comments stay; a `.bak` copy of each file is kept), in control_panel.yaml where it overrides the workcell file. A `verified` cell becomes unverified: check the new zones on the real cell. Every mode prints the same checks when it starts.
+- **Size a zone:** drag a corner ball of the table, pick area or placement zone. The opposite corner stays.
+- **Place fish:** drag a slot (the big blue balls). Its fish is drawn head first. **Add a slot** puts one where a whole fish fits, or says there's no room.
+- **Turn the cell:** the two turn buttons move everything 90° about the arm, so the table is on another side of it.
+- **Undo** goes back to the saved layout; **Save** writes it.
+
+The rest follows by itself:
+- The camera's views follow the pick area.
+- The placement zone grows to hold its slots.
+- Keep-out zones turn with the cell.
+- Everything is checked after every change. Red is what can't work (out of the arm's reach, a placed fish off the table); yellow is what may not (a fish that can't be lifted there, part of the pick area no view sees, slots closer than a fish is wide). Save with red left asks for a second click.
+
+Save changes only the layout's lines (comments stay; a `.bak` copy of each file is kept), in control_panel.yaml where it overrides the workcell file. A `verified` cell becomes unverified: check the new zones on the real cell. Every mode prints the same checks when it starts. The placement heading, keep-out zones and observation poses are set in the files ([what to set](#what-to-set)).
 
 ### Which way is which
 

@@ -207,6 +207,9 @@ class Finding:
     error: bool  # True: the cell can't work like this; False: a warning
     text: str
     where: tuple[float, float] | None = None  # m: the place on the table it is about
+    # A hint for the process (the placement heading), not about where things are: printed,
+    # not shown in the setup window
+    minor: bool = False
 
 
 YAWS = tuple(math.radians(a) for a in (0, 90, 180, -90))
@@ -319,6 +322,7 @@ def _slot_wrist(cell, chain, k, slot, z, heading, middle) -> Finding | None:
         f"up to {90 + off:.0f} deg out at the grasp; a placement heading of {better:.0f} deg "
         "would keep it within 90",
         tuple(slot),
+        minor=True,
     )
 
 

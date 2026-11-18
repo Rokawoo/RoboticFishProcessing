@@ -18,9 +18,9 @@ Usage:
     python pick_place.py --mode run                       # THE ARM MOVES, with vacuum
 
 Modes, in the order to bring a cell up (SF-43):
-    setup     Nothing moves. The cell's layout in a 3D window around the arm: drag the table,
-              pick area, placement zone, slots, keep-out zones and observation poses, turn it
-              all about the arm; every change is checked against what the arm reaches and the
+    setup     Nothing moves. The cell's layout in a 3D window around the arm: drag the corners
+              of the table, pick area and placement zone and the slots, add slots, turn it all
+              about the arm; every change is checked against what the arm reaches and the
               camera sees. Saves the workcell file (and the control panel where it overrides it).
     observe   Nothing moves. Shows what the camera and the model see and where each fish is
               in the arm's frame (with MoveIt running: from the arm's real pose).

@@ -77,6 +77,7 @@ def test_the_check_finds_what_keeps_the_cell_from_working():
     # would put both at +-90 (the slots and their zone would follow it)
     slot = [f for f in check(layout, data) if f.text.startswith("slot 1: placed, the wrist")]
     assert slot and not slot[0].error and "placement heading of" in slot[0].text
+    assert slot[0].minor  # a hint for the process: printed, not shown in the setup window
     off = copy.deepcopy(layout)
     off.slots[1] = [0.0, 0.65]  # a fish placed there reaches past the table's -X edge
     assert any("past the table's edge" in f.text for f in check(off, data) if f.error)
