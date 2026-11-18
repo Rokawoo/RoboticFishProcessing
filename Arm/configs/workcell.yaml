@@ -33,6 +33,11 @@ tool:
   # Cups, bracket and camera as one box in the tip link frame, for MoveIt's collision
   # checks. Keep its far end short of the cup faces, or reaching a fish counts as a hit.
   body: {x: [-0.100, 0.100], y: [-0.123, 0.050], z: [0.100, 0.226]}
+  # The arm's own body, the FR5's links and this gripper, as spheres (at most 1 cm past
+  # them): every planned path and pose is checked so the arm never runs into itself.
+  # Simulation/make_collision_model.py makes it from the meshes: run it again after
+  # changing the gripper. In this folder; "": not checked.
+  collision_model: collision_model.yaml
 
 camera:
   # The camera's optical frame (z out of the lens, x right, y down in the image) in the

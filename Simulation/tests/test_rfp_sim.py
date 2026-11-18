@@ -537,6 +537,43 @@ def test_the_vacuum_tube_coils_round_the_wrist_as_it_turns():
 
 
 # ---------------------------------------------------------------------------
+# The arm's collision model (Arm/configs/collision_model.yaml)
+# ---------------------------------------------------------------------------
+def test_the_collision_model_covers_the_arm_and_the_gripper_as_built():
+    import hashlib
+
+    import yaml
+    from rfp_arm.collision import BODY_NAMES, DEFAULT_MODEL, GRIPPER, load_collision_model
+    from rfp_arm.kinematics import FR5
+    from rfp_sim.assets import find_robot_meshes, load_gripper, robot_link_meshes
+    from rfp_sim.settings import MESH_CACHE, SIM_DIR, gripper_path, load_settings
+
+    sim = load_settings(panel=None)
+    stl = gripper_path(sim)
+    made_from = yaml.safe_load(DEFAULT_MODEL.read_text(encoding="utf-8"))["gripper_sha256"]
+    assert made_from == hashlib.sha256(stl.read_bytes()).hexdigest(), (
+        "the gripper's model changed: run Simulation/make_collision_model.py"
+    )
+    model = load_collision_model()
+    meshes = {GRIPPER: load_gripper(stl).mesh}
+    folder, _ = find_robot_meshes(sim.robot_meshes, SIM_DIR, MESH_CACHE, False)
+    if folder is not None:  # FAIRINO's, downloaded by the setup (not in Git)
+        meshes.update(robot_link_meshes(folder, ["base_link", *FR5.links]))
+    bodies = {body.name: body for body in model.bodies}
+    for link, mesh in meshes.items():
+        body = bodies[BODY_NAMES[link]]
+        points = np.asarray(mesh.points, float)
+        covered = np.zeros(len(points), bool)
+        for x, y, z, r in body.spheres:  # every point of the mesh is in one of the spheres
+            covered |= ((points - (x, y, z)) ** 2).sum(axis=1) <= (r + 1e-6) ** 2
+        assert covered.all(), f"{body.name}: {(~covered).sum()} points outside its spheres"
+        low, high = np.array(mesh.bounds[::2]), np.array(mesh.bounds[1::2])
+        reach = body.margin + 0.004  # and the voxels' error
+        assert ((body.spheres[:, :3] - body.spheres[:, 3:]) >= low - reach).all(), body.name
+        assert ((body.spheres[:, :3] + body.spheres[:, 3:]) <= high + reach).all(), body.name
+
+
+# ---------------------------------------------------------------------------
 # The layout editor (pick_place.py --mode setup)
 # ---------------------------------------------------------------------------
 def test_dragging_a_corner_or_a_slot_and_adding_one():

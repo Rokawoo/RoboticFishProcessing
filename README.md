@@ -248,6 +248,8 @@ Then run the [simulation](#run-it-in-the-3d-simulation) to see whether the camer
 
 > The program doesn't set the controller's speed limit or collision detection: set them on the pendant. q or Esc in the camera window, or Ctrl+C, stops the arm; if the program dies mid-move, the move finishes.
 
+Every planned move is checked in the program before it runs: the tool's speed, the zones, the wrist's range, and that the arm doesn't run into itself (its links and the gripper, from their 3D models, with up to 1 cm to spare: [Arm/configs/collision_model.yaml](Arm/configs/collision_model.yaml)). After changing the gripper, run `python Simulation/make_collision_model.py`.
+
 **Once, on the robot PC** (Ubuntu 22.04): `./setup.sh --robot` installs ROS 2 Humble, MoveIt 2, ros2_control and librealsense, adds you to `dialout` (the valve board's port), clones [frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2) into `~/rfp_ws/src` and sets up the Python environment (`.venv`, which sees ROS's packages). Then by hand:
 
 1. Build FAIRINO's driver: frcobot_ros2 has a hardware package per controller software version; keep the one matching yours (FAIRINO's ROS 2 guide), then `colcon build` in `~/rfp_ws`.

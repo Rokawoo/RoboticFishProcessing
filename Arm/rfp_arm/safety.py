@@ -1,7 +1,9 @@
 """
 Fixed-code check of a planned joint trajectory before it runs (CS-30, CS-43, SF-10, SF-21):
-the TCP's speed, where the tool, the camera and the held fish go, and how far the joints
-turn. MoveIt checks collisions; this is the layer that doesn't depend on its scene. No ROS.
+the TCP's speed, where the tool, the camera and the held fish go, how far the joints turn,
+and that the arm doesn't run into itself (its links and the gripper as built,
+rfp_arm.collision). MoveIt checks collisions too; this is the layer that doesn't depend on
+its scene. No ROS.
 """
 
 from dataclasses import dataclass
@@ -92,6 +94,12 @@ def check_trajectory(
             problem = workcell.pose_problem(pose, fish_length, False, fish_middle_x)
         if problem is not None:
             check.problem = f"{problem} ({times[i] - times[0]:.1f} s into the move)"
+            return check
+    if workcell.collision is not None:
+        order = [joint_names.index(name) for name in chain.joint_names]
+        if hit := workcell.collision.path_problem(chain, positions[:, order]):
+            i, what = hit
+            check.problem = f"{what} ({times[i] - times[0]:.1f} s into the move)"
             return check
     max_travel = np.radians(workcell.motion.max_joint_travel_deg)
     wrist = workcell.joints[-1]

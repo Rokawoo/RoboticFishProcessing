@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from rfp_arm.collision import CollisionModel, load_collision_model
 from rfp_arm.poses import invert, tool_down, transform
 
 DEFAULT_FILE = Path(__file__).resolve().parents[1] / "configs" / "workcell.yaml"
@@ -212,6 +213,9 @@ class Workcell:
     motion: MotionLimits = field(default_factory=MotionLimits)
     grasp: GraspSettings = field(default_factory=GraspSettings)
     gripper: GripperSettings = field(default_factory=GripperSettings)
+    # The arm's own body (links and gripper) as spheres: paths and poses that run the arm
+    # into itself are refused; None: not checked
+    collision: CollisionModel | None = None
     source: Path | None = None
 
     # -- frames ------------------------------------------------------------
@@ -360,6 +364,7 @@ def workcell_from_mapping(data: dict) -> Workcell:
     table_z = float(table["z"])
     work = zones["work"]
     body = tool.get("body")
+    model = tool.get("collision_model")
 
     poses = []
     for i, entry in enumerate(observation["poses"], 1):
@@ -413,6 +418,7 @@ def workcell_from_mapping(data: dict) -> Workcell:
         motion=_settings(MotionLimits, data.get("motion"), "motion"),
         grasp=_settings(GraspSettings, data.get("grasp"), "grasp"),
         gripper=_settings(GripperSettings, data.get("gripper"), "gripper"),
+        collision=load_collision_model(DEFAULT_FILE.parent / model) if model else None,
     )
 
 

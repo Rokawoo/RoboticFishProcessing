@@ -11,7 +11,7 @@ Workcell setup and bring-up on the real arm: [top README](../README.md#set-up-th
 | `rfp_arm/` | The modules below; `basic_move_demo.py` nods and swings the real arm (read its docstring first) |
 | `scripts/` | `gripper_bench.py`: vacuum `on`, `off`, `pulse <ms>`, `status`, `watch` by hand |
 | `firmware/valve_control/` | Valve board sketch (Adafruit Feather ESP32 V2). Wi-Fi credentials go in `secrets.h`, copied from `secrets.example.h`, never committed |
-| `configs/` | `workcell.yaml`: frames, tool, camera mount, zones, observation poses, slots, motion and gripper limits |
+| `configs/` | `workcell.yaml`: frames, tool, camera mount, zones, observation poses, slots, motion and gripper limits. `collision_model.yaml`: the arm and gripper as spheres (generated) |
 
 ## Modules (`rfp_arm/`)
 
@@ -25,7 +25,8 @@ ControlSys sees only `interfaces.py`: an `Arm`, a `Gripper` and the error codes 
 | `gripper.py` | `ValveGripper`: the ESP32 valve board (`driver: serial` or `http`), on/off only. `SuctionGripper`: control box I/O with a vacuum switch, the spec's variant (`driver: controller`, Table AS-4). Simulated and dry-run grippers | no |
 | `valve.py` | The valve board over USB (`SerialValve`) or Wi-Fi (`HttpValve`) | no |
 | `contact.py` | Force along the tool axis from joint torques (no force sensor); tune with `pick_place.py --mode feel` | no |
-| `safety.py` | Checks every planned trajectory before it runs: TCP speed, zones, joint travel, wrist range | no |
+| `safety.py` | Checks every planned trajectory before it runs: TCP speed, zones, joint travel, wrist range, the arm against itself | no |
+| `collision.py` | The FR5's links and the gripper as built as spheres (`configs/collision_model.yaml`, made from the meshes by `Simulation/make_collision_model.py`): whether a pose or a path runs the arm into itself. NumPy only | no |
 | `kinematics.py`, `poses.py` | FR5 kinematics from the URDF: forward, inverse (seeded, so the arm keeps its posture), j6 at a pose; pose math | no |
 | `sim.py` | Simulated arm for tests and offline runs | no |
 | `moveit_arm.py` | MoveIt 2 with Pilz: PTP/LIN plans from `/move_action`, checked by `safety.py`, run by `/execute_trajectory`; table, zones and tool in the planning scene. Cancels the move on Ctrl+C, a stop or a controller fault | yes |

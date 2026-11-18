@@ -229,8 +229,8 @@ def reach_joints(
     cell: Workcell, tcp: np.ndarray, chain: Chain = FR5, wrist_range: bool = True
 ) -> np.ndarray | None:
     """Joint positions putting the TCP at `tcp` with the arm facing it, elbow up, the wrist
-    inside its range (the vacuum tube; `wrist_range=False`: anywhere); None if there are
-    none."""
+    inside its range (the vacuum tube; `wrist_range=False`: anywhere), the arm clear of
+    itself (the cell's collision model); None if there are none."""
     tip = cell.tip_of_tcp(tcp)
     seed = REACH_SEED.copy()
     seed[0] = math.atan2(tip[1, 3], tip[0, 3]) - _seed_bearing(chain)
@@ -238,7 +238,11 @@ def reach_joints(
     if q is None:
         return None
     low, high = cell.wrist_range
-    return q if not wrist_range or low <= q[-1] <= high else None
+    if wrist_range and not low <= q[-1] <= high:
+        return None
+    if cell.collision is not None and cell.collision.hit(chain, q):
+        return None
+    return q
 
 
 def _seed_bearing(chain: Chain) -> float:
