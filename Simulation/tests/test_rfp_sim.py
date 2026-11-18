@@ -4,6 +4,7 @@ pyvista (the `sim` extra)."""
 
 import math
 import sys
+import types
 import zipfile
 
 import pytest
@@ -279,6 +280,37 @@ def test_a_fish_cut_off_by_the_view_is_placed_after_a_closer_look():
     assert CELL.placement_zone.contains(world.fish[0].pose[:2, 3])
     report, _, world = run(close_looks=0)
     assert report.successes == 0 and "none can be picked" in report.ended, report
+
+
+def test_back_from_a_place_at_the_end_of_its_range_the_wrist_turns_back_first():
+    from rfp_arm.grasp import WRIST_MOVE
+    from rfp_controlsys.console import Console
+    from rfp_controlsys.cycle import PickPlaceCycle
+    from rfp_controlsys.selector import RuleSelector
+    from rfp_controlsys.settings import ControlSettings
+
+    class Still:  # the camera's frames while the arm moves
+        def frame(self):
+            return types.SimpleNamespace(color=np.zeros((4, 4, 3), np.uint8))
+
+    world = World(CELL, settings(), stand_in_fish(0.79))
+    arm = VirtualArm(world, CELL)
+    cycle = PickPlaceCycle(
+        arm, VirtualGripper(world), Still(), RuleSelector(), CELL, ControlSettings(settle_s=0.0),
+        Console(window=False, interactive=False), sleep=lambda seconds: None,
+    )  # fmt: skip
+    look = CELL.observation_poses[0]
+    there = arm.wrist_angle(CELL.observation_tcp(look))
+    wound = world.joints.copy()
+    wound[-1] = math.radians(170)  # as a place can leave it: 184 deg from the pose's
+    world.set_joints(wound)
+    assert abs(there - wound[-1]) > WRIST_MOVE
+    cycle._go_to(look)
+    assert len(arm.wrist_turns) == 2 and max(arm.wrist_turns) <= WRIST_MOVE
+    assert arm.wrist_angle() == pytest.approx(there, abs=1e-3)
+    assert np.allclose(arm.tcp_pose(), CELL.observation_tcp(look), atol=1e-4)
+    cycle._go_to(CELL.observation_poses[1])  # a short turn: one move
+    assert len(arm.wrist_turns) == 3
 
 
 def test_fish_can_lie_anywhere_in_the_pick_area_as_real_fish_do():

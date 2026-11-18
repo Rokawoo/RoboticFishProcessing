@@ -277,6 +277,23 @@ class OperatorStop(Exception):
         self.reason = reason
 
 
+def wrist_back_pose(arm: Arm, workcell: Workcell) -> np.ndarray | None:
+    """The tool where it is, turned about the vertical so the wrist (j6) is at the middle of
+    its range; None if the arm can't tell where the wrist would be."""
+    low, high = workcell.wrist_range
+    middle = (low + high) / 2
+    here, now = arm.tcp_pose(), arm.wrist_angle()
+    if now is None:
+        return None
+    for turn in (middle - now, now - middle):  # which way the tool turns: the arm's build
+        pose = here.copy()
+        pose[:3, :3] = rot_z(turn) @ here[:3, :3]
+        predicted = arm.wrist_angle(pose)
+        if predicted is not None and abs(predicted - middle) < math.radians(5):
+            return pose
+    return None
+
+
 class GraspSequence:
     """
     Runs a GraspPlan. `tick` is called while the arm moves (display, stop key): a returned
@@ -359,18 +376,8 @@ class GraspSequence:
     def _reset_wrist(self) -> None:
         """Turn the wrist back to its middle where the tool is (about the vertical), so the
         turn to the grasp that follows is shorter than WRIST_MOVE."""
-        low, high = self.workcell.wrist_range
-        middle = (low + high) / 2
-        here, now = self.arm.tcp_pose(), self.arm.wrist_angle()
-        if now is None:
-            return
-        for turn in (middle - now, now - middle):  # which way the tool turns: the arm's build
-            pose = here.copy()
-            pose[:3, :3] = rot_z(turn) @ here[:3, :3]
-            predicted = self.arm.wrist_angle(pose)
-            if predicted is not None and abs(predicted - middle) < math.radians(5):
-                break
-        else:
+        pose = wrist_back_pose(self.arm, self.workcell)
+        if pose is None:
             return
         if problem := self.workcell.pose_problem(pose):
             raise ArmError(E_MOTION, f"turning the wrist back: {problem}")

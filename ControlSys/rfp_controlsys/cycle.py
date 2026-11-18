@@ -14,7 +14,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
-from rfp_arm.grasp import GraspSequence, OperatorStop, plan_grasp
+from rfp_arm.grasp import (
+    WRIST_MOVE,
+    GraspSequence,
+    OperatorStop,
+    plan_grasp,
+    wrist_back_pose,
+)
 from rfp_arm.interfaces import (
     E_DROP,
     E_MOTION,
@@ -344,10 +350,20 @@ class PickPlaceCycle:
         return ObservationPose(name, camera=camera)
 
     def _go_to(self, pose: ObservationPose) -> None:
+        """To an observation pose or a closer look. Back from a place at one end of the
+        wrist's range the turn there can be longer than WRIST_MOVE (vacuum tube; the joint
+        travel limit): the wrist turns back to its middle where the tool is first."""
+        tcp = None if pose.joints is not None else self.workcell.observation_tcp(pose)
+        there = pose.joints[-1] if pose.joints is not None else self.arm.wrist_angle(tcp)
+        now = self.arm.wrist_angle()
+        if there is not None and now is not None and abs(there - now) > WRIST_MOVE:
+            back = wrist_back_pose(self.arm, self.workcell)
+            if back is not None and self.workcell.pose_problem(back) is None:
+                self.arm.move_ptp(back, self._tick)
         if pose.joints is not None:
             self.arm.move_joints(pose.joints, self._tick)
         else:
-            self.arm.move_ptp(self.workcell.observation_tcp(pose), self._tick)
+            self.arm.move_ptp(tcp, self._tick)
 
     def _move(self, motion: Callable[[], None], what: str) -> None:
         """A move outside the grasp sequence: planned again once, then the run stops."""
