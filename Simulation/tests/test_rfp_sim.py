@@ -360,8 +360,11 @@ def test_the_benchmark_scores_each_fish_against_the_truth():
         assert row["slot_error_mm"] < 30 and abs(row["heading_error_deg"]) < 8
         # the cups at the outline's middle (no shift here): behind its center of mass
         assert abs(row["grasp_from_middle_mm"]) < 25 and row["grasp_from_com_mm"] < 0
+        # alone on the table: carried low (the 88 mm fish + 50 mm), clear of the table
+        assert row["carry_mm"] < 160 and row["carry_clearance_mm"] >= 40
     summary = summarize(rows)
     assert summary["placed"] == 2 and summary["fish"] == 2 and summary["failures"] == {}
+    assert summary["carry_clearance_mm"] == min(row["carry_clearance_mm"] for row in rows)
     assert any("(was" in line for line in report_lines(summary, summary))
 
 

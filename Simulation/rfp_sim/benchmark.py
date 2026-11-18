@@ -6,7 +6,8 @@ shown to do better (or not) before it reaches the arm.
 Per fish: where it ended up (placed in the placement zone, left in the pick area, or
 elsewhere), how far its middle lies from its slot and how far its head points from the
 placement heading, and where the cups took it relative to its true center of mass. Per
-scene: how the run ended, failures by code, looks, wrist travel and simulated time.
+scene: how the run ended, failures by code, looks, wrist travel, simulated time, how high
+fish were carried and how far they cleared the table and the fish under them.
 """
 
 import math
@@ -23,6 +24,7 @@ from rfp_controlsys.cycle import PickPlaceCycle
 from rfp_controlsys.selector import RuleSelector
 from rfp_controlsys.settings import ControlSettings
 from rfp_vision.fish_list import FishLocator
+from rfp_vision.geometry import to_frame
 from rfp_vision.settings import VisionSettings
 from rfp_vision.vision_system import VisionSystem
 
@@ -30,8 +32,10 @@ from rfp_sim.devices import VirtualArm, VirtualGripper
 from rfp_sim.render import TruthDetector
 from rfp_sim.session import build_session
 from rfp_sim.settings import SimSettings
+from rfp_sim.world import World
 
 NEAR_FISH = 0.25  # m: a grasp point this close to a fish's middle was aimed at that fish
+SAMPLE_POINTS = 3000  # of a fish's mesh, for how far a carried one clears what is under it
 
 
 class QuietConsole(Console):
@@ -41,9 +45,11 @@ class QuietConsole(Console):
     def __init__(self):
         super().__init__(window=False, interactive=False)
         self.lines: list[str] = []
+        self.detail = ""  # the last state's detail: the grasp step running
 
     def state(self, state: str, detail: str = "") -> None:
         self.lines.append(f"[{state}] {detail}")
+        self.detail = detail
 
     def info(self, text: str) -> None:
         self.lines.append(text)
@@ -135,11 +141,15 @@ def run_scene(bench: Bench, seed: int) -> list[dict]:
     start = {fish.name: fish.pose.copy() for fish in world.fish}
 
     wrist = {"last": float(world.joints[-1]), "travel": 0.0}
+    rows, console = _Rows(), QuietConsole()
+    clearances = []
 
     def on_step() -> None:
         now = float(world.joints[-1])
         wrist["travel"] += abs(now - wrist["last"])
         wrist["last"] = now
+        if console.detail == "carry" and (gap := carry_clearance(world)) is not None:
+            clearances.append(gap)
 
     waited = {"s": 0.0}
 
@@ -147,7 +157,6 @@ def run_scene(bench: Bench, seed: int) -> list[dict]:
         waited["s"] += seconds
 
     arm = VirtualArm(world, cell, on_step=on_step)
-    rows, console = _Rows(), QuietConsole()
     bench.vision.looks = 0
     # Without the camera's hold check something else must confirm a hold, or no fish is
     # lifted: then the gripper has a vacuum switch (the world knows what the cups hold)
@@ -176,12 +185,62 @@ def run_scene(bench: Bench, seed: int) -> list[dict]:
         "wrist_turn_max_deg": round(math.degrees(max(arm.wrist_turns, default=0.0))),
         "sim_time_s": round(sum(seconds for _, seconds in arm.moves) + waited["s"], 1),
         "compute_s": round(time.monotonic() - started, 1),
+        "carry_mm": _mean([r["carry_mm"] for r in rows.rows if r.get("carry_mm") is not None]),
+        "carry_clearance_mm": round(min(clearances) * 1000) if clearances else None,
     }
     first_grasp = _first_grasps(rows.rows, start)
     return [
         {**scene, **_score_fish(fish, start[fish.name], first_grasp.get(fish.name), cell)}
         for fish in world.fish
     ]
+
+
+def carry_clearance(world: World) -> float | None:
+    """How far (m) the lowest point of the fish on the cups is above the table, or above the
+    top of a fish lying under it, whichever is less; None while nothing is held."""
+    held = world.holding
+    if held is None:
+        return None
+    points = to_frame(held.pose, _points(held.model))
+    gap = float(points[:, 2].min() - world.workcell.table_z)
+    for other in world.fish:
+        if other is held:
+            continue
+        outline = other.outline()[::3]
+        near = (points[:, :2] >= outline.min(axis=0)).all(axis=1) & (
+            points[:, :2] <= outline.max(axis=0)
+        ).all(axis=1)
+        over = near.copy()
+        over[near] = _inside(points[near, :2], outline)
+        if over.any():
+            top = other.pose[2, 3] + other.model.mesh.bounds[5]
+            gap = min(gap, float(points[over, 2].min() - top))
+    return gap
+
+
+_POINTS: dict[int, tuple[object, np.ndarray]] = {}
+
+
+def _points(model) -> np.ndarray:
+    """A sample of the model's mesh points, its lowest among them (taken once per model)."""
+    if id(model) not in _POINTS:
+        points = np.asarray(model.mesh.points, float)
+        sample = points[:: max(1, len(points) // SAMPLE_POINTS)]
+        _POINTS[id(model)] = (model, np.vstack([sample, points[points[:, 2].argmin()]]))
+    return _POINTS[id(model)][1]
+
+
+def _inside(points: np.ndarray, polygon: np.ndarray) -> np.ndarray:
+    """Which (n, 2) points lie inside the polygon (even-odd rule)."""
+    x, y = polygon[:, 0], polygon[:, 1]
+    xn, yn = np.roll(x, -1), np.roll(y, -1)
+    px, py = points[:, :1], points[:, 1:2]
+    crosses = ((y > py) != (yn > py)) & (px < (xn - x) * (py - y) / (yn - y + 1e-12) + x)
+    return np.count_nonzero(crosses, axis=1) % 2 == 1
+
+
+def _mean(values: list) -> float | None:
+    return round(float(np.mean(values))) if values else None
 
 
 def _first_grasps(rows: list[dict], start: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -243,6 +302,7 @@ def summarize(rows: list[dict]) -> dict:
     scenes = {r["seed"]: r for r in rows}.values()
     fish = len(rows)
     placed = [r for r in rows if r["outcome"] == "placed"]
+    cleared = [s["carry_clearance_mm"] for s in scenes if s.get("carry_clearance_mm") is not None]
     failures: Counter = Counter()
     for scene in scenes:
         for item in filter(None, scene["failures"].split("+")):
@@ -269,6 +329,9 @@ def summarize(rows: list[dict]) -> dict:
         "sim_time_s_per_placed": (
             round(sum(s["sim_time_s"] for s in scenes) / len(placed), 1) if placed else None
         ),
+        "carry_mm": _mean([s["carry_mm"] for s in scenes if s.get("carry_mm") is not None]),
+        # the least any carried fish cleared the table or a fish under it, in the worst scene
+        "carry_clearance_mm": min(cleared) if cleared else None,
     }
 
 
@@ -327,6 +390,10 @@ def report_lines(summary: dict, baseline: dict | None = None) -> list[str]:
             f"at most {num('wrist_turn_max_deg')} in one move"
         ),
         f"simulated time:     {num('sim_time_s_per_placed')} s per placed fish (moves and waits)",
+        (
+            f"carried:            {num('carry_mm')} mm above the table on average, clearing "
+            f"the table and fish under it by at least {num('carry_clearance_mm')} mm"
+        ),
     ]
     if baseline is not None and baseline.get("outcomes") != f["outcomes"]:
         lines.insert(3, f"                    (was {baseline.get('outcomes')})")
