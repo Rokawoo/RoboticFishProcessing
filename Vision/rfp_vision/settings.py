@@ -75,13 +75,15 @@ class Catfish(FishType):
 
 @dataclass
 class StandIn(FishType):
-    """The printed stand-in (Simulation/models/catfish.3mf, 0.79 m) as vision measures it in
-    the simulation: about 14% long (its raised ends) and taller than real catfish; its true
-    center of mass lies 0.126 x the measured length ahead of the measured middle."""
+    """Printed stand-ins (Simulation/models/catfish.3mf, printed 0.5-0.8 m) as vision
+    measures them: about 14% long (their raised ends) and taller than real catfish; the true
+    center of mass lies 0.126 x the measured length ahead of the measured middle. The limits
+    only check that it is a fish of about that kind: tight ones (made for the 0.79 m print)
+    refused the real, smaller fish the cups fit."""
 
-    length_range_m: tuple[float, float] = (0.80, 1.00)
-    width_range_m: tuple[float, float] = (0.14, 0.25)  # 0.17-0.23 by how it lies (its fins)
-    thickness_range_m: tuple[float, float] = (0.15, 0.21)
+    length_range_m: tuple[float, float] = (0.35, 1.00)
+    width_range_m: tuple[float, float] = (0.07, 0.26)
+    thickness_range_m: tuple[float, float] = (0.04, 0.22)
     balance_ahead_share: float = 0.126
 
 
@@ -98,7 +100,7 @@ class VisionSettings:
 
     # Detection (VS-20, VS-61, VS-24)
     predict_conf: float = 0.25  # the model's own threshold; weaker detections aren't listed
-    min_confidence: float = 0.50
+    min_confidence: float = 0.60  # below: low_confidence, not picked
     min_area_share: float = 0.03  # of the frame; smaller detections aren't fish
     border_margin_px: float = 8.0
 
@@ -111,13 +113,21 @@ class VisionSettings:
     min_depth_valid: float = 0.80
     default_thickness_m: float = 0.10  # fish height on the table, used without depth
     outline_height_share: float = 0.5  # the outline is seen at about half the fish's height
+    # The table's height measured around each fish (depth from table_gap_m to table_ring_m
+    # outside its outline), within table_search_m of the workcell's table.z; False: table.z
+    measure_table: bool = True
+    table_gap_m: float = 0.01
+    table_ring_m: float = 0.04
+    table_search_m: float = 0.15
     # The fish's surface under the cups, from depth: the cups are tilted onto it
     align_to_surface: bool = True  # False: always approach straight down
     max_surface_tilt_deg: float = 15.0  # a steeper surface is approached straight down (AS-21)
     surface_fit_rms_m: float = 0.012  # a rougher fit isn't trusted
 
     # Heading (fish_heading.py, H-20)
-    require_heading: bool = True  # False: a fish with an unknown head end is still valid
+    # True: a fish whose head end is unclear isn't picked; False: it is, the cups at its
+    # middle, into the slot either way round (the log says so)
+    require_heading: bool = False
     min_heading_confidence: float = 0.6
 
     # Geometry checks (VS-65: Table SY-1 +- 10%, VS-33)
@@ -127,14 +137,24 @@ class VisionSettings:
     catfish: Catfish = field(default_factory=Catfish)
     cup_footprint_m: tuple[float, float] = (0.20, 0.10)  # along and across the body
     # Where all six cups don't seal at the balance point (the fins), they move back toward
-    # the middle in steps this long until they do
+    # the middle in steps this long until they do, and at most grasp_behind_m past it
     grasp_step_m: float = 0.01
+    grasp_behind_m: float = 0.03
     cup_diameter_m: float = 0.04  # six of them, 3 x 2, filling the footprint
+    # How far a cup may reach past the fish's outline seen from above (its widest section)
+    cup_overhang_m: float = 0.005
+    # Cups with depth under them, at least, for the depth to judge the seal (holes: shiny skin)
+    min_cups_measured: int = 4
     # The unevenness under the cups the bellows take up and still all seal: they compress
     # from 40 mm to about 10 mm, less 5 mm the last cup to touch is still pressed by
     cup_stroke_m: float = 0.025
     # What a cup's lip takes up of a bump under it (a fin): more and that cup stays off the fish
-    cup_lip_conform_m: float = 0.006
+    cup_lip_conform_m: float = 0.010
+    # True: a spot where a bump under one cup's lip (cup_lip_conform_m: a fin, or the D405's
+    # noise on a round body) may keep it off the fish isn't used; False: only one past the
+    # bellows' stroke keeps it off, and the hold check (or the vacuum switch) tells whether
+    # the cups sealed. Real fish differ from the printed models this was tuned on
+    strict_seal_check: bool = False
     overlap_margin_px: float = 6.0  # outlines this close touch (Table VS-1)
 
     # Stability over the frames of one observation (VS-52)

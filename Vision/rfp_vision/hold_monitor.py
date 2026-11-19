@@ -56,6 +56,7 @@ class HoldMonitor:
         self._region: np.ndarray | None = None
         self._depth: np.ndarray | None = None
         self._lost = 0
+        self._near_limit = settings.near_m  # m: closer than this is held (or the gripper)
 
     @property
     def active(self) -> bool:
@@ -73,10 +74,16 @@ class HoldMonitor:
         if self.settings.use_depth and frame.depth is not None:
             self._background = self._near(self._small(frame.depth))
 
-    def start(self, frame: Frame) -> list[str]:
-        """Take the reference with the cups on the fish. Returns the usable cues ([] = none)."""
+    def start(self, frame: Frame, table_distance: float | None = None) -> list[str]:
+        """Take the reference with the cups on the fish. Returns the usable cues ([] = none).
+        `table_distance`: how far the table is from the camera (m): the held surface is what
+        is nearer than near_m and than the table (less depth_tolerance_m). Under a thin fish
+        the table lies within near_m: taken for held surface, it went away as the fish was
+        lifted, and a fish still on the cups counted as dropped."""
         self.stop()
         s = self.settings
+        if table_distance is not None:
+            self._near_limit = min(s.near_m, table_distance - s.depth_tolerance_m)
         if self._detector is not None:
             found = self._detector.detect(frame.color)
             if found:  # largest outline first: the fish under the gripper fills the view
@@ -123,6 +130,7 @@ class HoldMonitor:
     def stop(self) -> None:
         self._mask = self._region = self._depth = None
         self._lost = 0
+        self._near_limit = self.settings.near_m
 
     def _small(self, depth: np.ndarray) -> np.ndarray:
         h, w = depth.shape[:2]
@@ -130,7 +138,7 @@ class HoldMonitor:
         return cv2.resize(depth, size, interpolation=cv2.INTER_NEAREST)  # no mixing with holes
 
     def _near(self, depth: np.ndarray) -> np.ndarray:
-        return (depth > 0) & (depth < self.settings.near_m)
+        return (depth > 0) & (depth < self._near_limit)
 
     def _outline_mask(self, polygon: np.ndarray, frame: Frame) -> np.ndarray:
         w, h = frame.size

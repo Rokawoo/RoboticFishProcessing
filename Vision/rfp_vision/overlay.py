@@ -1,5 +1,6 @@
-"""Drawing a fish list on its camera image: outlines, IDs, failure codes, grasp points,
-headings (CS-73, and the image a VLM would be shown, Table IF-5). OpenCV only."""
+"""Drawing a fish list on its camera image: outlines, IDs, failure codes, the six cups
+where the grasp puts them (turned along the fish), headings from tail to head (CS-73, and the
+image a VLM would be shown, Table IF-5). OpenCV only."""
 
 import math
 
@@ -7,13 +8,15 @@ import cv2
 import numpy as np
 
 from rfp_vision.fish_list import FishList
-from rfp_vision.geometry import Intrinsics, to_frame
+from rfp_vision.geometry import Intrinsics, pixels_on_plane, to_frame
 
 VALID = (120, 220, 0)  # BGR
 FAILED = (0, 140, 255)
 CHOSEN = (255, 170, 0)
 INK = (255, 255, 255)
 ARROW_M = 0.12  # heading arrow length on the table
+CUP_FOOTPRINT_M = (0.20, 0.10)  # as vision's settings: along and across the body
+CUP_DIAMETER_M = 0.04
 
 
 def _tag(image: np.ndarray, text: str, x: int, y: int, color, scale: float) -> None:
@@ -36,13 +39,31 @@ def _pixel(intrinsics: Intrinsics, t_camera_base: np.ndarray, point) -> tuple[in
     return round(float(u)), round(float(v))
 
 
+def cup_circles(grasp_pose: np.ndarray, footprint=CUP_FOOTPRINT_M, diameter=CUP_DIAMETER_M):
+    """(6, 16, 3) points in {B} round each cup's rim, the cups 3 x 2 filling the footprint
+    in the grasp pose's x-y plane (x along the body)."""
+    radius = diameter / 2
+    half_long, half_wide = (v / 2 - radius for v in footprint)
+    angles = np.linspace(0, 2 * math.pi, 16, endpoint=False)
+    rim = np.column_stack([np.cos(angles), np.sin(angles)]) * radius
+    circles = []
+    for a in (-half_long, 0.0, half_long):
+        for b in (-half_wide, half_wide):
+            local = np.column_stack([rim[:, 0] + a, rim[:, 1] + b, np.zeros(len(rim))])
+            circles.append(local @ grasp_pose[:3, :3].T + grasp_pose[:3, 3])
+    return np.array(circles)
+
+
 def draw_fish_list(
     image: np.ndarray,
     fish_list: FishList,
     intrinsics: Intrinsics,
     chosen_id: int | None = None,
+    footprint=CUP_FOOTPRINT_M,
+    cup_diameter: float = CUP_DIAMETER_M,
 ) -> np.ndarray:
-    """A copy of the image with every fish of the list drawn on it."""
+    """A copy of the image with every fish of the list drawn on it, and for each valid one
+    the six cups where the grasp puts them."""
     out = image.copy()
     scale = max(image.shape[:2]) / 1280
     line = max(1, round(2 * scale))
@@ -65,12 +86,39 @@ def draw_fish_list(
         center = _pixel(intrinsics, t_camera_base, point)
         if center is None:
             continue
+        for rim in cup_circles(fish.grasp_pose, footprint, cup_diameter):
+            in_camera = to_frame(t_camera_base, rim)
+            if (in_camera[:, 2] > 1e-6).all():
+                pixels = np.round(intrinsics.project(in_camera)).astype(np.int32)
+                cv2.polylines(out, [pixels], True, color, max(1, line - 1), cv2.LINE_AA)
         cv2.drawMarker(out, center, color, cv2.MARKER_CROSS, round(24 * scale), line + 1)
         ahead = point + ARROW_M * np.array([math.cos(fish.heading), math.sin(fish.heading), 0.0])
         tip = _pixel(intrinsics, t_camera_base, ahead)
         if tip is not None and fish.heading_known:
             cv2.arrowedLine(out, center, tip, color, line + 1, cv2.LINE_AA, tipLength=0.3)
     return out
+
+
+def draw_axes(
+    image: np.ndarray, frame, camera_pose: np.ndarray, table_z: float, length: float = 0.10
+) -> np.ndarray:
+    """The arm's +X (red) and +Y (green) drawn on the table under the image's middle: where
+    the arm goes when it moves that way, to check the camera's mount by eye (an arrow
+    pointing the other way than the arm moves: the camera is turned on its mount)."""
+    k = frame.intrinsics
+    middle = pixels_on_plane(k, camera_pose, np.array([[k.cx, k.cy]]), table_z)[0]
+    if not np.isfinite(middle).all():
+        return image
+    t_camera_base = np.linalg.inv(camera_pose)
+    scale = max(image.shape[:2]) / 1280
+    start = _pixel(k, t_camera_base, middle)
+    for axis, color, name in (((1, 0, 0), (40, 40, 230), "+X"), ((0, 1, 0), (60, 200, 60), "+Y")):
+        tip = _pixel(k, t_camera_base, middle + length * np.array(axis, float))
+        if start is None or tip is None:
+            continue
+        cv2.arrowedLine(image, start, tip, color, max(2, round(3 * scale)), cv2.LINE_AA, 0, 0.2)
+        _tag(image, f"arm {name}", tip[0] + 4, tip[1], color, scale)
+    return image
 
 
 def add_status(image: np.ndarray, lines: list[str]) -> np.ndarray:

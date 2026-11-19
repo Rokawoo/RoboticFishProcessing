@@ -1,6 +1,7 @@
 """Tests for the runtime vision code: geometry, heading, fish list, hold monitor, camera.
 Synthetic fish and frames; no camera, model or GPU."""
 
+import copy
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,8 +28,8 @@ from rfp_vision.geometry import (
     to_frame,
 )
 from rfp_vision.hold_monitor import HoldMonitor
-from rfp_vision.overlay import add_status, draw_fish_list
-from rfp_vision.settings import Catfish, HoldSettings, VisionSettings, load_settings
+from rfp_vision.overlay import add_status, cup_circles, draw_axes, draw_fish_list
+from rfp_vision.settings import Catfish, HoldSettings, StandIn, VisionSettings, load_settings
 from rfp_vision.vision_system import VisionSystem
 
 # Width of the stand-in fish along its length, tail to head, as a share of the length
@@ -63,21 +64,23 @@ def render(
     camera=CAMERA,
     depth: bool = True,
     slope: float = 0.0,
+    table: float = TABLE_Z,
 ):
     """A Frame and its detections for fish given as (x, y, heading, confidence) in {B}.
-    `slope`: how much the fish's surface rises per meter toward its head."""
+    `slope`: how much the fish's surface rises per meter toward its head. `table`: where the
+    table really is (the locator is told TABLE_Z)."""
     t_camera_base = np.linalg.inv(camera)
     color = np.full((K.height, K.width, 3), 90, np.uint8)
-    image_depth = np.full((K.height, K.width), camera[2, 3] - TABLE_Z, np.float32)
+    image_depth = np.full((K.height, K.width), camera[2, 3] - table, np.float32)
     detections = []
     for x, y, heading, confidence in fish:
         outline = fish_outline(x, y, heading)
-        at_half_height = np.column_stack([outline, np.full(len(outline), TABLE_Z + thickness / 2)])
+        at_half_height = np.column_stack([outline, np.full(len(outline), table + thickness / 2)])
         pixels = K.project(to_frame(t_camera_base, at_half_height))
         mask = polygon_mask(pixels, color.shape).astype(bool)
         color[mask] = 230
         rows, columns = np.nonzero(mask)
-        top = TABLE_Z + thickness
+        top = table + thickness
         on_top = pixels_on_plane(K, camera, np.column_stack([columns, rows]), top)[:, :2]
         toward_head = (on_top - (x, y)) @ (math.cos(heading), math.sin(heading))
         image_depth[rows, columns] = camera[2, 3] - top - slope * toward_head
@@ -197,7 +200,11 @@ def test_fish_are_located_in_the_base_frame_from_depth():
         assert np.allclose(
             fish.grasp_pose[:2, 0], (math.cos(heading), math.sin(heading)), atol=0.05
         )
-        assert not fish.overlap and fish.bbox[4:] == (0.0, pytest.approx(0.10, abs=0.002))
+        assert not fish.overlap and fish.bbox[4:] == (
+            pytest.approx(0.0, abs=1e-4),  # the table measured around it
+            pytest.approx(0.10, abs=0.002),
+        )
+        assert fish.table_measured and fish.table_z == pytest.approx(TABLE_Z, abs=1e-4)
     record = fish_list.as_record()
     assert record["fish_count_valid"] == 2 and record["model_version"] == "model"
     first = record["fish"][0]
@@ -244,8 +251,8 @@ def test_each_failed_check_gives_its_code_and_clears_the_poses():
         ellipse = [640 + 330 * np.cos(angles), 360 + 140 * np.sin(angles)]  # cups fit on it
         detections[0].polygon = np.column_stack(ellipse)
 
-    assert code(middle, change=blob) == "wrong_heading"
-    assert code(middle, change=blob, require_heading=False, check_size=False) == "none"
+    assert code(middle, change=blob, require_heading=True) == "wrong_heading"
+    assert code(middle, change=blob, check_size=False) == "none"  # by default it's picked
 
     def sliver(frame, detections):
         detections[0].polygon = np.array([[600, 350], [700, 352], [700, 356], [600, 354]], float)
@@ -260,9 +267,10 @@ def test_each_failed_check_gives_its_code_and_clears_the_poses():
         on_fish = frame.depth < frame.depth.max() - 0.01
         frame.depth[on_fish] -= 0.03 * (((rows // 90) + (columns // 90)) % 2)[on_fish]
 
-    assert code(middle, change=lumpy) == "grasp_point_off_body"
+    assert code(middle, change=lumpy, strict_seal_check=True) == "grasp_point_off_body"
     assert code(middle, catfish=Catfish(length_range_m=(0.2, 0.5))) == "geometry_out_of_range"
-    assert code(middle, fish_type="stand_in") == "geometry_out_of_range"  # printed ones are bigger
+    big = StandIn(length_range_m=(0.80, 1.00))  # only the big prints
+    assert code(middle, fish_type="stand_in", stand_in=big) == "geometry_out_of_range"
     # VS-68: of several failed checks, the first in the table's order is the code
     frame, detections = render([(0.40, -0.10, 0.0, 0.3)])
     fish = locator().locate(frame, detections, CAMERA).fish[0]
@@ -288,10 +296,80 @@ def test_the_cups_go_only_where_all_six_can_seal():
     assert reach(0.10 + 0.015 * corner)[0]
     assert not reach(0.10 + 0.04 * corner)[0]  # past their stroke
     fin = corner & (np.abs(xy[:, 1] - wide) < 0.004)  # a thin fin standing up under it
-    assert not reach(0.10 + 0.015 * fin)[0]  # the cup's lip would rest on it
-    assert reach(0.10 + 0.015 * fin, cup_lip_conform_m=1.0)[0]  # that check off
-    few = np.column_stack([xy, 0.1 + 0 * xy[:, 0]])[:100]  # a cup over nothing seen
-    assert locator()._cup_contact(few, at, axis) == (False, None)
+    strict = {"strict_seal_check": True}
+    assert not reach(0.10 + 0.015 * fin, **strict)[0]  # the cup's lip would rest on it
+    assert reach(0.10 + 0.015 * fin, **strict, cup_lip_conform_m=1.0)[0]  # a lip that conforms
+    assert reach(0.10 + 0.015 * fin)[0]  # by default: tried, the hold check tells
+    assert not reach(0.10 + 0.04 * corner, strict_seal_check=False)[0]  # the stroke, always
+    few = np.column_stack([xy, 0.1 + 0 * xy[:, 0]])[:100]  # no depth under the cups
+    assert locator()._cup_contact(few, at, axis) == (None, None)  # it can't tell: the outline does
+    some = np.column_stack([xy, 0.1 + 0.015 * fin])[np.abs(xy[:, 1]) > 0.0]  # a hole between rows
+    seen = locator(min_cups_measured=6, **strict)._cup_contact(some, at, axis)
+    assert seen[0] is False  # the fin, seen
+
+
+def test_the_cups_seal_on_a_narrow_round_fish_but_not_on_a_fin():
+    # A real fish 110 mm wide and round: the outer cups sit on its sloping shoulders, which
+    # their lips follow. Against the six cups' common plane the slope alone took 5 of the
+    # 6 mm a lip was allowed, and the D405's noise the rest; against each cup's own plane
+    # it is under 1 mm
+    grid = np.stack(np.meshgrid(np.linspace(-0.12, 0.12, 97), np.linspace(-0.055, 0.055, 89)), -1)
+    xy = grid.reshape(-1, 2)
+    body = 0.10 + 0.04 * np.sqrt(np.clip(1 - (xy[:, 1] / 0.055) ** 2, 0, None))
+    body += np.random.default_rng(3).normal(0.0, 0.002, len(body))  # depth noise
+    axis, at = np.array([1.0, 0.0]), np.zeros(2)
+    strict = locator(strict_seal_check=True)
+    sealed, plane = strict._cup_contact(np.column_stack([xy, body]), at, axis)
+    assert sealed and plane is not None
+    outline = np.column_stack([0.30 * np.cos(np.linspace(0, 6.28, 200)),
+                               0.055 * np.sin(np.linspace(0, 6.28, 200))])  # fmt: skip
+    assert locator()._footprint_fits(outline, at, axis)  # and they are all on it
+    long, wide = (v / 2 - 0.02 for v in VisionSettings().cup_footprint_m)
+    fin = (np.hypot(xy[:, 0] - long, xy[:, 1] - wide) < 0.02) & (np.abs(xy[:, 1] - wide) < 0.004)
+    assert not strict._cup_contact(np.column_stack([xy, body + 0.015 * fin]), at, axis)[0]
+
+
+def test_a_table_lower_than_the_workcell_says_doesnt_shrink_the_fish():
+    # The real cell's table 80 mm below table.z: the camera is that much higher over the fish
+    # than the arm thinks. Measured from table.z, every fish came out ~8 % short and 80 mm thin.
+    frame, detections = render([(0.40, -0.10, ALONG_Y, 0.9)], table=-0.08)
+    fish = locator().locate(frame, detections, CAMERA).fish[0]
+    assert fish.vision_ok and fish.table_measured
+    assert fish.table_z == pytest.approx(-0.08, abs=0.002)
+    assert fish.thickness == pytest.approx(0.10, abs=0.003)
+    assert fish.total_length == pytest.approx(0.585, abs=0.006)
+    assert np.allclose(fish.middle, (0.40, -0.10, 0.02), atol=0.004)
+    blind = locator(measure_table=False).locate(frame, detections, CAMERA).fish[0]
+    assert blind.failure_code == "geometry_out_of_range" and not blind.table_measured
+    assert "length 0.5" in blind.detail and "catfish: 0.54-0.82" in blind.detail
+    assert "height 0.02 m" in blind.detail  # measured from table.z
+    far = locator(table_search_m=0.05).locate(frame, detections, CAMERA).fish[0]
+    assert not far.table_measured  # farther from table.z than it may be: not the table
+
+
+def test_the_cups_are_checked_as_six_circles_not_their_bounding_box():
+    angles = np.linspace(0, 2 * math.pi, 200, endpoint=False)
+    slim = np.column_stack([0.30 * np.cos(angles), 0.052 * np.sin(angles)])  # 104 mm wide
+    axis, at = np.array([1.0, 0.0]), np.zeros(2)
+    # the footprint's corners (100, 50) mm lie outside it, but every cup is well on it
+    corner = (0.10 / 0.30) ** 2 + (0.05 / 0.052) ** 2
+    assert corner > 1.0 and locator()._footprint_fits(slim, at, axis)
+    assert not locator(cup_overhang_m=-0.01)._footprint_fits(slim, at, axis)  # 10 mm inside
+    narrow = slim * (1.0, 0.8)  # 83 mm wide: the cups hang off it
+    assert not locator()._footprint_fits(narrow, at, axis)
+
+
+def test_a_failed_fish_says_what_was_measured():
+    frame, detections = render([(0.40, -0.10, ALONG_Y, 0.9)])
+    small = locator(catfish=Catfish(length_range_m=(0.2, 0.5))).locate(frame, detections, CAMERA)
+    assert small.fish[0].detail == "length 0.58 m (catfish: 0.20-0.50)"
+    detections[0].polygon = np.array([[600, 350], [700, 352], [700, 356], [600, 354]], float)
+    sliver = locator(require_heading=False, check_size=False).locate(frame, detections, CAMERA)
+    assert sliver.fish[0].failure_code == "grasp_point_off_body"
+    assert sliver.fish[0].detail.startswith("the six cups don't fit on it")
+    cut = locator().locate(*render([(0.40, -0.10, 0.0, 0.9)]), CAMERA).fish[0]
+    assert cut.detail == "cut off at the image's edge"
+    assert render([])[0] is not None and locator().locate(*render([]), CAMERA).fish == []
 
 
 def test_the_cups_stop_behind_a_fin_on_the_way_to_the_balance_point():
@@ -431,6 +509,29 @@ def test_depth_cue_tells_a_held_fish_from_a_dropped_one():
     assert monitor.update(held_frame(0.12)).dropped is False  # seen again: the count restarts
     monitor.stop()
     assert not monitor.active and monitor.cues == []
+
+
+def test_under_a_thin_fish_the_table_is_not_taken_for_the_held_surface():
+    # Cups on a 0.12 m thin fish: the camera is 0.08 m from its top and 0.20 m from the
+    # table, nearer than near_m. Taken for held surface, the table went away on the lift and
+    # the fish, still on the cups, counted as dropped (mid-carry, vacuum off)
+    def frame(table: float, fish: float = 0.08):
+        depth = np.full((720, 1280), table, np.float32)
+        depth[:, :100] = 0.07  # a cup at the edge of the view
+        depth[250:470, 400:900] = fish
+        return Frame(np.zeros((720, 1280, 3), np.uint8), depth, K, 0.0, 0.0, 1)
+
+    blind = HoldMonitor(HoldSettings())
+    blind.set_background(frame(0.45, fish=0.45))
+    blind.start(frame(0.20))
+    assert blind.update(frame(0.45)).depth_share < 0.5  # lifted: the table left the region
+    monitor = HoldMonitor(HoldSettings())
+    monitor.set_background(frame(0.45, fish=0.45))
+    assert monitor.start(frame(0.20), table_distance=0.20) == ["depth"]
+    lifted = monitor.update(frame(0.45))
+    assert lifted.held and lifted.depth_share > 0.9
+    monitor.stop()
+    assert monitor.start(frame(0.45, fish=0.45), table_distance=0.45) == []  # nothing held
 
 
 def test_the_gripper_in_view_does_not_count_as_a_fish():
@@ -596,8 +697,10 @@ def test_surface_slope_tilts_the_grasp_and_helps_tell_head_from_tail():
 
     # sloping down toward what the outline says is the head: the two disagree, so no guess
     frame, detections = render([middle], slope=-0.10)
-    confused = locator().locate(frame, detections, CAMERA).fish[0]
+    confused = locator(require_heading=True).locate(frame, detections, CAMERA).fish[0]
     assert confused.failure_code == "wrong_heading" and confused.heading_confidence < 0.6
+    unsure = locator().locate(frame, detections, CAMERA).fish[0]  # by default: picked anyway
+    assert unsure.vision_ok and not unsure.heading_known
     flat, detections = render([middle])  # no slope: the outline decides alone
     assert locator().locate(flat, detections, CAMERA).fish[0].heading_confidence > 0.8
 
@@ -606,3 +709,24 @@ def test_surface_slope_tilts_the_grasp_and_helps_tell_head_from_tail():
     assert fh.head_vote(outline, centroid, axis, (True, True), 0.03)[2]["height"] == 1.0
     assert fh.head_vote(outline, centroid, axis, (True, True), -0.01)[2]["height"] == -0.5
     assert "height" not in fh.head_vote(outline, centroid, axis, (True, True))[2]
+
+
+def test_the_overlay_shows_the_cups_along_the_fish_and_the_arm_s_axes():
+    frame, detections = render([(0.40, -0.10, ALONG_Y, 0.9)])
+    fish = locator().locate(frame, detections, CAMERA)
+    image = draw_fish_list(frame.color, fish, K)
+    rims = cup_circles(fish.fish[0].grasp_pose)
+    assert rims.shape == (6, 16, 3)
+    bare = copy.deepcopy(fish)
+    bare.fish[0].grasp_pose = None  # the same drawing without the grasp
+    drawn = np.abs(image.astype(int) - draw_fish_list(frame.color, bare, K)).sum(axis=2) > 0
+    for rim in rims:  # each cup's rim drawn where the grasp puts it
+        pixels = K.project(to_frame(np.linalg.inv(CAMERA), rim))
+        u, v = np.round(pixels[0]).astype(int)  # a point of the rim
+        assert drawn[v - 2 : v + 3, u - 2 : u + 3].any()
+    across = rims[:, :, :2].mean(axis=1) - fish.fish[0].grasp_point[:2]
+    along = np.array([math.cos(ALONG_Y), math.sin(ALONG_Y)])
+    assert np.abs(across @ along).max() == pytest.approx(0.08, abs=1e-6)  # 3 rows along it
+    axes = draw_axes(frame.color.copy(), frame, CAMERA, TABLE_Z)
+    red = np.all(axes == (40, 40, 230), axis=2)
+    assert red.any() and not np.array_equal(axes, frame.color)

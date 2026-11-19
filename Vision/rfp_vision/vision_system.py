@@ -36,15 +36,19 @@ class VisionSystem:
         return self.camera.read()
 
     def observe(
-        self, t_base_camera: np.ndarray, on_frame: Callable[[Frame], None] | None = None
+        self,
+        t_base_camera: np.ndarray,
+        on_frame: Callable[[Frame], None] | None = None,
+        frames: int | None = None,
     ) -> Observation:
         """
-        One observation with the arm stopped (VS-13): `stable_frames` frames in a row, each
-        turned into a fish list; a fish is valid only if it is in all of them at the same
-        place (VS-52). `t_base_camera` is the camera's pose in {B} during the observation.
+        One observation with the arm stopped (VS-13): `stable_frames` frames in a row (or
+        `frames`: 1 for a quick look while searching), each turned into a fish list; a fish
+        is valid only if it is in all of them at the same place (VS-52). `t_base_camera` is
+        the camera's pose in {B} during the observation.
         """
         lists, frame, detections = [], None, []
-        for _ in range(max(1, self.settings.stable_frames)):
+        for _ in range(max(1, self.settings.stable_frames if frames is None else frames)):
             frame = self.camera.read()
             detections = self.detector.detect(frame.color)
             lists.append(self.locator.locate(frame, detections, t_base_camera))
