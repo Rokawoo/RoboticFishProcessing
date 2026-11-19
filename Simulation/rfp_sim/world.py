@@ -73,11 +73,19 @@ class World:
 
     # -- arm -------------------------------------------------------------------
     def start_joints(self) -> np.ndarray:
-        """The arm at the first observation pose, wrist (last joint) as near 0 as it goes."""
+        """The arm at the first observation pose in the posture the layout check assumes
+        (facing it, elbow up, the wrist in its range; layout.reach_joints), else in any
+        posture with the wrist (last joint) as near 0 as it goes."""
+        from rfp_arm.layout import reach_joints
+
         first = self.workcell.observation_poses[0]
         if first.joints is not None:
             return np.array(first.joints, float)
-        tip = self.workcell.tip_of_tcp(self.workcell.observation_tcp(first))
+        tcp = self.workcell.observation_tcp(first)
+        facing = reach_joints(self.workcell, tcp, self.chain)
+        if facing is not None:
+            return facing
+        tip = self.workcell.tip_of_tcp(tcp)
         found = [q for q in (self.chain.ik(tip, seed) for seed in STARTS) if q is not None]
         if not found:
             raise ValueError("the arm can't reach the first observation pose")

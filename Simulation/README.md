@@ -14,9 +14,13 @@ Settings: the `simulation` section of [control_panel.yaml](../control_panel.yaml
 
 **Camera:** rendered from the camera's pose on the gripper (`camera.mount`) as a D405 delivers it: 1280 × 720 color and aligned depth, 87° pinhole lens, depth along the optical axis with 0.5 mm noise, none outside 0.07–1.0 m, and none within 3 px of a depth step over about 1 cm (the stereo pair can't see past an edge). The table is the cell's perforated breadboard, the fish the stand-ins' white, so the model sees footage like its training data (it finds rendered fish at about 0.9 confidence). Not modeled: holes on shiny skin, exposure, motion blur, shadows. `detector: truth` uses the renderer's outlines instead of the model.
 
-**Layout editor** (`--mode setup`, `rfp_sim/layout_editor.py`): the same arm and gripper with the workcell's table, pick area and placement zone (corner balls to drag), slots (balls; an added one goes where a whole fish fits) and the camera's views (they follow the pick area), checked as they change (`rfp_arm/layout.py`); see the [top README](../README.md#lay-it-out-in-3d).
+**Layout editor** (`--mode setup`, `rfp_sim/layout_editor.py`): the same arm and gripper with the workcell's table, pick area and placement zone (corner balls to drag), slots (balls; an added one goes where a whole fish fits), keep-out zones (a ball each; the operator's side goes from table edge to table edge) and the camera's views (they follow the pick area), checked as they change (`rfp_arm/layout.py`); see the [top README](../README.md#lay-it-out-in-3d).
 
 **3D window:** also the vacuum tube, coiled round the wrist by as much as j6 has turned, the table's body, and j6 against the tube's range. The gripper is its CAD model (`models/gripper.stl`, from `import_gripper.py`); the camera's own view leaves out its housing.
+
+**Twin of the real arm** (`rfp_sim/twin.py`, the moving and observing modes on the robot PC): the same arm and gripper following the real arm's joint states, the cell's zones and keep-out zones, each fish vision finds (outline; for a fish that can be picked the six cups where the grasp puts them and its heading) and the camera's depth as points colored by height. It only reads; `run.twin: false` in the control panel leaves it out.
+
+**Motion, as on the arm:** every move is timed as MoveIt's Pilz planner times it on the FR5: it speeds up and slows down at the joints' limits ([Arm/ros/joint_limits.yaml](../Arm/ros/joint_limits.yaml), times the workcell's ptp scales) or, on straight moves, at the move's speed and `tcp_accel_max`, and is slowed wherever any point of the arm would pass `tcp_speed_max`. At constant speed, as before, a 20° move took 0.37 s here and takes 1.4 s on the arm, so the empty arm looked much faster than it will be. Lift, carry and lower run as one blended move with rounded corners (`VirtualArm.move_through`), as the arm runs them with Pilz's sequence: one at a time, the arm stopped at every waypoint of a carry. The camera's view is a pyramid from the lens down to the table, here and in the twin.
 
 **Contact:** each cup is a ray along the tool axis, touching within 2 mm of its face and pushing back at 500 N/m when compressed (what the arm feels while pressing). The vacuum holds the fish only when 5 of 6 cups touch. A held fish follows the cups once they lift and lies flat where it's let go; no other physics. `drop: lift` or `carry` loses the fish on the way, to test drop detection.
 
@@ -24,7 +28,7 @@ Settings: the `simulation` section of [control_panel.yaml](../control_panel.yaml
 
 ## Benchmark
 
-`python Simulation/benchmark.py` runs the real cycle on seeded scenes with nobody at the console and scores each fish against the simulator's truth (`rfp_sim/benchmark.py`): where it ended up, its middle's distance from its slot, its heading error, where the cups took it relative to its true center of mass (the model's volume centroid), failures with their messages, looks, wrist travel, simulated time. Default: 20 scenes, one 0.79 m stand-in lying anywhere, the trained model. `--compare <earlier run>` shows the difference; `--any-size`, `--no-hold-check` (a vacuum switch confirms holds; faster), `--placement view`, `--fish-length`, `--detector truth`. The same seed gives the same scenes, so two runs differ by code and settings alone; each behavior has a setting to switch it off (`close_looks: 0`, `balance_ahead_share: 0`).
+`python Simulation/benchmark.py` runs the real cycle on seeded scenes with nobody at the console and scores each fish against the simulator's truth (`rfp_sim/benchmark.py`): where it ended up, its middle's distance from its slot, its heading error, where the cups took it relative to its true center of mass (the model's volume centroid), failures with their messages, looks, wrist travel, simulated time. Default: 20 scenes, one stand-in of the simulation's `fish_length` (0.60 m, about the real fish; the big prints are 0.79) lying anywhere, the trained model. `--compare <earlier run>` shows the difference; `--any-size`, `--no-hold-check` (a vacuum switch confirms holds; faster), `--placement view`, `--fish-length`, `--detector truth`. The same seed gives the same scenes, so two runs differ by code and settings alone; each behavior has a setting to switch it off (`focus_steps: 1`, `carry_over_seen: false`, `measure_table: false`, `balance_ahead_share: 0`).
 
 Full-size stand-ins lying anywhere, as the changes went in:
 
@@ -47,6 +51,22 @@ With the gripper as built (its CAD model: six 40 mm cups 160 x 60 mm apart on 4.
 | + the bellows' 30 mm (40 mm to about 10), the wrist rules: a held fish turned at most 180 deg, the empty gripper within 90 of the middle where it can, no move over 180 | 35-37 / 40 (two fish vision never picks flip between runs) | 13 mm | 31 mm |
 
 The 0.55 m small fish (`--fish-length 0.55 --placement view --any-size`) with the stand-in's own balance share: 6 of 20 with the old gripper (lost on the lift), 19 of 20 now, the search backing off from the fins by itself. Two fish a scene (`--fish 2`, 20 scenes): 23 of 40 placed (16 with the old slots), no move refused for the wrist. The largest single wrist move: 173 deg with one fish a scene, 177 with two (at most 180 planned, 200 allowed).
+
+The real cell's layout (turned: pick area beside the arm, placement zone to its right), two fish a scene, 20 scenes (`--fish 2`):
+
+| | Placed | Failures | Scenes ending "pick area clear" | Simulated s per placed fish |
+|---|---|---|---|---|
+| 0.79 m prints, before (fixed looks, fixed lift) | 21 / 40 | | | 65.0 |
+| + one focus look over each fish, as high as it needs; carry with the wrist turning evenly | 32 / 40 | 2 drops, 3 refused moves | 9 | 26.9 |
+| 0.60 m fish (as the real ones), the same code | 38 / 40 | 4 drops (false), 1 refused move | 13 | 23.8 |
+| + hold check knows the table under a thin fish; mount check needs a jump of the camera's whole move | 38 / 40 | 1 refused move | 17 | 25.3 |
+| + the arm keeps its side of the base; the arm isn't a fish; re-check timed by the decision alone | 39 / 40 | none | 19 | 24.5 |
+| + the whole plan checked before anything moves; looks-only checks advisory; the pick area's edge within 3 cm (pick area 2 cm nearer the arm) | 40 / 40 | none | 20 | 24.4 |
+| Moves timed as the arm's planner times them (speeding up and slowing down; the times above are too short) | 40 / 40 | none | 20 | 33.0 |
+| + one look over the pick area instead of two; lift, carry and lower as one blended move | 40 / 40, 39 head end right | none | 20 | 25.1 |
+| + an unclear head end placed as vision guessed, not the way that turns the wrist least | **40 / 40**, all head end right | none | **20** | **25.1** |
+
+With the last row the search takes 3.6 looks per fish (5.2 with two looks) and the wrist turns 219° per fish (329); the median slot error is 3 mm (at most 10), the heading 5° (the outline's lean). The 0.79 m prints with the same code: 35 of 40 placed and 17 of 20 scenes clear (33 and 12 before this round), 5.1 looks and 291° of wrist per fish (7.3 and 470); the rest is the layout's margins for so long a fish: a held fish's end would reach the operator's zone (2 scenes), and two picked at the pick area's edge were set down over 5 cm off slot 2, which is 5 cm inside the placement zone's edge. Two benchmarks run side by side used to place different fish (the re-check before a grasp counted vision's own time); now only the fish list's age limit (1 s, CS-53) depends on how busy the computer is, and the GPU's model can differ by a pixel between runs, which tips a fish lying right at a limit.
 
 ## Found with it
 

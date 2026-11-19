@@ -3,7 +3,7 @@
 
 # The fish
 fish_model: models/catfish.3mf  # .3mf or .stl, relative to Simulation/; missing: a plain shape
-fish_length: 0.79               # m snout to tail fin; the model is scaled to it (0.79: the
+fish_length: 0.60               # m snout to tail fin; the model is scaled to it (0.60: the
                                 # printed stand-ins, vision's fish_type stand_in)
 fish_head: "-x"                 # the model's axis toward the head (catfish.3mf: -x)
 fish_up: "+z"                   # the model's axis pointing up as it lies on the table

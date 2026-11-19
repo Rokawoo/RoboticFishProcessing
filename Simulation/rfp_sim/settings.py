@@ -13,7 +13,7 @@ MESH_CACHE = SIM_DIR / "models" / "fr5"  # FAIRINO's FR5 meshes, downloaded (not
 class SimSettings:
     # The fish
     fish_model: str = "models/catfish.3mf"  # .3mf or .stl, relative to Simulation/
-    fish_length: float = 0.79  # m snout to tail fin after scaling: the printed stand-ins
+    fish_length: float = 0.60  # m snout to tail fin after scaling: about the real fish
     fish_head: str = "-x"  # the model's axis toward the head
     fish_up: str = "+z"  # the model's axis pointing up as the fish lies on the table
     fish_count: int = 1

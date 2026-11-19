@@ -5,7 +5,7 @@ scored against the simulator's truth. Run it before and after a change to vision
 or the cycle: the change is better if these numbers are. Nothing real moves; no ROS.
 
 Usage:
-    python Simulation/benchmark.py                 # 20 scenes, full-size fish anywhere
+    python Simulation/benchmark.py                 # 20 scenes, fish anywhere (sim.yaml's size)
     python Simulation/benchmark.py --scenes 50 --label my-change
     python Simulation/benchmark.py --compare Simulation/benchmarks/<run>   # with the change
     python Simulation/benchmark.py --fish-length 0.55 --placement view     # the old easy case
@@ -44,8 +44,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0].strip())
     parser.add_argument("--scenes", type=int, default=20, help="layouts to run (default 20)")
     parser.add_argument("--fish", type=int, default=1, help="fish per scene (default 1)")
-    parser.add_argument("--fish-length", type=float, default=0.79,
-                        help="m; the printed stand-ins are 0.79 (default)")  # fmt: skip
+    parser.add_argument(
+        "--fish-length", type=float, help="m (default: the simulation settings'; big prints: 0.79)"
+    )
     parser.add_argument(
         "--placement",
         choices=("anywhere", "view"),
@@ -100,6 +101,7 @@ def main() -> None:
         sys.exit(f"❌ {e}")
     if args.any_size:
         vision.check_size = False
+    args.fish_length = args.fish_length or sim.fish_length
     sim = dataclasses.replace(
         sim, fish_count=args.fish, fish_length=args.fish_length, placement=args.placement,
         speed=0.0, drop="", seed=args.seed,

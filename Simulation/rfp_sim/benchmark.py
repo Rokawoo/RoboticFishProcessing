@@ -72,9 +72,9 @@ class _Rows:
 class _CountingVision(VisionSystem):
     looks = 0
 
-    def observe(self, t_base_camera, on_frame=None):
+    def observe(self, t_base_camera, on_frame=None, frames=None):
         self.looks += 1
-        return super().observe(t_base_camera, on_frame)
+        return super().observe(t_base_camera, on_frame, frames)
 
 
 @dataclass
@@ -104,7 +104,7 @@ def build_bench(
         raise ValueError(f"no room for {sim.fish_count} fish of {sim.fish_length} m")
     detector = detector or TruthDetector(session.camera)
     locator = FishLocator(
-        vision_settings, cell.table_z, cell.pick_area.area, getattr(detector, "version", "truth"),
+        vision_settings, cell.table_z, cell.pick_area_seen, getattr(detector, "version", "truth"),
         cell.calibration_version,
     )  # fmt: skip
     if hasattr(detector, "warm_up"):

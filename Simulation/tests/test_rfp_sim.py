@@ -6,6 +6,7 @@ import math
 import sys
 import types
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -13,16 +14,17 @@ pv = pytest.importorskip("pyvista")
 np = pytest.importorskip("numpy")
 cv2 = pytest.importorskip("cv2")
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Arm" / "tests"))
+from arm_helpers import frozen_layout, make_workcell  # the tests' own layout
 from rfp_arm.interfaces import ArmError, GripperState, MotionAborted
-from rfp_arm.poses import tool_down, yaw_of
-from rfp_arm.workcell import load_workcell
+from rfp_arm.poses import rotation_angle, tool_down, yaw_of
 from rfp_sim.assets import load_fish, read_3mf, stand_in_fish
 from rfp_sim.devices import VirtualArm, VirtualGripper
 from rfp_sim.render import TruthDetector, VirtualCamera
 from rfp_sim.settings import SimSettings, load_settings
 from rfp_sim.world import Fish, World
 
-CELL = load_workcell(panel=None)
+CELL = make_workcell()
 
 
 def settings(**changes) -> SimSettings:
@@ -145,6 +147,67 @@ def test_a_fish_can_be_dropped_on_purpose_to_test_drop_detection():
     assert world.holding is fish  # only the first time
 
 
+def test_moves_are_timed_like_the_arm_s_planner_from_rest_to_rest():
+    # Without speeding up and slowing down, the simulation's short moves took a third of the
+    # time they take on the arm, and the empty arm looked much faster than it will be
+    import yaml
+    from rfp_sim.devices import JOINT_ACCELS, JOINT_SPEEDS, rest_to_rest, rest_to_rest_time
+
+    limits_file = Path(__file__).resolve().parents[2] / "Arm" / "ros" / "joint_limits.yaml"
+    limits = yaml.safe_load(limits_file.read_text(encoding="utf-8"))["joint_limits"]
+    assert list(JOINT_SPEEDS) == [limits[f"j{i}"]["max_velocity"] for i in range(1, 7)]
+    assert list(JOINT_ACCELS) == [limits[f"j{i}"]["max_acceleration"] for i in range(1, 7)]
+    assert rest_to_rest_time(0.1, 0.25, 0.5) == pytest.approx(2 * math.sqrt(0.1 / 0.5))  # short
+    assert rest_to_rest_time(0.4, 0.25, 0.5) == pytest.approx(0.4 / 0.25 + 0.25 / 0.5)
+    times, shares = rest_to_rest(0.4, 0.25, 0.5, 0.05)
+    speeds = np.diff(shares * 0.4) / np.diff(times)
+    assert shares[0] == 0 and shares[-1] == pytest.approx(1) and speeds.max() <= 0.25 + 1e-9
+    assert np.all(np.diff(shares) >= 0) and speeds[0] < 0.05 and speeds[-1] < 0.05  # at rest
+    # 20 deg of the base at the workcell's 0.3 scales: 1.36 s, not the 0.37 s it took
+    world = world_with_fish()
+    arm = VirtualArm(world, CELL)
+    turned = world.joints.copy()
+    turned[0] += math.radians(20)
+    arm.move_joints(turned)
+    m = CELL.motion
+    least = 2 * math.sqrt(math.radians(20) / (m.ptp_acceleration_scale * JOINT_ACCELS[0]))
+    assert arm.moves[-1][1] >= least - 0.01
+
+
+def test_a_carry_runs_as_one_blended_move_without_stopping_at_its_corners():
+    # The real arm runs lift, carry and lower as one blended move (Pilz's sequence); the
+    # simulation moved one at a time, planning each and stopping at every corner
+    from rfp_sim.devices import rounded_path
+
+    world = world_with_fish()
+    arm = VirtualArm(world, CELL)
+    start = arm.tcp_pose()
+    up, over, down = start.copy(), start.copy(), start.copy()
+    up[2, 3] += 0.15
+    over[:3, 3] += (0.0, 0.20, 0.15)
+    down[:3, 3] += (0.0, 0.20, 0.0)
+    path = rounded_path([start, up, over, down], 0.05)
+    corner = up[:3, 3]
+    nearest = min(float(np.linalg.norm(p[:3, 3] - corner)) for p in path)
+    assert 0.01 < nearest < 0.05  # rounded, inside the blend sphere
+    gaps = np.linalg.norm(np.diff([p[:3, 3] for p in path], axis=0), axis=1)
+    assert gaps.max() < 0.003 and np.allclose(path[-1], down)
+
+    assert arm.move_through([up, over, down], 0.2, 0.5, 0.05)
+    assert arm.moves[-1][0] == "blend" and np.allclose(arm.tcp_pose(), down, atol=1e-5)
+    blended = arm.moves[-1][1]
+    alone = VirtualArm(world_with_fish(), CELL)
+    for pose in (up, over, down):
+        alone.move_lin(pose, 0.2, 0.5)
+    assert blended < sum(duration for _, duration in alone.moves[-3:]) - 0.3  # no stops
+    # what it can't plan: nothing moved, then the moves go one at a time
+    beyond = down.copy()
+    beyond[:3, 3] += (2.0, 0.0, 0.0)
+    assert not arm.move_through([up, beyond], 0.2, 0.5, 0.05)
+    assert np.allclose(arm.tcp_pose(), down, atol=1e-5)
+    assert not arm.move_through([up, over], 0.2, 0.5, 0.0)  # no blending asked
+
+
 def test_virtual_arm_plans_checks_and_moves():
     world = world_with_fish()
     steps = []
@@ -154,7 +217,8 @@ def test_virtual_arm_plans_checks_and_moves():
     target[:3, 3] += (0.05, 0.10, -0.15)
     arm.move_lin(target, 0.1, 0.5)
     assert np.allclose(arm.tcp_pose(), target, atol=1e-5) and len(steps) >= 30  # 0.18 m at 0.1 m/s
-    assert arm.moves[-1][0] == "lin" and arm.moves[-1][1] == pytest.approx(1.87, abs=0.06)  # s
+    # timed as Pilz's LIN: 0.187 m at the speed, plus speeding up and slowing down (0.2 s)
+    assert arm.moves[-1][0] == "lin" and arm.moves[-1][1] == pytest.approx(2.07, abs=0.03)  # s
     arm.move_ptp(start)
     assert np.allclose(arm.tcp_pose(), start, atol=1e-5)
     assert abs(arm.wrist_angle(start) - arm.wrist_angle()) < 1e-3
@@ -243,7 +307,9 @@ def test_a_whole_cycle_in_the_virtual_cell():
         camera.close()
 
 
-def test_a_fish_cut_off_by_the_view_is_placed_after_a_closer_look():
+def test_a_fish_cut_off_by_the_view_is_placed_after_a_look_from_above_it():
+    import dataclasses
+
     from rfp_arm.poses import from_parts, rot_z
     from rfp_controlsys.console import Console
     from rfp_controlsys.cycle import PickPlaceCycle
@@ -253,33 +319,158 @@ def test_a_fish_cut_off_by_the_view_is_placed_after_a_closer_look():
     from rfp_vision.settings import VisionSettings
     from rfp_vision.vision_system import VisionSystem
 
-    def run(close_looks: int):
-        world = World(CELL, settings(), stand_in_fish(0.79))
+    def run(cell):
+        world = World(cell, settings(), stand_in_fish(0.79))
         # along X: longer than the 0.50 m the camera sees that way from 450 mm
         world.fish = [Fish("fish 1", world.model, from_parts(rot_z(0.1), (0.36, -0.10, 0)))]
         camera = VirtualCamera(world, {})
         try:
             vision_settings = VisionSettings(check_size=False)
-            locator = FishLocator(vision_settings, CELL.table_z, CELL.pick_area.area)
+            locator = FishLocator(vision_settings, cell.table_z, cell.pick_area.area)
             vision = VisionSystem(camera, TruthDetector(camera), locator, vision_settings)
             console = Console(window=False, interactive=False)
             states = []
             console.state = lambda state, detail="": states.append(f"{state} {detail}")
             cycle = PickPlaceCycle(
-                VirtualArm(world, CELL), VirtualGripper(world), vision, RuleSelector(), CELL,
-                ControlSettings(settle_s=0.0, close_looks=close_looks), console,
-                sleep=lambda seconds: None,
+                VirtualArm(world, cell), VirtualGripper(world), vision, RuleSelector(), cell,
+                ControlSettings(settle_s=0.0), console, sleep=lambda seconds: None,
             )  # fmt: skip
             return cycle.run(1), states, world
         finally:
             camera.close()
 
-    report, states, world = run(close_looks=2)
+    # the camera over its middle, along it, as high as its expected length needs
+    report, states, world = run(CELL)
     assert report.successes == 1, report
-    assert any("close look at" in state for state in states)
+    heights = [float(s.split(" from ")[1].split(" m")[0]) for s in states if "look at x" in s]
+    assert heights and max(heights) > 0.46  # higher than the 0.45 m views it doesn't fit
     assert CELL.placement_zone.contains(world.fish[0].pose[:2, 3])
-    report, _, world = run(close_looks=0)
-    assert report.successes == 0 and "none can be picked" in report.ended, report
+    low = dataclasses.replace(CELL, close_look_height=None)  # no look higher than 450 mm
+    report, states, world = run(low)
+    heights = [float(s.split(" from ")[1].split(" m")[0]) for s in states if "look at x" in s]
+    assert heights and max(heights) <= 0.451, heights
+
+
+def test_the_camera_s_mount_is_measured_from_a_few_moves_over_a_fish():
+    import dataclasses
+
+    from rfp_arm.poses import from_parts, rot_z
+    from rfp_controlsys.calibrate import measure
+    from rfp_vision.fish_list import FishLocator
+    from rfp_vision.settings import VisionSettings
+    from rfp_vision.vision_system import VisionSystem
+
+    # The camera really sits half a turn round from what the workcell says: the arm then
+    # goes the other way than the fish in the image
+    turned = CELL.camera @ from_parts(rot_z(math.pi), (0.0, 0.0, 0.0))
+    real = dataclasses.replace(CELL, camera=turned)
+    world = World(real, settings(), stand_in_fish(0.35))
+    world.fish = [Fish("fish 1", world.model, from_parts(rot_z(0.0), (0.40, -0.10, 0.0)))]
+    tcp = real.tcp_of_camera(tool_down((0.40, -0.10, 0.40), 0.0))
+    world.set_joints(world.chain.ik(real.tip_of_tcp(tcp), world.joints))
+    camera = VirtualCamera(world, {})
+    try:
+        vision_settings = VisionSettings()
+        locator = FishLocator(vision_settings, CELL.table_z, CELL.pick_area.area)
+        vision = VisionSystem(camera, TruthDetector(camera), locator, vision_settings)
+        said = []
+        result = measure(VirtualArm(world, real), vision, CELL, log=said.append,
+                         sleep=lambda seconds: None)  # fmt: skip
+    finally:
+        camera.close()
+    assert result.turned_deg == pytest.approx(180.0, abs=2.0) and not result.mirrored
+    assert math.degrees(rotation_angle(result.mount, turned)) < 2.0
+    assert np.linalg.norm(result.mount[:3, 3] - turned[:3, 3]) < 0.01
+    assert result.rms_m < 0.005 and len(said) == result.poses == 12
+    assert np.allclose(world.tcp(), tcp, atol=1e-4)  # back where it started
+
+
+def test_a_real_run_measures_an_uncalibrated_camera_first(tmp_path):
+    # camera.calibrated false: the first real run measures where the camera sits (here half
+    # a turn round from the file) over a fish in view, keeps to that one fish with another
+    # in view, saves it with calibrated: true and goes on with the file read again
+    import dataclasses
+    import shutil
+
+    from rfp_arm.poses import from_parts, rot_z
+    from rfp_arm.workcell import DEFAULT_FILE, load_workcell
+    from rfp_controlsys import pick_place
+    from rfp_controlsys.console import Console
+    from rfp_vision.fish_list import FishLocator
+    from rfp_vision.settings import VisionSettings
+    from rfp_vision.vision_system import VisionSystem
+
+    path = tmp_path / "workcell.yaml"
+    shutil.copy(DEFAULT_FILE, path)  # the shipped file: its camera section is what is saved
+    cell = load_workcell(path, panel=None)
+    assert not cell.calibrated
+    real = dataclasses.replace(cell, camera=cell.camera @ from_parts(rot_z(math.pi), (0, 0, 0)))
+    world = World(real, settings(), stand_in_fish(0.35))
+    look = cell.observation_poses[0].camera[:2, 3]  # wherever the file's first look is
+    world.fish = [
+        Fish("fish 1", world.model, from_parts(rot_z(0.0), (look[0], look[1] - 0.02, 0.0))),
+        Fish("fish 2", world.model, from_parts(rot_z(0.0), (look[0] + 0.02, look[1] + 0.15, 0.0))),
+    ]
+    camera = VirtualCamera(world, {})
+    try:
+        vision_settings = VisionSettings()
+        locator = FishLocator(vision_settings, cell.table_z, cell.pick_area_seen)
+        vision = VisionSystem(camera, TruthDetector(camera), locator, vision_settings)
+        console = Console(window=False, interactive=False)
+        new = pick_place.calibrate_first(
+            VirtualArm(world, cell), vision, cell, console, None, None, sleep=lambda s: None
+        )
+    finally:
+        camera.close()
+    assert new.calibrated and "calibrated: true" in path.read_text(encoding="utf-8")
+    assert path.with_name("workcell.yaml.bak").is_file()
+    assert math.degrees(rotation_angle(new.camera, real.camera)) < 2.0
+    assert np.linalg.norm(new.camera[:2, 3] - real.camera[:2, 3]) < 0.01
+
+
+def test_the_twin_follows_the_arm_and_shows_what_vision_finds():
+    from rfp_sim.twin import Twin
+    from rfp_vision.fish_list import FishLocator
+    from rfp_vision.settings import VisionSettings
+
+    world = world_with_fish()
+    fish = world.fish[0]
+    pose = min(  # the view that sees all of it
+        CELL.observation_poses, key=lambda p: np.linalg.norm(p.camera[:2, 3] - fish.pose[:2, 3])
+    )
+    world.set_joints(world.chain.ik(CELL.tip_of_tcp(CELL.observation_tcp(pose)), world.joints))
+    camera = VirtualCamera(world, {})
+    detector = TruthDetector(camera)
+    twin = Twin(CELL, {}, settings=settings(), show=False)
+    try:
+        arm = VirtualArm(world, CELL)
+        twin.follow(arm)
+        twin.update()
+        assert np.allclose(twin.joints, world.joints)  # where the arm is
+        # the camera's view as a pyramid from the lens down to the table, as in sim3d
+        edges, sides = twin.cone
+        lens = world.camera_pose()[:3, 3]
+        assert np.allclose(edges.points[0], lens, atol=1e-6)
+        assert np.allclose(edges.points[1:, 2], CELL.table_z, atol=1e-6)
+        assert np.allclose(sides.points, edges.points)
+        frame = camera.read()
+        locator = FishLocator(VisionSettings(check_size=False), CELL.table_z, CELL.pick_area.area)
+        fish_list = locator.locate(frame, detector.detect(frame.color), world.camera_pose())
+        assert fish_list.valid
+        twin.show_fish(fish_list, frame)
+        # the outline, six cups and the heading of the fish; the depth as points
+        assert len(twin._fish_actors) == 8 and twin._cloud_actor is not None
+        moved = world.joints.copy()
+        moved[0] += 0.2
+        world.set_joints(moved)
+        twin._drawn = 0.0
+        twin.update()
+        assert np.allclose(twin.joints, moved)
+        twin.show_fish(fish_list, frame)  # the next look replaces the last
+        assert len(twin._fish_actors) == 8
+    finally:
+        twin.close()
+        camera.close()
 
 
 def test_back_from_a_place_at_the_end_of_its_range_the_wrist_turns_back_first():
@@ -609,10 +800,10 @@ def test_the_collision_model_covers_the_arm_and_the_gripper_as_built():
 # The layout editor (pick_place.py --mode setup)
 # ---------------------------------------------------------------------------
 def test_dragging_a_corner_or_a_slot_and_adding_one():
-    from rfp_arm.layout import FishSize, load_layout_data
+    from rfp_arm.layout import FishSize
     from rfp_sim.layout_editor import free_spot, moved, with_slot
 
-    _, layout = load_layout_data(panel_file=None)
+    layout = frozen_layout()
     pick, zone = layout.pick_area, layout.placement_zone
     # a corner moves its two sides; the opposite corner stays, and they can't cross
     bigger = moved(layout, ("pick_area", 1, 0), (0.652, -0.398))
@@ -643,25 +834,52 @@ def test_dragging_a_corner_or_a_slot_and_adding_one():
     assert added.placement_zone["y"][1] >= y + 0.02  # grown to hold it
     for sx, sy in layout.slots:  # beside each, or ahead of or behind it
         assert abs(sy - y) >= fish.width + 0.02 - 1e-9 or abs(sx - x) >= fish.length + 0.02 - 1e-9
-    # no room left (the shipped cell, the largest stand-ins): the least overlap, said so
+    # no room left (the tests' cell, the largest stand-ins): the least overlap, said so
     _, clear = with_slot(layout, FishSize(1.0, 0.25, 0.21, 0.126), reach=0.675)
     assert not clear
 
 
+def test_dragging_a_keep_out_zone():
+    from rfp_sim.layout_editor import moved
+
+    layout = frozen_layout()
+    table, band = layout.work, layout.exclusions[0]
+    # the operator's side: along the table's whole far (+X) edge, 0.30 m deep
+    assert band["x"] == [1.0, 1.3] and band["y"] == table["y"]
+    # its ball takes it along the table edge nearest where it is dropped, as deep
+    side = moved(layout, ("keep_out", 0), (0.90, -0.60)).exclusions[0]
+    assert side["x"] == pytest.approx(table["x"]) and side["y"] == pytest.approx([-0.85, -0.55])
+    back = moved(layout, ("keep_out", 0), (-0.30, 0.10)).exclusions[0]  # behind the arm
+    assert back["x"] == pytest.approx([-0.40, -0.10]) and back["y"] == pytest.approx(table["y"])
+    assert (back["name"], back["z"]) == (band["name"], band["z"])
+    # the table sized takes it along
+    bigger = moved(layout, ("work", 1, 1), (1.50, 1.00)).exclusions[0]
+    assert bigger["x"] == pytest.approx([1.20, 1.50])
+    assert bigger["y"] == pytest.approx([-0.85, 1.00])
+    # any other box moves as it is, its middle to the ball, and stays when the table is sized
+    pump = {"name": "pump", "x": [0.80, 0.90], "y": [0.50, 0.60], "z": [0.0, 0.5]}
+    layout.exclusions.append(pump)
+    there = moved(layout, ("keep_out", 1), (1.00, -0.50)).exclusions[1]
+    assert there["x"] == pytest.approx([0.95, 1.05]) and there["y"] == pytest.approx([-0.55, -0.45])
+    assert moved(layout, ("work", 1, 1), (1.50, 1.00)).exclusions[1] == pump
+
+
 def test_the_layout_editor_turns_drags_checks_and_saves(tmp_path):
+    import copy
     import shutil
 
-    from rfp_arm.layout import load_layout_data
+    from rfp_arm.layout import load_layout_data, save_layout
     from rfp_arm.workcell import DEFAULT_FILE, PANEL_FILE
     from rfp_sim.layout_editor import LayoutEditor
 
     workcell, panel = tmp_path / "workcell.yaml", tmp_path / "control_panel.yaml"
     shutil.copy(DEFAULT_FILE, workcell)
     shutil.copy(PANEL_FILE, panel)
+    save_layout(frozen_layout(), workcell, panel)  # the tests' layout, in the shipped files
     said = []
     editor = LayoutEditor(workcell, panel, off_screen=True, log=said.append)
     try:
-        assert not [f for f in editor.findings if f.error]  # the shipped layout works
+        assert not [f for f in editor.findings if f.error]  # the layout works
         # notes are shown in the window; hints about the heading (not edited there) aren't
         notes = [f for f in editor.findings if not f.error and not f.minor]
         assert any(f.minor for f in editor.findings)
@@ -689,12 +907,22 @@ def test_the_layout_editor_turns_drags_checks_and_saves(tmp_path):
         first = list(editor.layout.slots[0])
         editor.turn(1)  # the table a quarter turn round the arm
         assert editor.layout.slots[0] == pytest.approx([-first[1], first[0]])
+        # the operator's side, now beyond the arm (+Y), to the table's +X edge
+        editor.drag(("keep_out", 0), (0.80, 0.60))
+        operator = copy.deepcopy(editor.layout.exclusions[0])
+        assert operator["x"] == pytest.approx([0.55, 0.85])
+        assert editor.message.startswith("keep out 'operator side': x 550..850")
+        balls = {handle: widget.GetCenter() for widget, handle in editor.handles}
+        assert balls[("keep_out", 0)][:2] == pytest.approx((0.70, 0.45))  # in its middle
         written = editor.save()
         assert "placement.slots in workcell.yaml" in written
+        assert "zones.exclusion in workcell.yaml" in written
         assert any(line.startswith("✅ Saved") for line in said) and "sim3d" in said[-1]
         _, saved = load_layout_data(workcell, panel)
         assert saved.heading_deg == pytest.approx(90.0)  # in the panel, which overrides it
         assert saved.slots == editor.layout.slots
+        assert saved.exclusions[0]["x"] == pytest.approx(operator["x"])
+        assert saved.exclusions[0]["y"] == pytest.approx(operator["y"])
         assert not any(f.error for f in editor.findings)
         editor.undo()
         assert editor.layout.slots == saved.slots  # undo goes back to what was saved

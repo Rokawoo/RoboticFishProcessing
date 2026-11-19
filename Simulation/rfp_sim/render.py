@@ -305,6 +305,40 @@ class TruthDetector:
         )
 
 
+VIEW_COLOR = (1.0, 0.75, 0.2)
+VIEW_REACH = 1.5  # m along the optical axis at most, where a ray misses the table (tilted)
+_VIEW_LINES = [2, 0, 1, 2, 0, 2, 2, 0, 3, 2, 0, 4, 5, 1, 2, 3, 4, 1]
+_VIEW_FACES = [3, 0, 1, 2, 3, 0, 2, 3, 3, 0, 3, 4, 3, 0, 4, 1, 4, 1, 2, 3, 4]
+
+
+def view_pyramid(camera: np.ndarray, intrinsics: Intrinsics, table_z: float) -> np.ndarray:
+    """The camera's view as a pyramid: its lens (row 0) and where the image's four corner
+    rays meet the table (rows 1-4; VIEW_REACH out along the optical axis for a ray that
+    doesn't), in the frame `camera` (T_base_camera) is given in."""
+    i = intrinsics
+    corners = [(-i.cx, -i.cy), (i.width - i.cx, -i.cy), (i.width - i.cx, i.height - i.cy),
+               (-i.cx, i.height - i.cy)]  # fmt: skip
+    lens = camera[:3, 3]
+    points = [lens]
+    for u, v in corners:
+        ray = camera[:3, :3] @ np.array([u / i.fx, v / i.fy, 1.0])
+        reach = VIEW_REACH
+        if ray[2] < -1e-6:  # down toward the table
+            reach = min(reach, (table_z - lens[2]) / ray[2])
+        points.append(lens + ray * max(reach, 0.0))
+    return np.array(points)
+
+
+def add_view_pyramid(plotter) -> tuple:
+    """A pyramid (edges, faces) to show a camera's view in; give its points with
+    view_pyramid()."""
+    edges = pv.PolyData(np.zeros((5, 3)), lines=_VIEW_LINES)
+    sides = pv.PolyData(np.zeros((5, 3)), faces=_VIEW_FACES)
+    plotter.add_mesh(edges, color=VIEW_COLOR, line_width=2)
+    plotter.add_mesh(sides, color=VIEW_COLOR, opacity=0.12, show_edges=False, lighting=False)
+    return edges, sides
+
+
 class Viewer:
     """The cell in a 3D window (mouse: turn, zoom), with the camera's view cone, the zones
     and an inset of the camera's image; optionally recorded to a video."""
@@ -323,10 +357,7 @@ class Viewer:
         self.plotter.set_background((0.16, 0.17, 0.2), top=(0.32, 0.34, 0.4))
         self.scene = Scene(self.plotter, world, robot_meshes, tube=True, room=True)
         self._add_zones()
-        self.cone = pv.PolyData(
-            np.zeros((5, 3)), lines=[2, 0, 1, 2, 0, 2, 2, 0, 3, 2, 0, 4, 5, 1, 2, 3, 4, 1]
-        )
-        self.plotter.add_mesh(self.cone, color=(1.0, 0.75, 0.2), line_width=2)
+        self.cone = add_view_pyramid(self.plotter)
         self.text = self.plotter.add_text("", position="upper_left", font_size=11, color="white")
         cell = world.workcell
         middle = np.array(
@@ -391,15 +422,9 @@ class Viewer:
         self.scene.update()
         pose = self.world.camera_pose()
         intrinsics = self.camera.intrinsics if self.camera else Intrinsics.from_fov(1280, 720, 87.0)
-        reach = 0.45
-        corners = [(-intrinsics.cx, -intrinsics.cy), (intrinsics.cx, -intrinsics.cy),
-                   (intrinsics.cx, intrinsics.cy), (-intrinsics.cx, intrinsics.cy)]  # fmt: skip
-        points = [pose[:3, 3]] + [
-            pose[:3, :3] @ (u / intrinsics.fx * reach, v / intrinsics.fy * reach, reach)
-            + pose[:3, 3]
-            for u, v in corners
-        ]
-        self.cone.points = np.array(points)
+        points = view_pyramid(pose, intrinsics, self.world.workcell.table_z)
+        for part in self.cone:
+            part.points = points
         held = self.world.holding
         low, high = (math.degrees(a) for a in self.world.workcell.wrist_range)
         wrist = math.degrees(self.world.joints[-1])

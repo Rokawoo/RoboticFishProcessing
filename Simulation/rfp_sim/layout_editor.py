@@ -4,17 +4,19 @@ gripper as built. Nothing moves.
 
 - Drag a corner ball to size the table (gray), the pick area (green) or the placement zone
   (blue). Drag a slot (a big blue ball, its fish drawn head first) to where a placed fish
-  goes.
+  goes. Drag a keep-out zone's ball (red) to move it: one along a whole table edge, like the
+  operator's side, goes along the edge nearest the ball.
 - Buttons: turn the whole cell a quarter turn about the arm (the table on another side of
   it), add or remove a slot, undo, save.
 
 The rest follows: the camera's views (yellow) follow the pick area, the placement zone grows
-to hold its slots, keep-out zones (red) turn with the cell. After every change the layout is
-checked (rfp_arm.layout.check_layout): red is what can't work (the arm can't reach it, a
-placed fish off the table), yellow what may not. Save writes the workcell file, and the
-control panel where it overrides the file, changing only the layout's lines (a .bak copy of
-each is kept). The placement heading, keep-out zones and observation poses themselves are
-set in the files.
+to hold its slots, a keep-out zone along a table edge stays along it as the table is sized,
+and everything turns with the cell. After every change the layout is checked
+(rfp_arm.layout.check_layout): red is what can't work (the arm can't reach it, a placed fish
+off the table), yellow what may not. Save writes the workcell file, and the control panel
+where it overrides the file, changing only the layout's lines (a .bak copy of each is kept).
+The placement heading, the keep-out zones' sizes and the observation poses are set in the
+files.
 """
 
 import copy
@@ -77,8 +79,9 @@ LINE = 18  # px: a line of text at font size 9
 CHAR = 8.4  # px: a character's width there
 HELP = (
     "Drag a corner ball to size the table (gray), pick area (green) or placement zone (blue); "
-    "drag a slot (big blue ball) to where a placed fish goes, head along its arrow. Yellow: "
-    "what the camera sees from its observation poses (they follow the pick area).\n"
+    "drag a slot (big blue ball) to where a placed fish goes, head along its arrow; drag a red "
+    "ball to move a keep-out zone (the operator's side goes along the table edge nearest it). "
+    "Yellow: what the camera sees from its observation poses (they follow the pick area).\n"
     "Mouse: drag the empty space to look around, the wheel to zoom, shift + drag to pan."
 )
 
@@ -132,20 +135,95 @@ def _holding(zone: dict, slots: list) -> dict:
     }  # fmt: skip
 
 
+def _middle(rect: dict) -> tuple[float, float]:
+    return (rect["x"][0] + rect["x"][1]) / 2, (rect["y"][0] + rect["y"][1]) / 2
+
+
+def _edge(zone: dict, table: dict) -> tuple[int, int] | None:
+    """The table edge a keep-out zone lies along, (axis, side) (axis 0: x, 1: y; side 0: the
+    low edge, 1: the high one): the zone spans the table's whole length along the edge and
+    reaches it or lies past it, not the opposite edge. None for any other box."""
+    for axis in (0, 1):
+        across, along = "xy"[axis], "xy"[1 - axis]
+        if zone[along][0] <= table[along][0] + 1e-6 and zone[along][1] >= table[along][1] - 1e-6:
+            low = zone[across][0] <= table[across][0] + 1e-6
+            high = zone[across][1] >= table[across][1] - 1e-6
+            if low != high:
+                return axis, int(high)
+    return None
+
+
+def _nearest_edge(table: dict, xy) -> tuple[int, int]:
+    """The table edge (axis, side) nearest a point on the table; off it, the edge the point
+    lies furthest past."""
+    past = {}
+    for axis, name in enumerate("xy"):
+        low, high = table[name]
+        past[axis, 0], past[axis, 1] = low - xy[axis], xy[axis] - high
+    return max(past, key=past.get)
+
+
+def _along(zone: dict, table: dict, edge: tuple, to_table: dict, to_edge: tuple) -> dict:
+    """A keep-out zone along `edge` of `table`, put along `to_edge` of `to_table`: as far into
+    the table and out past the edge, and as far past the table's ends along it. It stops
+    MIN_SIDE short of the opposite edge, so it stays along this one, unless that would make
+    it thinner than MIN_SIDE (a table that small)."""
+
+    def frame(rect: dict, edge: tuple):  # the axes along and across the edge, the edge, inward
+        axis, side = edge
+        across = "xy"[axis]
+        return "xy"[1 - axis], across, rect[across][side], -1.0 if side else 1.0
+
+    along, across, level, inward = frame(table, edge)
+    depth = sorted((v - level) * inward for v in zone[across])  # m into the table from the edge
+    ends = (table[along][0] - zone[along][0], zone[along][1] - table[along][1])
+    along, across, level, inward = frame(to_table, to_edge)
+    far = to_table[across][1] - to_table[across][0] - MIN_SIDE
+    depth[1] = max(min(depth[1], far), depth[0] + min(depth[1] - depth[0], MIN_SIDE))
+    return {
+        **zone,
+        along: [round(to_table[along][0] - ends[0], 3), round(to_table[along][1] + ends[1], 3)],
+        across: sorted(round(level + inward * d, 3) for d in depth),
+    }
+
+
+def _keep_out_moved(zone: dict, table: dict, xy) -> dict:
+    """A keep-out zone dragged by its ball to `xy`: one along a table edge (where the operator
+    stands) goes along the edge nearest `xy`, as deep; any other box moves as it is, its
+    middle to `xy`."""
+    edge = _edge(zone, table)
+    if edge is not None:
+        return _along(zone, table, edge, table, _nearest_edge(table, xy))
+    middle = _middle(zone)
+    return {
+        **zone,
+        **{a: [round(v + xy[i] - middle[i], 3) for v in zone[a]] for i, a in enumerate("xy")},
+    }
+
+
 def moved(layout: Layout, handle: tuple, xy) -> Layout:
-    """`layout` with one ball dragged to `xy` (m, on the table). A handle is ("slot", k) or
-    (zone, i, j): the zone's corner (x[i], y[j]), a zone one of ZONES' fields."""
+    """`layout` with one ball dragged to `xy` (m, on the table). A handle is ("slot", k),
+    ("keep_out", k) or (zone, i, j): the zone's corner (x[i], y[j]), a zone one of ZONES'
+    fields."""
     new = copy.deepcopy(layout)
     x, y = _snap(xy[0]), _snap(xy[1])
     if handle[0] == "slot":
         new.slots[handle[1]] = [x, y]
         new.placement_zone = _holding(new.placement_zone, new.slots)
         return new
+    if handle[0] == "keep_out":
+        k = handle[1]
+        new.exclusions[k] = _keep_out_moved(layout.exclusions[k], layout.work, (x, y))
+        return new
     part, i, j = handle
     old = getattr(layout, part)
     rect = _corner_moved(old, i, j, x, y)
     setattr(new, part, rect)
-    if part == "pick_area":
+    if part == "work":  # a keep-out zone along a table edge stays along it
+        for k, zone in enumerate(layout.exclusions):
+            if (edge := _edge(zone, old)) is not None:
+                new.exclusions[k] = _along(zone, old, edge, rect, edge)
+    elif part == "pick_area":
         for pose in new.poses:
             if "camera_xy" in pose:
                 pose["camera_xy"] = _mapped(pose["camera_xy"], old, rect)
@@ -399,9 +477,12 @@ class LayoutEditor:
                     yield (part, i, j), (rect["x"][i], rect["y"][j]), CORNER_RADIUS, color
         for k, slot in enumerate(self.layout.slots):
             yield ("slot", k), tuple(slot), SLOT_RADIUS, SLOT_COLOR
+        for k, zone in enumerate(self.layout.exclusions):
+            yield ("keep_out", k), _middle(zone), SLOT_RADIUS, EXCLUSION_COLOR
 
     def rebuild(self) -> None:
-        """A ball for every corner and slot (after a change of what there is to drag)."""
+        """A ball for every corner, slot and keep-out zone (after a change of what there is
+        to drag)."""
         self.plotter.clear_sphere_widgets()
         self.handles = []
         for handle, (x, y), radius, color in self._handle_places():
@@ -419,9 +500,12 @@ class LayoutEditor:
             self.handles.append((widget, handle))
         self.refresh()
 
-    def _place_handles(self) -> None:
-        """Every ball where the layout puts it, on the table."""
+    def _place_handles(self, held=None) -> None:
+        """Every ball where the layout puts it, on the table; `held`: (handle, xy) of a ball
+        that stays where the mouse puts it."""
         places = {handle: xy for handle, xy, _, _ in self._handle_places()}
+        if held is not None:
+            places[held[0]] = held[1]
         for widget, handle in self.handles:
             if handle in places:
                 widget.SetCenter(places[handle][0], places[handle][1], self.handle_z)
@@ -465,7 +549,8 @@ class LayoutEditor:
         if self.grabbed is None or self.grabbed[0] != handle:
             self.grabbed = (handle, copy.deepcopy(self.layout))
         self.layout = moved(self.grabbed[1], handle, xy)
-        self._place_handles()
+        # a keep-out zone's ball stays under the mouse while its zone goes from edge to edge
+        self._place_handles((handle, tuple(xy)) if handle[0] == "keep_out" else None)
         self._draw()
 
     def _dropped(self) -> None:
@@ -477,6 +562,11 @@ class LayoutEditor:
         if handle[0] == "slot":
             x, y = self.layout.slots[handle[1]]
             self.message = f"slot {handle[1] + 1} at ({x * 1000:.0f}, {y * 1000:.0f}) mm"
+        elif handle[0] == "keep_out":
+            zone = self.layout.exclusions[handle[1]]
+            self.message = (
+                f"keep out '{zone['name']}': x {_mm_pair(zone['x'])}, y {_mm_pair(zone['y'])} mm"
+            )
         else:
             name = next(name for part, name, _ in ZONES if part == handle[0])
             rect = getattr(self.layout, handle[0])
@@ -646,8 +736,8 @@ class LayoutEditor:
         for k, slot in enumerate(lay.slots, 1):
             points.append((slot[0], slot[1], z + 0.04))
             labels.append(f"slot {k}")
-        for zone in lay.exclusions:
-            points.append((zone["x"][0] + 0.02, zone["y"][0] + 0.02, z))
+        for zone in lay.exclusions:  # at its ball, as a slot's
+            points.append((*_middle(zone), z + 0.04))
             labels.append(f"keep out: {zone['name']}")
         self.plotter.add_point_labels(
             points,
