@@ -8,7 +8,7 @@ from the repository root. It makes the repository's rfp_* packages importable
 (no pip install required) and hands over to pick_place.main(), which takes the
 same command-line options:
 
-    python main.py --mode observe
+    python main.py --mode check
     python main.py --mode sim3d
     python main.py --mode dry-run --step
     python main.py --mode run

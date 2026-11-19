@@ -4,7 +4,9 @@ the selector rules, every failure response of Table CS-1, the log and the script
 import csv
 import json
 import math
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +14,8 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("cv2")
 pytest.importorskip("yaml")
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Arm" / "tests"))
+from arm_helpers import make_workcell  # the tests' own layout
 from rfp_arm.gripper import NoGripper, SimGripper
 from rfp_arm.interfaces import E_PROTECTIVE_STOP, ArmError, GripperState
 from rfp_arm.sim import SimArm
@@ -34,7 +38,7 @@ from rfp_vision.geometry import Intrinsics, pose_down
 from rfp_vision.settings import VisionSettings
 from rfp_vision.vision_system import Observation
 
-CELL = load_workcell()
+CELL = make_workcell()
 K = Intrinsics.from_fov(320, 180, 87.0)
 
 
@@ -57,7 +61,7 @@ class Hold:
     def set_background(self, frame):
         pass
 
-    def start(self, frame):
+    def start(self, frame, table_distance=None):
         self.active, self.updates = bool(self.cues), 0
         return self.cues
 
@@ -85,7 +89,7 @@ class Table:
         now = time.monotonic()
         return Frame(np.zeros((180, 320, 3), np.uint8), None, K, now, time.time(), self.frames)
 
-    def observe(self, t_base_camera, on_frame=None) -> Observation:
+    def observe(self, t_base_camera, on_frame=None, frames=None) -> Observation:
         self.observations += 1
         if action := self.before_observation.get(self.observations):
             action()
@@ -239,8 +243,9 @@ def test_run_places_every_fish_then_reports_the_pick_area_clear(tmp_path):
     assert report.ended == "pick area clear" and report.cycles == 2 and report.successes == 2
     assert rig.table.fish == [] and rig.gripper.events == ["vacuum on", "release"] * 2
     assert rig.operator.alerts == [] and report.failures == {} and report.skipped == []
-    # SY-22: three passes over the two observation poses without a fish
-    assert rig.table.observations == 2 * 2 + 3 * 2
+    # a look to find them, one from straight above each, then SY-22: three passes over
+    # the two observation poses without a fish
+    assert rig.table.observations == 1 + 2 + 3 * 2
     for state in ("observing", "deciding", "approaching", "holding", "carrying", "placing", "idle"):
         assert state in rig.operator.states  # CS-72
     with open(log.folder / "cycles.csv", newline="", encoding="utf-8") as f:
@@ -253,11 +258,26 @@ def test_run_places_every_fish_then_reports_the_pick_area_clear(tmp_path):
     assert (log.folder / "cycle_001.jpg").is_file()  # the observation the decision used (CS-82)
 
 
+def test_a_fish_measured_just_past_the_pick_area_s_edge_is_still_picked():
+    # vision put one lying at the edge 7 mm out, and the run asked the operator about it
+    from rfp_arm.workcell import PICK_AREA_TOLERANCE
+
+    edge = CELL.pick_area.x[1]
+    rig = Rig((edge + 0.02, -0.10))
+    assert rig.run(max_cycles=1).successes == 1
+    rig = Rig((edge + PICK_AREA_TOLERANCE + 0.03, -0.10))  # further out: not this cell's fish
+    report = rig.run()
+    assert report.successes == 0 and rig.gripper.events == []
+    assert CELL.pick_area_seen[0][1] == pytest.approx(edge + PICK_AREA_TOLERANCE)
+
+
 def test_only_valid_fish_inside_the_pick_area_are_candidates():
     rig = Rig((0.30, -0.10, {"code": "low_confidence"}), (0.40, 0.25))  # the 2nd: outside
     report = rig.run()
     assert report.cycles == 0 and rig.gripper.events == []
-    assert "none can be picked: fish 1: low_confidence" in rig.operator.alerts[0]
+    assert (
+        "none can be picked: fish at x 300, y -100 mm: low_confidence" in (rig.operator.alerts[0])
+    )
     assert report.ended.startswith("stopped at: Fish are on the table")
 
 
@@ -266,7 +286,7 @@ def test_fish_seen_outside_the_pick_area_do_not_keep_the_run_going():
     rig = Rig((0.40, 0.45, {"code": "out_of_frame"}))
     assert rig.run().ended == "pick area clear" and rig.operator.alerts == []
     rig = Rig((0.40, -0.10, {"code": "out_of_frame"}))  # the same inside it: the operator
-    assert "fish 1: out_of_frame" in rig.run().ended and rig.operator.alerts
+    assert "x 400, y -100 mm: out_of_frame" in rig.run().ended and rig.operator.alerts
 
 
 def test_no_seal_is_retried_then_the_fish_is_skipped():
@@ -346,6 +366,29 @@ def test_unreachable_fish_are_skipped_and_the_others_picked():
     assert len(report.skipped) == 1 and B not in [f[:2] for f in rig.table.fish]
 
 
+def test_a_fish_set_down_off_its_slot_is_the_operators_and_the_next_goes_to_the_next_slot():
+    # The move down into slot 1 fails twice: the fish is set down where the arm is, in the
+    # placement zone. Vision doesn't pick fish there, and the next one went on top of it.
+    slot1, slot2 = CELL.slots[0], CELL.slots[1]
+    refused = []
+
+    def fail(kind, target):
+        low = target[2, 3] < 0.3 and math.dist(target[:2, 3], slot1) < 0.01
+        if kind == "lin" and low and len(refused) < 2:
+            refused.append(1)
+            return "no IK solution"
+        return None
+
+    rig = Rig(A, B, answers=[True])
+    rig.arm.fail = fail
+    report = rig.run()
+    assert len(refused) == 2 and report.successes == 1
+    assert len(rig.operator.alerts) == 1 and "off its slot" in rig.operator.alerts[0]
+    assert "slot 1" in rig.operator.alerts[0]
+    lowered = [pose for kind, pose in rig.arm.moves if kind == "lin" and pose[2, 3] < 0.3]
+    assert math.dist(lowered[-1][:2, 3], slot2) < 0.01  # the next fish: slot 2
+
+
 def test_a_plan_refused_for_where_a_fish_lies_skips_it_without_pausing(monkeypatch):
     from rfp_arm.interfaces import E_MOTION
     from rfp_controlsys import cycle as cycle_module
@@ -366,20 +409,112 @@ def test_a_plan_refused_for_where_a_fish_lies_skips_it_without_pausing(monkeypat
     assert len(report.skipped) == 2 and not any("in a row" in a for a in rig.operator.alerts)
 
 
-def test_a_closer_look_says_why_a_fish_it_sees_whole_is_not_picked():
+def test_a_plan_the_arm_would_fold_into_itself_on_is_refused_before_anything_moves(monkeypatch):
+    # grasp.plan_problem (tested in Arm/tests) solves each pose from the arm's joints; here
+    # a stand-in for it refuses fish A's plans
+    from rfp_arm.kinematics import FR5
+    from rfp_controlsys import cycle as cycle_module
+
+    checked = []
+
+    def problem(plan, workcell, chain, joints):
+        checked.append(len(joints))
+        near_a = math.dist(plan.pregrasp[:2, 3], A) < 0.05
+        return "the gripper would hit the forearm at 'lower'" if near_a else None
+
+    class JointArm(SimArm):  # an arm that tells its joints: the plan is checked from them
+        def joints(self):
+            return dict(zip(FR5.joint_names, [0.0] * 6))
+
+    monkeypatch.setattr(cycle_module, "plan_problem", problem)
+    rig = Rig(A, B)
+    rig.arm = rig.cycle.arm = JointArm(CELL)
+    rig.gripper.arm = rig.arm
+    report = rig.run()
+    assert checked and all(n == 6 for n in checked)
+    # A refused each time before anything moved toward it, and left; B picked; no pause
+    assert report.successes == 1 and len(report.skipped) == 1
+    assert not any("in a row" in a for a in rig.operator.alerts)
+    assert A in [f[:2] for f in rig.table.fish]
+    assert not any(math.dist(pose[:2, 3], A) < 0.05 for kind, pose in rig.arm.moves)
+
+
+def test_a_fish_cut_off_is_looked_at_from_higher_until_it_is_seen_whole():
+    heights = []
+
     class Closer(Table):
-        def observe(self, t_base_camera, on_frame=None):
+        def observe(self, t_base_camera, on_frame=None, frames=None):
             observation = super().observe(t_base_camera, on_frame)
-            close = t_base_camera[2, 3] > 0.55  # the closer look: the whole fish, too wide
+            heights.append(round(float(t_base_camera[2, 3]), 3))
+            whole = t_base_camera[2, 3] > 0.55  # high enough: the whole fish, too wide
             for f in observation.fish_list.fish:
-                code = "geometry_out_of_range" if close else "out_of_frame"
+                code = "geometry_out_of_range" if whole else "out_of_frame"
                 f.failures, f.failure_code, f.seen_at = (code,), code, (*A, 0.0)
             return observation
 
     rig = Rig((*A, {"code": "out_of_frame"}))
     rig.table.__class__ = Closer
     report = rig.run()
-    assert "fish 1: geometry_out_of_range" in report.ended  # not the first look's out_of_frame
+    # each look over it from higher than the last, as it didn't fit the one before
+    focus = heights[1:4]
+    assert focus == sorted(focus) and focus[-1] > 0.55 > focus[0]
+    assert "geometry_out_of_range" in report.ended  # why, as the look that saw all of it says
+
+
+class Turned(Table):
+    """A camera turned 90 deg on its mount that the workcell doesn't know of: each fish is
+    seen turned about the camera."""
+
+    def observe(self, t_base_camera, on_frame=None, frames=None):
+        camera, true = t_base_camera[:2, 3], self.fish
+        turn = np.array([[0.0, -1.0], [1.0, 0.0]])
+        self.fish = [(*(camera + turn @ (np.array(f[:2]) - camera)), f[2]) for f in true]
+        try:
+            return super().observe(t_base_camera, on_frame, frames)
+        finally:
+            self.fish = true
+
+
+def test_a_camera_turned_on_its_mount_stops_the_run():
+    rig = Rig(A)
+    rig.table.__class__ = Turned
+    report = rig.run(max_cycles=3)
+    assert "as if the camera were turned about" in report.ended and "calibrate" in report.ended
+    assert report.successes == 0
+
+
+def test_two_fish_near_where_one_was_expected_are_no_sign_of_a_turned_camera():
+    # Either may be taken for the other: a jump between them says nothing about the mount
+    rig = Rig(A, (A[0] + 0.06, A[1]))
+    rig.table.__class__ = Turned
+    assert "as if the camera were turned" not in rig.run(max_cycles=2).ended
+
+
+def test_what_lies_under_the_arm_is_the_arm_not_a_fish(monkeypatch):
+    # The detector took the arm's shoulder, seen at the image's edge near the base, for a
+    # fish: no look reached it, and the run ended asking the operator about it
+    from rfp_arm.collision import CollisionModel
+    from rfp_arm.kinematics import FR5
+    from rfp_controlsys import cycle as cycle_module
+
+    under = []
+
+    def over(self, chain, joints, xy, below):
+        under.append(below)
+        return "upper arm" if math.dist(xy, B) < 0.01 else None
+
+    class JointArm(SimArm):
+        def joints(self):
+            return dict(zip(FR5.joint_names, [0.0] * 6))
+
+    monkeypatch.setattr(CollisionModel, "over", over)
+    monkeypatch.setattr(cycle_module, "plan_problem", lambda *args: None)  # joints made up
+    rig = Rig(A, B)
+    rig.arm = rig.cycle.arm = JointArm(CELL)
+    rig.gripper.arm = rig.arm
+    report = rig.run()
+    assert report.ended == "pick area clear" and report.successes == 1 and under
+    assert all(not math.dist(s.xy, B) < 0.01 for s in rig.cycle.sightings)
 
 
 def test_every_mode_starts_by_saying_what_keeps_the_layout_from_working():
@@ -438,8 +573,11 @@ def test_bad_selector_answers_never_move_the_arm_and_the_fallback_decides():
 
 
 def test_a_fish_that_moved_before_the_grasp_gets_a_new_decision():
-    rig = Rig(A)
-    rig.table.before_observation[2] = lambda: rig.table.fish.__setitem__(0, (0.33, -0.10, {}))
+    slow = ControlSettings(settle_s=0.0, recheck_after_s=0.0)  # a decision that takes a while
+    rig = Rig(A, settings=slow)
+    assert rig.run(max_cycles=1).successes == 1 and rig.table.observations == 3  # with a recheck
+    rig = Rig(A, settings=slow)
+    rig.table.before_observation[3] = lambda: rig.table.fish.__setitem__(0, (0.33, -0.10, {}))
     report = rig.run(max_cycles=1)
     assert report.successes == 1 and report.cycles == 1
     assert any("isn't where it was" in str(s) for s in rig.operator.states)
@@ -519,8 +657,7 @@ def test_script_refuses_the_real_arm_until_the_workcell_is_verified(capsys):
 
     verified = dataclasses.replace(CELL, verified=True)
     pick_place.start_checks("dry-run", verified, None, NoGripper())  # passes
-    with pytest.raises(SystemExit, match="not calibrated"):
-        pick_place.start_checks("run", verified, None, SimGripper())
+    pick_place.start_checks("run", verified, None, SimGripper())  # calibrated first, then run
     ready = dataclasses.replace(verified, calibrated=True)
     pick_place.start_checks("run", ready, None, SimGripper())
     on = SimGripper()
@@ -534,6 +671,61 @@ def test_script_refuses_the_real_arm_until_the_workcell_is_verified(capsys):
         pick_place.confirm_real_motion("dry-run", yes=False)
     pick_place.confirm_real_motion("dry-run", yes=True)
     assert "THE REAL ARM WILL MOVE" in capsys.readouterr().out
+
+
+def test_a_moveit_driving_a_mock_arm_beside_the_real_one_is_refused():
+    # FAIRINO's demo launch (mock hardware) left running publishes joint states too: a run
+    # would plan from where the mock arm is, not the real one
+    joints = [0.1, -1.0, 1.2, -0.5, 1.5, 0.3]
+
+    class MoveIt:
+        def joints(self):
+            return dict(zip(CELL.joints, joints))
+
+    class Controller:
+        def __init__(self, positions):
+            self.positions = positions
+
+        def joint_positions(self):
+            return self.positions
+
+    near = [q + 0.01 for q in joints]  # within a degree: the same arm
+    pick_place.same_arm(MoveIt(), Controller(near), CELL)
+    pick_place.same_arm(MoveIt(), Controller(None), CELL)  # no state: the fault checks say why
+    elsewhere = [0.0] * 6
+    with pytest.raises(SystemExit, match="isn't driving this arm"):
+        pick_place.same_arm(MoveIt(), Controller(elsewhere), CELL)
+
+
+def test_a_driver_built_for_other_firmware_is_said_before_anything_moves(tmp_path, monkeypatch):
+    # After a firmware update FAIRINO's driver must be built again for it
+    group = pick_place.firmware_group
+    assert group("V3.7.8") == (3, 7, 8) and group("3.7.2") == group("V3.7.5") == (3, 7, 5)
+    assert group(None) is None and group("robot") is None
+    workspace = tmp_path / "ws"
+    (workspace / "install" / "fairino_hardware").mkdir(parents=True)
+    (workspace / pick_place.FIRMWARE_STAMP).write_text("3.7.8\n", encoding="utf-8")
+    monkeypatch.setenv("AMENT_PREFIX_PATH", str(workspace / "install" / "fairino_hardware"))
+    assert pick_place.driver_firmware() == "3.7.8"
+
+    class Controller:
+        def __init__(self, firmware):
+            self.version = firmware
+
+        def firmware(self):
+            return self.version
+
+    pick_place.check_driver(Controller("V3.7.8"))  # the same: nothing said
+    pick_place.check_driver(Controller(None))  # the 3.7.5 driver can't tell: no check
+    with pytest.raises(SystemExit, match="setup.sh --robot"):
+        pick_place.check_driver(Controller("V3.9.5"))
+    monkeypatch.setenv("AMENT_PREFIX_PATH", "")
+    pick_place.check_driver(Controller("V3.9.5"))  # built by hand, no stamp: no check
+
+
+def test_the_run_says_how_fast_the_cell_worked():
+    assert pick_place.pace(12, 300.0) == "5 min 00 s: 25 s a fish, 144 an hour"
+    assert pick_place.pace(0, 65.0) == "1 min 05 s"  # nothing placed: the time alone
 
 
 def test_control_panel_overrides_the_settings_files_everywhere(tmp_path):

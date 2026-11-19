@@ -38,6 +38,7 @@ class Console:
         self._stop = False
         self._shown = False
         self.on_state = None  # called with each new state line (the 3D viewer shows it)
+        self.on_show = None  # called every time an image is shown (the 3D twin follows the arm)
 
     # -- terminal --------------------------------------------------------------
     def state(self, state: str, detail: str = "") -> None:
@@ -72,6 +73,8 @@ class Console:
     # -- window ----------------------------------------------------------------
     def show(self, image: np.ndarray, lines: list[str] | None = None) -> None:
         """Show a camera image under the state line and `lines`; reads the stop key."""
+        if self.on_show is not None:
+            self.on_show()
         if not self.window:
             return
         image = add_status(image, [f"{self._state}  {self._detail}".rstrip(), *(lines or [])])

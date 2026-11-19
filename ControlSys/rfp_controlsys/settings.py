@@ -42,12 +42,27 @@ class ControlSettings:
     max_failed_cycles: int = 3  # in a row, then pause (CS-63)
     empty_passes_to_end: int = 3  # passes over the observation poses with no fish (SY-22)
     max_reobserve: int = 3  # "reobserve" answers in a row, then the fallback rule (Table CS-1)
-    close_looks: int = 2  # looks centered on a fish cut off at the image's edge; 0: none
+    # Looks from straight above a fish, each aimed at what the last saw, until one sees all
+    # of it; the image's long side spans look_margin times its expected length
+    focus_steps: int = 3
+    look_margin: float = 1.15
+    max_looks_per_fish: int = 2  # looks at a fish without a candidate, then the operator is told
+    search_frames: int = 1  # frames per look while searching (a fish is looked at closely later)
     fish_list_max_age_s: float = 1.0  # CS-12, CS-53
+    recheck_after_s: float = 0.5  # the decision took longer: look again before the grasp (CS-41)
     recheck_position_m: float = 0.010  # CS-41
     recheck_heading_deg: float = 10.0
     same_fish_m: float = 0.05  # attempts follow a fish found again within this distance
-    settle_s: float = 0.3  # wait after a move before frames are used (VS-13)
+    settle_s: float = 0.15  # wait after a move before frames are used (VS-13)
+    # A fish seen whole jumping more than this between two looks (and by half the camera's
+    # move or more): the camera isn't mounted where the workcell says; the run stops
+    max_jump_m: float = 0.10
+    table_warning_m: float = 0.015  # the table seen this far from table.z: the operator is told
+    # Carry a fish over what vision saw on the way (other fish, placed fish), not at the
+    # fixed lift height; the way is the straight line widened by half a fish and this
+    carry_over_seen: bool = True
+    carry_corridor_m: float = 0.05
+    live_view_s: float = 0.2  # while moving, what vision sees drawn this often; 0: the frames only
     require_hold_confirmation: bool = True  # no vacuum switch and no vision cue: don't lift
     vision_hold_check: bool = True  # watch the held fish with the camera
     save_images: bool = True  # the annotated observation of every cycle (CS-82)
@@ -74,7 +89,7 @@ def load_settings(path: Path | None = None, panel: Path | None = PANEL_FILE) -> 
 
 
 RUN_DEFAULTS = {"mode": None, "device": None, "model": None, "cycles": None, "step": False,
-                "window": True, "any_size": False}  # fmt: skip
+                "window": True, "any_size": False, "bringup": True, "twin": True}  # fmt: skip
 
 
 def run_defaults(panel: Path | None = PANEL_FILE) -> dict:

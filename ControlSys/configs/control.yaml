@@ -5,13 +5,28 @@ max_attempts_per_fish: 3      # then the fish is skipped for the rest of the run
 max_failed_cycles: 3          # failed cycles in a row, then pause for the operator (CS-63)
 empty_passes_to_end: 3        # passes over the observation poses with no fish: run ends (SY-22)
 max_reobserve: 3              # "reobserve" answers in a row, then the fallback rule
-close_looks: 2                # looks centered on a fish cut off at the image's edge (each
-                              # aimed at what the last one saw); 0: none
+# Finding fish: the observation poses one after another, a quick look (search_frames) from
+# each, until one sees a fish. Then looks from straight above it, each aimed at what the last
+# saw (a fish cut off at the image's edge: its middle half its expected length from the end
+# that shows), as high as it takes for the image's long side to span look_margin times its
+# expected length (up to the workcell's observation.close_height), until one sees all of it.
+focus_steps: 3
+look_margin: 1.15
+max_looks_per_fish: 2         # looks at a fish without a candidate, then the operator is told
+search_frames: 1
 fish_list_max_age_s: 1.0      # an older fish list starts no decision or grasp (CS-12, CS-53)
+recheck_after_s: 0.5          # the decision took longer than this (a VLM): look again (CS-41)
 recheck_position_m: 0.010     # re-check before a grasp: the fish moved more = new decision (CS-41)
 recheck_heading_deg: 10
 same_fish_m: 0.05             # a fish found again within this distance keeps its attempt count
-settle_s: 0.3                 # wait after a move before frames are used (VS-13)
+settle_s: 0.15                # wait after a move before frames are used (VS-13)
+max_jump_m: 0.10              # a fish seen whole jumping more (and by the camera's move or more)
+                              # between two looks: the camera's mount is wrong, stop
+table_warning_m: 0.015        # the camera sees the table this far from table.z: say so
+carry_over_seen: true         # carry a fish just over what vision saw on the way (other fish,
+carry_corridor_m: 0.05        # placed ones: within half a fish and this of the straight way);
+                              # false: always at the workcell's lift height
+live_view_s: 0.2              # while moving, what vision sees drawn this often; 0: frames only
 
 # Lift only when the hold is confirmed by the vacuum switch or by vision. Set false to
 # lift blind while neither is available (no switch wired, camera too close for a cue).

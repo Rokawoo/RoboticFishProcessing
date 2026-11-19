@@ -6,47 +6,42 @@ watching with the camera that the fish stays on the gripper. Repeats until the p
 is clear.
 
 Usage:
-    python pick_place.py                                  # pick the mode (model, camera) in popups
-    python pick_place.py --mode setup                     # lay out the cell in a 3D window
-    python pick_place.py --mode observe                   # camera, detections, fish positions
-    python pick_place.py --mode offline --device clip.mp4 --any-size --cycles 2
-    python pick_place.py --mode sim3d                     # 3D virtual cell, virtual camera
-    python pick_place.py --mode sim --cycles 2            # MoveIt's mock hardware in RViz
-    python pick_place.py --mode check                     # real arm: state, I/O, camera
-    python pick_place.py --mode feel                      # real arm: the force on the gripper
-    python pick_place.py --mode dry-run --step            # THE ARM MOVES, vacuum off
-    python pick_place.py --mode run                       # THE ARM MOVES, with vacuum
+    python pick_place.py                          # pick the mode (model, camera) in popups
+    python pick_place.py --mode setup             # lay out the cell
+    python pick_place.py --mode sim3d             # the whole cycle in a virtual cell
+    python pick_place.py --mode sim --cycles 2    # on MoveIt's mock arm (robot PC)
+    python pick_place.py --mode check             # nothing moves: camera, fish, arm, force
+    python pick_place.py --mode dry-run --step    # THE ARM MOVES, vacuum off
+    python pick_place.py --mode run               # THE ARM MOVES and picks fish
+    python pick_place.py --mode run --calibrate   # measure the camera's mount again first
 
 Modes, in the order to bring a cell up (SF-43):
-    setup     Nothing moves. The cell's layout in a 3D window around the arm: drag the corners
-              of the table, pick area and placement zone and the slots, add slots, turn it all
-              about the arm; every change is checked against what the arm reaches and the
-              camera sees. Saves the workcell file (and the control panel where it overrides it).
-    observe   Nothing moves. Shows what the camera and the model see and where each fish is
-              in the arm's frame (with MoveIt running: from the arm's real pose).
-    offline   The whole cycle with a simulated arm and gripper, no ROS: for recorded videos.
-    sim3d     The whole cycle in a virtual cell (Simulation/): a virtual FR5, gripper and
-              D405 whose color and depth images go through the real vision code, catfish
-              from a 3D model, in a 3D window. No ROS. Settings: control_panel.yaml,
-              simulation section; --video saves the 3D view.
-    sim       The whole cycle on MoveIt with mock hardware; watch the arm in RViz (CS-92).
-    check     Real arm, nothing moves: prints joint state, TCP pose, the controller's flange
-              pose and I/O, the gripper state and what the camera sees.
-    feel      Real arm, nothing moves: prints the force the arm feels on the gripper from
-              its joint torques. Push on the cups by hand to see it, and set the grasp
-              settings' contact_force and press_force_max from what you read.
-    dry-run   THE REAL ARM MOVES. Vacuum off, every approach stops 50 mm short (CS-93).
-    run       THE REAL ARM MOVES and picks fish.
+    setup    Lay out the cell in a 3D window around the arm: the table, pick area, placement
+             zone and slots, checked against what the arm reaches and the camera sees as you
+             go. Saves the workcell file (and the control panel where it overrides it).
+    sim3d    The whole cycle in a virtual cell (Simulation/): a virtual FR5, gripper and D405
+             whose images go through the real vision code, moving as the arm does. No
+             hardware, no ROS; --video saves the 3D view.
+    sim      The whole cycle on MoveIt with mock hardware, shown in the 3D twin (robot PC).
+    check    Nothing moves. The arm's driver, firmware, state, I/O and gripper, then live what
+             the camera and the model see, where each fish lies in the arm's frame and the
+             force felt on the gripper (push the cups: contact_force). Without ROS or the arm,
+             the camera alone (any camera or video: --device).
+    dry-run  THE ARM MOVES: whole cycles, the vacuum off, every approach stopping 50 mm short
+             (CS-93).
+    run      THE ARM MOVES and picks fish.
+             Both first check that MoveIt drives this arm and that FAIRINO's driver is the one
+             for the controller's firmware, and while camera.calibrated is false (or with
+             --calibrate) measure where the camera sits over a fish in view and save it.
 
 --device: "realsense" (first one found), a RealSense serial number, an OpenCV camera index
 (0, 1, ...: color only), or a recording (.bag/.db3 with depth, any video without). Without
 depth, fish are placed on the table plane (Vision/configs/vision.yaml).
 
-Before sim, check, dry-run and run (ROS 2 Humble sourced, one terminal each):
-    ros2 launch fairino5_v6_moveit2_config demo.launch.py      # MoveIt, RViz, the controller
-    ros2 run fairino_hardware ros2_cmd_server                  # real arm only: I/O and state
-On the real arm the launch has to load fairino_hardware/FairinoHardwareInterface instead of
-mock_components/GenericSystem (config/fairino5_v6_robot.ros2_control.xacro).
+On the robot PC run it through ./robot.sh (it sources ROS 2, the workspace and .venv). The
+modes that need MoveIt start it with the FR5's driver (mock hardware for sim) and FAIRINO's
+command server unless they are running (Arm/ros/fr5_bringup.launch.py; control panel:
+run.bringup), and stop them at the end.
 
 The settings changed most often, and the defaults of the options above, are in the
 control panel at the repository's top: control_panel.yaml (--panel for another file).
@@ -57,6 +52,9 @@ answers for needs the emergency stop. Each run is logged in ControlSys/runs/.
 """
 
 import argparse
+import math
+import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -74,16 +72,16 @@ except ImportError:  # installed without the repository around it
         pass
 
 
+from rfp_arm.bringup import Bringup, launch_command
 from rfp_arm.fairino import FairinoIO
 from rfp_arm.gripper import NoGripper, SimGripper, make_gripper
 from rfp_arm.interfaces import ArmError, GripperState
-from rfp_arm.sim import SimArm
 from rfp_arm.workcell import DEFAULT_FILE as WORKCELL_FILE
 from rfp_arm.workcell import Workcell, WorkcellError, describe, load_workcell
 from rfp_vision.camera import CameraError, list_realsense, open_camera
 from rfp_vision.detector import MODELS_DIR, FishDetector, find_weights, list_runs
 from rfp_vision.fish_list import FishLocator
-from rfp_vision.overlay import draw_fish_list
+from rfp_vision.overlay import draw_axes, draw_fish_list
 from rfp_vision.settings import VisionSettings
 from rfp_vision.settings import load_settings as load_vision_settings
 from rfp_vision.vision_system import VisionSystem
@@ -95,19 +93,16 @@ from rfp_controlsys.selector import RuleSelector
 from rfp_controlsys.settings import PANEL_FILE, ControlSettings, run_defaults
 from rfp_controlsys.settings import load_settings as load_control_settings
 
-MODES = {
-    "setup": "lay out the cell in a 3D window (zones, slots, views), checked as you go",
-    "observe": "camera, detections and fish positions; nothing moves",
-    "offline": "the whole cycle with a simulated arm and gripper, no ROS (recorded videos)",
-    "sim3d": "3D simulation: virtual arm, gripper, camera and fish, in a 3D window; no ROS",
-    "sim": "the whole cycle on MoveIt's mock hardware, shown in RViz",
-    "check": "real arm: read its state, I/O and the camera; nothing moves",
-    "feel": "real arm: show the force felt on the gripper, live; nothing moves",
-    "dry-run": "THE REAL ARM MOVES: vacuum off, approaches stop 50 mm short",
-    "run": "THE REAL ARM MOVES: pick and place with vacuum",
+MODES = {  # in the order to bring a cell up: no hardware, the arm still, the arm moving
+    "setup": "lay out the cell in a 3D editor, checked as you go",
+    "sim3d": "the whole cycle in a virtual cell; no hardware",
+    "sim": "the whole cycle on MoveIt's mock arm (robot PC)",
+    "check": "camera, fish, and the arm's driver, state and force; nothing moves",
+    "dry-run": "THE ARM MOVES: whole cycles, vacuum off, approaches 50 mm short",
+    "run": "THE ARM MOVES: picks and places fish",
 }
-ROS_MODES = ("sim", "check", "feel", "dry-run", "run")
-REAL_MODES = ("check", "feel", "dry-run", "run")
+ROS_MODES = ("sim", "check", "dry-run", "run")
+REAL_MODES = ("check", "dry-run", "run")
 MOVING_MODES = ("dry-run", "run")
 
 
@@ -186,7 +181,7 @@ def build_vision(
         camera.close()
         sys.exit(f"❌ {e}")
     locator = FishLocator(
-        settings, workcell.table_z, workcell.pick_area.area, detector.version,
+        settings, workcell.table_z, workcell.pick_area_seen, detector.version,
         workcell.calibration_version,
     )  # fmt: skip
     return VisionSystem(camera, detector, locator, settings)
@@ -200,12 +195,53 @@ def ros_link():
     except ImportError as e:
         sys.exit(
             f"❌ This mode needs ROS 2 ({e}).\n"
-            "   On the robot PC: source /opt/ros/humble/setup.bash and the workspace with\n"
-            "   MoveIt 2 and frcobot_ros2, then run this script with ROS's Python."
+            "   On the robot PC run it through ./robot.sh (it sources ROS 2, the workspace and\n"
+            "   .venv): ./robot.sh --mode ...; set that PC up with ./setup.sh --robot first.\n"
+            "   Without ROS, --mode sim3d runs the whole cycle and --mode check the camera."
         )
 
 
-def moveit_arm(link, workcell: Workcell, console: Console, io=None):
+def try_ros_link():
+    """A ROS link, or None where there is no ROS (Windows, a PC without it)."""
+    try:
+        from rfp_arm.ros_link import RosLink
+
+        return RosLink()
+    except ImportError:
+        return None
+
+
+def bring_up(link, mode: str, allowed: bool, wait: float = 2.0) -> Bringup | None:
+    """MoveIt with the FR5's driver (mock hardware for sim) and FAIRINO's command server,
+    started for this run if nothing publishes the arm's joints yet; None if it runs already
+    or the control panel says not to (run.bringup). A new node takes a moment to discover
+    the publishers there are: up to `wait` s, or a second driver would start beside one."""
+    deadline = time.monotonic() + wait
+    while link.node.count_publishers("joint_states") == 0:
+        if time.monotonic() > deadline:
+            break
+        time.sleep(0.1)
+    else:
+        return None
+    if not allowed:
+        print("   MoveIt isn't running: start it with ./robot.sh ros (run.bringup is off)")
+        return None
+    hardware = "mock" if mode == "sim" else "real"
+    server = None  # FAIRINO's command server with the real arm
+    if hardware == "real" and FairinoIO.present(link, wait=0.5):
+        server = False  # started by hand: a second one would compete for the controller
+        print("   FAIRINO's command server runs already: not starting another")
+    log = REPO / "ControlSys" / "runs" / "ros_launch.log"
+    bringup = Bringup(launch_command(hardware, cmd_server=server), log)
+    print(f"Starting MoveIt and the FR5's driver ({hardware} hardware); its log: {log}")
+    try:
+        bringup.start()
+    except RuntimeError as e:
+        sys.exit(f"❌ {e}")
+    return bringup
+
+
+def moveit_arm(link, workcell: Workcell, console: Console, io=None, timeout: float = 15.0):
     """The arm through MoveIt, connected. Nothing moves."""
     try:
         from rfp_arm.moveit_arm import MoveItArm
@@ -217,39 +253,75 @@ def moveit_arm(link, workcell: Workcell, console: Console, io=None):
             io.fault if io else None,
             torques=io.joint_torques if io else None,
         )
-        arm.connect()
+        arm.connect(timeout)
     except ImportError as e:
         sys.exit(f"❌ MoveIt 2's Python messages aren't available ({e}): install ros-humble-moveit")
     return arm
 
 
-def fairino_io(link) -> FairinoIO:
+def fairino_io(link, timeout: float = 5.0) -> FairinoIO:
     try:
         io = FairinoIO(link)
     except ImportError as e:
         sys.exit(f"❌ fairino_msgs isn't available ({e}): build and source frcobot_ros2")
-    io.connect()
+    io.connect(timeout, require_state=False)
+    if io.stateless:
+        print("⚠️  " + io.no_state_reason() + ".")
+        print("   Going on without it: no emergency stop, error code or torques read here (the")
+        print("   controller still stops the arm; no contact is felt), outputs judged by the")
+        print(f"   command's answer (driver {io.driver}). Fix the driver to get them back.")
     return io
 
 
 # ---------------------------------------------------------------------------
 # Modes
 # ---------------------------------------------------------------------------
-def observe(vision: VisionSystem, workcell: Workcell, console: Console, camera_pose) -> None:
-    """Show detections and fish positions until q, Esc or Ctrl+C. Nothing moves."""
-    print("\nObserving (q or Esc in the window, or Ctrl+C, to stop). Fish positions in {B}:")
+def observe(
+    vision: VisionSystem, workcell: Workcell, console: Console, camera_pose, twin=None, force=None
+) -> None:
+    """What the camera and the model see and where each fish lies in {B}, live until q, Esc
+    or Ctrl+C; with `force` (Arm.contact_force) the force felt on the gripper too. Nothing
+    moves."""
+    if force is not None and force(zero=True) is None:
+        force = None  # the controller reports no joint torques
+    print()
+    print("Watching (q or Esc in the window, or Ctrl+C, to stop). Fish positions in {B}:")
+    if force is not None:
+        print("   and the force on the gripper, zeroed now: push the cups along its axis, and set")
+        print("   the grasp's contact_force and press_force_max from what you read")
     last_print = 0.0
     console.state("observing", "nothing moves")
     while not console.stop_requested():
         frame = vision.frame()
         fish_list = vision.locator.locate(frame, vision.detector.detect(frame.color), camera_pose())
-        image = draw_fish_list(frame.color, fish_list, frame.intrinsics)
-        console.show(image, [f"{len(fish_list.valid)} valid of {len(fish_list.fish)} fish"])
+        if twin is not None:
+            twin.show_fish(fish_list, frame)
+        felt = force() if force is not None else None
+        lines = [f"{len(fish_list.valid)} valid of {len(fish_list.fish)} fish"]
+        if felt is not None:
+            lines.append(f"force on the gripper {felt:.1f} N")
+        image = draw_axes(draw_fish_list(frame.color, fish_list, frame.intrinsics), frame,
+                          fish_list.camera_pose, workcell.table_z)  # fmt: skip
+        console.show(image, lines)
         if time.monotonic() - last_print >= 1.0:
             last_print = time.monotonic()
-            print("   " + ("; ".join(_fish_text(f) for f in fish_list.fish) or "no fish"))
+            seen = "; ".join(_fish_text(f) for f in fish_list.fish) or "no fish"
+            print("   " + seen + ("" if felt is None else f"; force {felt:.1f} N"))
         if not console.window:
             time.sleep(0.2)
+
+
+def check_camera(vision: VisionSystem, workcell: Workcell, console: Console) -> None:
+    """Check without the arm (no ROS here, or the arm isn't up): the camera alone, placed as
+    the workcell's first observation pose has it. Nothing moves."""
+    first = workcell.observation_poses[0]
+    if first.camera is None:
+        sys.exit(
+            f"❌ Without the arm the camera's pose comes from observation pose '{first.name}', "
+            "which is taught joints: give it as camera_xy, or check with the arm."
+        )
+    print(f"Camera pose: as if at observation pose '{first.name}' (no arm)")
+    observe(vision, workcell, console, lambda: first.camera)
 
 
 def _fish_text(fish) -> str:
@@ -263,8 +335,11 @@ def _fish_text(fish) -> str:
     )
 
 
-def check(arm, io: FairinoIO, vision: VisionSystem, workcell: Workcell) -> None:
-    """Print what the arm, the controller, the gripper and the camera report. Nothing moves."""
+def check(
+    arm, io: FairinoIO, vision: VisionSystem, workcell: Workcell, console: Console, twin=None
+) -> None:
+    """What the arm, the controller and the gripper report, then live what the camera sees
+    and the force felt on the gripper (observe). Nothing moves."""
     joints = arm.joints()
     tcp = arm.tcp_pose()
     tip = workcell.tip_of_tcp(tcp)[:3, 3]
@@ -276,6 +351,8 @@ def check(arm, io: FairinoIO, vision: VisionSystem, workcell: Workcell) -> None:
     problem = workcell.pose_problem(tcp)
     print(f"   TCP now: {'inside the work zone' if problem is None else problem}")
     print("Controller (ros2_cmd_server):")
+    firmware = io.firmware()
+    print(f"   firmware: {firmware or 'not reported (the driver for 3.7.5 or older says nothing)'}")
     for line in io.report():
         print(f"   {line}")
     flange = io.flange_position()
@@ -287,7 +364,7 @@ def check(arm, io: FairinoIO, vision: VisionSystem, workcell: Workcell) -> None:
             "   frames differ: sort that out before trusting positions."
         )
     fault = io.fault()
-    print(f"   fault: {fault or 'none'}")
+    print(f"   fault: {fault or ('unknown: no state' if io.stateless else 'none')}")
     try:
         gripper = make_gripper(
             workcell.gripper, io, workcell.grasp.release_timeout, start_off=False
@@ -302,36 +379,141 @@ def check(arm, io: FairinoIO, vision: VisionSystem, workcell: Workcell) -> None:
         low, high = vision.settings.depth_range_m
         valid = float(((frame.depth >= low) & (frame.depth <= high)).mean())
         print(f"   depth: {valid:.0%} of pixels between {low:g} and {high:g} m (VS-17 wants 95%)")
-    fish_list = vision.locator.locate(
-        frame, vision.detector.detect(frame.color), workcell.camera_of_tcp(tcp)
-    )
-    print("   sees: " + ("; ".join(_fish_text(f) for f in fish_list.fish) or "no fish"))
-    print("\n✅ Check done. Nothing moved. Next: --mode dry-run --step")
+    observe(vision, workcell, console, lambda: workcell.camera_of_tcp(arm.tcp_pose()), twin,
+            force=arm.contact_force)  # fmt: skip
+    print("Check done: nothing moved. Next: --mode dry-run --step")
 
 
-def feel(arm) -> None:
-    """Print the force the arm feels along the gripper's axis until Ctrl+C. Nothing moves."""
-    if arm.contact_force(zero=True) is None:
-        sys.exit("❌ The controller reports no joint torques: the arm can't feel contact.")
-    print("\nFeeling (Ctrl+C to stop). Zeroed now; push on the cups along the gripper's axis:")
+FIRMWARE_STAMP = ".rfp_firmware"  # tools/setup_rfp.py: the firmware a workspace's driver is for
+
+
+def driver_firmware() -> str | None:
+    """The controller firmware the sourced workspace's FAIRINO driver was built for (setup
+    writes it beside the build), or None if unknown."""
+    for prefix in filter(None, os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep)):
+        path = Path(prefix)
+        if path.name == "fairino_hardware" and path.parent.name == "install":
+            workspace = path.parent.parent  # colcon's install/<package> layout
+        elif (path / "share" / "fairino_hardware").is_dir() and path.name == "install":
+            workspace = path.parent  # --merge-install
+        else:
+            continue
+        stamp = workspace / FIRMWARE_STAMP
+        if stamp.is_file():
+            return stamp.read_text(encoding="utf-8").strip() or None
+    return None
+
+
+def firmware_group(text: str | None) -> tuple[int, ...] | None:
+    """The driver a firmware version needs, as (major, minor, patch): FAIRINO's are per
+    version from 3.7.6 on, one for 3.7.2 to 3.7.5. None if `text` has no version."""
+    numbers = re.findall(r"\d+", text or "")
+    if len(numbers) < 3:
+        return None
+    version = tuple(int(n) for n in numbers[:3])
+    return (3, 7, 5) if version[:2] == (3, 7) and version[2] <= 5 else version
+
+
+def check_driver(io: FairinoIO) -> None:
+    """The driver built must be the one for the controller's firmware (after a firmware
+    update, ./setup.sh --robot builds the new one). Nothing moves; unknown either side: no
+    check (the 3.7.5 driver can't tell the firmware)."""
+    built, running = driver_firmware(), io.firmware()
+    if firmware_group(built) is None or firmware_group(running) is None:
+        return
+    if firmware_group(built) != firmware_group(running):
+        sys.exit(
+            f"❌ The controller runs {running}, but FAIRINO's driver was built for {built}: "
+            "they must match. Run ./setup.sh --robot (it reads the firmware and builds the "
+            "driver for it), then start again."
+        )
+
+
+CALIBRATION_TRIES = 3
+CALIBRATION_RMS = 0.01  # m: sightings further apart than this, measured again
+SAME_ARM_DEG = 2.0  # MoveIt's joints and the controller's further apart: not the same arm
+
+
+def same_arm(arm, io: FairinoIO, workcell: Workcell) -> None:
+    """MoveIt must be driving this arm: its joint states and the controller's joints agree.
+    A MoveIt started beside it with mock hardware (FAIRINO's demo launch) publishes joint
+    states too, and a run would plan from where the mock arm is. Nothing moves."""
+    controller = io.joint_positions()
+    if controller is None:
+        return  # no controller state: the fault checks say so
     try:
-        while True:
-            print(f"\r   {arm.contact_force():6.1f} N   ", end="", flush=True)
-            time.sleep(0.2)
-    except KeyboardInterrupt:
-        print("\nNext: set contact_force and press_force_max (grasp, Arm/configs/workcell.yaml)")
+        moveit = arm.joints()
+    except ArmError:
+        return
+    off = max(
+        abs(math.degrees(math.remainder(moveit[name] - value, 2 * math.pi)))
+        for name, value in zip(workcell.joints, controller)
+    )
+    if off > SAME_ARM_DEG:
+        sys.exit(
+            f"❌ MoveIt's joints differ from the arm's by up to {off:.0f} deg: the MoveIt running "
+            "isn't driving this arm (mock hardware, e.g. FAIRINO's demo launch). Close it "
+            "(Ctrl+C in its terminal) and start again: this program starts MoveIt with the "
+            "real arm itself."
+        )
+
+
+def calibrate_first(
+    arm, vision: VisionSystem, workcell: Workcell, console: Console, io, panel, sleep=time.sleep
+):
+    """Before a real run with the camera not calibrated yet: from the first observation pose,
+    measure where the camera sits on the gripper over a fish lying in view (THE ARM MOVES a
+    few cm and degrees), save it with `calibrated: true` and read the workcell again. Asks
+    the operator for a fish in view when there is none; exits if it can't be measured."""
+    from rfp_controlsys.calibrate import measure, save_mount
+    from rfp_controlsys.cycle import go_to_pose
+
+    if fault := (io.fault() if io else None):
+        sys.exit(f"❌ The controller reports: {fault}")
+
+    def tick() -> str | None:
+        console.show(vision.frame().color)
+        return "operator stop" if console.stop_requested() else None
+
+    print()
+    print("Calibrating the camera (THE ARM MOVES a few cm and degrees)")
+    for attempt in range(1, CALIBRATION_TRIES + 1):
+        go_to_pose(arm, workcell, workcell.observation_poses[0], tick)
+        try:
+            result = measure(arm, vision, workcell, tick, sleep=sleep)
+        except ValueError as e:
+            problem = str(e).split(":")[0]  # the object isn't wholly in view ...
+        else:
+            for line in result.lines(workcell.camera):
+                print(line)
+            if result.mirrored:
+                sys.exit("❌ The camera's image is mirrored: no mount explains it (see above).")
+            if result.rms_m <= CALIBRATION_RMS:
+                break
+            problem = f"the sightings are {result.rms_m * 1000:.0f} mm apart (did the fish move?)"
+        message = (
+            f"Camera calibration: {problem}. Lay one fish still in the middle of the pick "
+            "area, wholly in the camera's view, then resume."
+        )
+        if attempt == CALIBRATION_TRIES or not console.alert(message):
+            sys.exit(f"❌ {message}")
+    version = "measured-" + time.strftime("%Y-%m-%d")
+    for line in save_mount(workcell.source, result.mount, version, calibrated=True):
+        print(f"   ✅ {line} (a .bak copy of the file is next to it)")
+    try:
+        return load_workcell(workcell.source, panel)
+    except WorkcellError as e:
+        sys.exit(f"❌ {e}")
 
 
 def start_checks(mode: str, workcell: Workcell, io: FairinoIO | None, gripper) -> None:
     """SF-41: don't start moving the real arm unless these pass."""
     problems = []
     if not workcell.verified:
+        name = workcell.source.name if workcell.source else "the workcell"
         problems.append(
-            f"{workcell.source.name} is not verified: measure the cell, set its values, "
-            "then set 'verified: true'"
+            f"{name} is not verified: measure the cell, set its values, then set 'verified: true'"
         )
-    if mode == "run" and not workcell.calibrated:
-        problems.append("the camera is not calibrated (camera.calibrated in the workcell file)")
     fault = io.fault() if io else None
     if fault:
         problems.append(f"the controller reports: {fault}")
@@ -361,6 +543,39 @@ def confirm_real_motion(mode: str, yes: bool) -> None:
         sys.exit("Cancelled.")
 
 
+def open_twin(workcell: Workcell, console: Console, arm, panel: Path, wanted: bool):
+    """The arm's 3D twin (Simulation/rfp_sim/twin.py) following `arm`, its states and what
+    vision finds; None if the control panel says not to (run.twin) or pyvista is missing."""
+    if not wanted:
+        return None
+    try:
+        from rfp_sim.settings import load_settings as load_sim_settings
+        from rfp_sim.twin import open_twin as make_twin
+    except ImportError as e:
+        print(f"   (no 3D twin: {e}; pip install pyvista)")
+        return None
+    try:
+        twin = make_twin(workcell, load_sim_settings(panel=panel))
+    except Exception as e:  # noqa: BLE001 - a window that can't open (no display) mustn't stop a run
+        print(f"   (no 3D twin: {e})")
+        return None
+    twin.follow(arm)
+    console.on_show = twin.update
+    console.on_state = twin.set_status
+    print("3D twin:  the arm as its joint states say, the fish vision finds, depth as points")
+    return twin
+
+
+def pace(placed: int, seconds: float) -> str:
+    """How fast the cell worked: the run's time (pauses for the operator included) and, with
+    fish placed, the time each took and how many an hour that is."""
+    minutes, rest = divmod(round(seconds), 60)
+    text = f"{minutes} min {rest:02d} s"
+    if placed and seconds > 0:
+        text += f": {seconds / placed:.0f} s a fish, {3600 * placed / seconds:.0f} an hour"
+    return text
+
+
 def run_cycles(
     mode: str,
     arm,
@@ -373,6 +588,7 @@ def run_cycles(
     controller=None,
     sleep=time.sleep,
     vision_hold: bool | None = None,
+    twin=None,
 ) -> None:
     log = RunLog(
         {
@@ -388,13 +604,17 @@ def run_cycles(
         dry_run=mode == "dry-run", controller=controller, sleep=sleep,
         vision_hold=mode in ("run", "sim3d") if vision_hold is None else vision_hold,
     )  # fmt: skip
+    if twin is not None:
+        cycle.on_fish_list = twin.show_fish
     print(f"\nRunning ({mode}). Log: {log.folder}")
     stopped = ""
+    started = time.monotonic()
     try:
         cycle.run(max_cycles)
     except KeyboardInterrupt:
         stopped = "stopped with Ctrl+C"
         arm.stop()
+    elapsed = time.monotonic() - started
     report = cycle.report
     report.ended = stopped or report.ended
     log.close(report.as_record())
@@ -405,6 +625,7 @@ def run_cycles(
     print("".join(f", {n} x {code}" for code, n in report.failures.items()))
     for where in report.skipped:
         print(f"   skipped fish at {where} (attempt limit, CS-62)")
+    print(f"   {pace(report.successes, elapsed)}")
     print(f"   log: {log.folder}")
     if cycle.sequence is not None and cycle.sequence.holding:
         print("⚠️  The vacuum is still on: a fish may be on the gripper.")
@@ -412,7 +633,7 @@ def run_cycles(
             cycle.sequence.let_go()
         else:
             print("   Turn it off with: python Arm/scripts/gripper_bench.py off")
-    if mode in ("offline", "sim3d"):
+    if mode == "sim3d":
         print("Next: --mode sim on the robot PC (MoveIt's mock hardware in RViz)")
     elif mode == "sim":
         print("Next: --mode check on the real arm, then --mode dry-run --step")
@@ -445,6 +666,11 @@ def main() -> None:
         "--panel", type=Path, default=PANEL_FILE, help="control panel file (control_panel.yaml)"
     )
     parser.add_argument("--video", help="sim3d: save the 3D view to this .mp4")
+    parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="dry-run, run: measure the camera's mount first, even if it is calibrated",
+    )
     args = parser.parse_args()
     try:  # the control panel's run section fills in what the command line left out
         run = run_defaults(args.panel)
@@ -486,31 +712,36 @@ def main() -> None:
     print(f"Model:    {weights}")
     vision = build_vision(device, weights, vision_settings, workcell)
     console = Console(window=run["window"] and not args.no_window, step=args.step or run["step"])
-    link = None
+    link = bringup = twin = None
     try:
-        if mode == "offline":
-            run_cycles(mode, SimArm(workcell), SimGripper(), vision, workcell, control_settings,
-                       console, cycles)  # fmt: skip
+        if mode == "check" and (link := try_ros_link()) is None:
+            check_camera(vision, workcell, console)  # no ROS here: the camera alone
             return
-        if mode == "observe":
-            observe(vision, workcell, console, _camera_pose_source(workcell, console))
-            return
-
-        link = ros_link()
-        real = FairinoIO.present(link)
-        if mode == "sim" and real:
+        link = link or ros_link()
+        if mode == "sim" and FairinoIO.present(link):
             sys.exit(
                 "❌ The FAIRINO command server is running: this looks like the real arm, not a "
                 "simulation. Use --mode dry-run, or stop ros2_cmd_server."
             )
-        io = fairino_io(link) if mode in REAL_MODES else None
-        arm = moveit_arm(link, workcell, console, io)
-        print(f"Arm:      MoveIt group '{workcell.group}'; {arm.limits()}")
-        if mode == "check":
-            check(arm, io, vision, workcell)
+        bringup = bring_up(link, mode, run["bringup"])
+        started = bringup is not None  # a launch just started takes a while to come up
+        try:
+            io = fairino_io(link, 60.0 if started else 5.0) if mode in REAL_MODES else None
+            arm = moveit_arm(link, workcell, console, io, 60.0 if started else 15.0)
+        except ArmError as e:
+            if mode != "check":
+                raise
+            print(f"   (the arm isn't there: {e.message}; the camera alone)")
+            check_camera(vision, workcell, console)
             return
-        if mode == "feel":
-            feel(arm)
+        print(f"Arm:      MoveIt group '{workcell.group}'; {arm.limits()}")
+        if io is not None:
+            check_driver(io)
+            same_arm(arm, io, workcell)
+        if not args.no_window:
+            twin = open_twin(workcell, console, arm, args.panel, run["twin"])
+        if mode == "check":
+            check(arm, io, vision, workcell, console, twin)
             return
         if mode == "sim":
             gripper = SimGripper()
@@ -520,12 +751,25 @@ def main() -> None:
             gripper = make_gripper(workcell.gripper, io, workcell.grasp.release_timeout)
         if mode in MOVING_MODES:
             start_checks(mode, workcell, io, gripper)
+            measure_first = args.calibrate or not workcell.calibrated
+            if measure_first:
+                print()
+                print("First the camera's mount is measured: the arm moves a few cm and degrees")
+                print("over a fish lying in view (camera.calibrated is false, or --calibrate).")
             confirm_real_motion(mode, args.yes)
+            if measure_first:
+                workcell = calibrate_first(arm, vision, workcell, console, io, args.panel)
+                arm.workcell = workcell
+                if twin is not None:
+                    twin.workcell = workcell
         run_cycles(
             mode, arm, gripper, vision, workcell, control_settings, console, cycles,
-            io.send if io else None,
+            io.execute if io else None, twin=twin,
         )  # fmt: skip
     except ArmError as e:
+        if bringup is not None:  # what the driver and MoveIt said is in the launch's log
+            state = "is running" if bringup.running() else "has stopped"
+            sys.exit(f"❌ {e}\n   The launch this started {state}; its log: {bringup.log_file}")
         sys.exit(f"❌ {e}")
     except CameraError as e:
         sys.exit(f"❌ Camera: {e}")
@@ -534,8 +778,13 @@ def main() -> None:
     finally:
         console.close()
         vision.close()
+        if twin is not None:
+            twin.close()
         if link is not None:
             link.close()
+        if bringup is not None:
+            print("Stopping MoveIt and the FR5's driver")
+            bringup.stop()
 
 
 def setup(args) -> None:
@@ -613,29 +862,6 @@ def sim3d(args, run: dict, model: Path | None, cycles: int | None) -> None:
         session.close()
     if args.video:
         print(f"   3D view saved: {args.video}")
-
-
-def _camera_pose_source(workcell: Workcell, console: Console):
-    """For observe mode: the camera's pose from the arm if MoveIt is up, else the first
-    observation pose as written in the workcell file."""
-    try:
-        from rfp_arm.moveit_arm import MoveItArm
-        from rfp_arm.ros_link import RosLink
-
-        arm = MoveItArm(RosLink("rfp_observe"), workcell)
-        arm.connect(timeout=5.0)
-        print("Camera pose: from the arm (MoveIt's joint states)")
-        return lambda: workcell.camera_of_tcp(arm.tcp_pose())
-    except (ImportError, ArmError) as e:
-        first = workcell.observation_poses[0]
-        if first.camera is None:
-            sys.exit(
-                f"❌ The arm's pose isn't available ({e}) and observation pose '{first.name}' "
-                "is taught joints: start MoveIt, or give that pose as camera_xy."
-            )
-        print(f"Camera pose: observation pose '{first.name}' from the workcell file "
-              f"(the arm isn't available: {e})")  # fmt: skip
-        return lambda: first.camera
 
 
 if __name__ == "__main__":
