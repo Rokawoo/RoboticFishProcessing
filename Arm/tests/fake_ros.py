@@ -7,7 +7,10 @@ in tests on any machine:
   type (an int where a float belongs) raises;
 - `FakeRobot`: an FR5 that plans PTP and LIN moves like move_group with the Pilz planner
   does, runs trajectories faster than real time, publishes joint states, keeps the
-  planning scene, and answers the FAIRINO command server's SetDO with a vacuum switch;
+  planning scene, and answers the FAIRINO command server's SetDO with a vacuum switch, as
+  the driver for its firmware does (`firmware`: the state message and the answers differ;
+  fairino_states.json has the older drivers' state messages, from frcobot_ros2's tags
+  V3.0.0_RobotV3.7.8 and commit e8a9827 for 3.7.5);
 - a minimal rclpy (node, action and service clients, executor) wired to that robot.
 
 `install(monkeypatch, robot)` puts them in sys.modules for one test.
@@ -28,9 +31,15 @@ from pathlib import Path
 import numpy as np
 from arm_helpers import solve_ik
 from rfp_arm.kinematics import FR5
-from rfp_arm.poses import from_quaternion, interpolate, matrix_rpy
+from rfp_arm.poses import from_quaternion, interpolate, matrix_rpy, rotation_angle
 
 DEFINITIONS = json.loads((Path(__file__).parent / "ros_messages.json").read_text(encoding="utf-8"))
+# fairino_msgs/msg/RobotNonrtState of older drivers, by controller firmware
+STATE_VARIANTS = json.loads(
+    (Path(__file__).parent / "fairino_states.json").read_text(encoding="utf-8")
+)
+STATE = "fairino_msgs/msg/RobotNonrtState"
+LATEST_FIRMWARE = "3.9.5"  # the driver ros_messages.json's state message is from
 INTEGERS = {"char", "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64"}
 PYTHON_TYPE = {"float32": float, "float64": float, "bool": bool, "string": str, "byte": bytes}
 PYTHON_TYPE.update(dict.fromkeys(INTEGERS, int))
@@ -119,6 +128,17 @@ def message(name: str) -> type:
                 for key, (kind, value) in definition["constants"].items()
             }
             _classes[name] = type(name.split("/")[-1], (Message,), {"_fields": fields, **constants})
+    return _classes[name]
+
+
+def state_message(firmware: str = LATEST_FIRMWARE) -> type:
+    """RobotNonrtState as the driver for this controller firmware publishes it."""
+    if firmware == LATEST_FIRMWARE:
+        return message(STATE)
+    name = f"{STATE}@{firmware}"
+    if name not in _classes:
+        fields = {f[0]: (f[1], f[2], f[3]) for f in STATE_VARIANTS[firmware]["fields"]}
+        _classes[name] = type("RobotNonrtState", (Message,), {"_fields": fields})
     return _classes[name]
 
 
@@ -248,6 +268,9 @@ class Node:
     def count_publishers(self, topic: str) -> int:
         return int(topic in self.robot.topics)
 
+    def get_service_names_and_types(self) -> list:
+        return [(f"/{name}", []) for name in self.robot.services]
+
     def destroy_node(self) -> None:
         self.robot.nodes_destroyed += 1
 
@@ -285,6 +308,7 @@ def install(monkeypatch, robot: "FakeRobot") -> None:
     rclpy.action, rclpy.executors, rclpy.qos = action, executors, qos
     modules = {"rclpy": rclpy, "rclpy.action": action, "rclpy.executors": executors,
                "rclpy.qos": qos, **message_modules()}  # fmt: skip
+    modules["fairino_msgs.msg"].RobotNonrtState = state_message(robot.firmware)
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -297,10 +321,16 @@ class FakeRobot:
 
     GROUP, TIP, BASE = "fairino5_v6_group", "wrist3_link", "base_link"
 
-    def __init__(self, joints, fairino: bool = False, speedup: float = 40.0):
+    def __init__(
+        self, joints, fairino: bool = False, speedup: float = 40.0, firmware=LATEST_FIRMWARE
+    ):
         self.joints = np.array(joints, float)
+        self.firmware = firmware  # the controller's: which driver, which state and answers
+        self.error = (0, 0)  # the controller's error code (main, sub)
+        self.reconnect_flag = 0  # the newest driver's dispatcher: 1 while not connected
         self.speedup = speedup  # trajectories run this much faster than their timing
         self.max_trans_vel, self.max_trans_acc = 1.0, 2.25  # Pilz's Cartesian limits
+        self.max_rot_vel = 1.57  # rad/s: Pilz turns the tool no faster on a straight move
         self.joint_speed = 3.15  # rad/s at scaling factor 1
         self.requests = []  # every planning request (moveit_msgs MotionPlanRequest)
         self.executed = []  # every trajectory that was run
@@ -314,7 +344,12 @@ class FakeRobot:
         self.emergency_stop = False
         self.sealed = lambda: True  # whether the cups seal when the vacuum is on
         self.tcp = np.eye(4)  # the tool, in the tip link: where a surface is felt
-        self.contact_z: float | None = None  # height of something springy under the tool
+        self.contact_z: float | None = None
+        # where the controller says the arm is, if not where MoveIt has it (MoveIt running
+        # with mock hardware beside the real arm)
+        self.controller_joints: np.ndarray | None = (
+            None  # height of something springy under the tool
+        )
         self.contact_stiffness = 3000.0  # N/m
         self.commands = []
         self.jobs = []
@@ -325,8 +360,11 @@ class FakeRobot:
         self.services = {
             "apply_planning_scene": self._apply_scene,
             "move_group/get_parameters": self._parameters,
+            "plan_sequence_path": self._plan_sequence,  # Pilz's MoveGroupSequenceService
         }
+        self.sequences = []  # every sequence request (moveit_msgs MotionSequenceRequest)
         self.topics = {"joint_states", "robot_description"}
+        self.publish_state = True  # False: a command server that sends no state (wrong driver)
         if fairino:
             self.services["fairino_remote_command_service"] = self._command
             self.topics.add("nonrt_state_data")
@@ -362,7 +400,7 @@ class FakeRobot:
                     name=[f"j{i + 1}" for i in order],
                     position=[float(self.joints[i]) for i in order],
                 ))  # fmt: skip
-            if "nonrt_state_data" in self.topics:
+            if "nonrt_state_data" in self.topics and self.publish_state:
                 self._publish("nonrt_state_data", self._state())
             time.sleep(0.002)
 
@@ -445,7 +483,12 @@ class FakeRobot:
     def _lin(self, start, target, velocity_scale):
         begin = FR5.fk(start)
         distance = float(np.linalg.norm(target[:3, 3] - begin[:3, 3]))
-        duration = max(distance / (velocity_scale * self.max_trans_vel), 0.2)
+        turn = rotation_angle(begin, target)
+        duration = max(
+            distance / (velocity_scale * self.max_trans_vel),
+            turn / (velocity_scale * self.max_rot_vel),
+            0.2,
+        )
         times = np.arange(0.0, duration + 0.1, 0.1)
         times[-1] = duration
         rows, q = [], start
@@ -455,6 +498,61 @@ class FakeRobot:
                 return None
             rows.append(q)
         return np.array(rows), times
+
+    def _plan_sequence(self, request):
+        """Pilz's sequence service: LIN items one after the other from the arm's state, the
+        rules Pilz checks (only the first item has a start state, the last blend radius is
+        0, blend radii not negative); corners not rounded here."""
+        sequence = request.request
+        self.sequences.append(sequence)
+        response = message("moveit_msgs/srv/GetMotionSequence_Response")()
+        items = sequence.items
+        broken = (
+            not items
+            or not items[0].req.start_state.is_diff
+            or any(item.req.start_state.is_diff for item in items[1:])
+            or items[-1].blend_radius != 0.0
+            or any(item.blend_radius < 0 for item in items)
+        )
+        if broken:
+            response.response.error_code.val = -16
+            return response
+        joints, rows, times = self.joints.copy(), [], []
+        offset = 0.0
+        for item in items:
+            goal = message("moveit_msgs/action/MoveGroup_Goal")()
+            goal.request = item.req
+            goal.planning_options.plan_only = True
+            result = message("moveit_msgs/action/MoveGroup_Result")()
+            saved, self.joints = self.joints, joints  # each item from where the last ends
+            started, item.req.start_state.is_diff = item.req.start_state.is_diff, True
+            try:
+                code = self._plan_into(goal, result)
+            finally:
+                self.joints, item.req.start_state.is_diff = saved, started
+            if code != 1:
+                response.response.error_code.val = code
+                return response
+            for k, point in enumerate(result.planned_trajectory.joint_trajectory.points):
+                if k == 0 and rows:
+                    continue
+                rows.append(list(point.positions))
+                times.append(
+                    offset + point.time_from_start.sec + point.time_from_start.nanosec * 1e-9
+                )
+            offset = times[-1]
+            joints = np.array(rows[-1])
+        trajectory = message("moveit_msgs/msg/RobotTrajectory")()
+        trajectory.joint_trajectory.joint_names = list(FR5.joint_names)
+        point_type = message("trajectory_msgs/msg/JointTrajectoryPoint")
+        for row, t in zip(rows, times):
+            point = point_type(positions=[float(v) for v in row])
+            point.time_from_start.sec = int(t)
+            point.time_from_start.nanosec = round(float(t - int(t)) * 1e9)
+            trajectory.joint_trajectory.points.append(point)
+        response.response.planned_trajectories = [trajectory]
+        response.response.error_code.val = 1
+        return response
 
     # -- execution ---------------------------------------------------------------
     def _execute(self, goal, handle) -> None:
@@ -516,19 +614,27 @@ class FakeRobot:
         return message("rcl_interfaces/srv/GetParameters_Response")(values=values)
 
     # -- the FAIRINO command server ------------------------------------------------
+    @property
+    def legacy(self) -> bool:
+        """The driver for firmware 3.7.5 and older: success "1", errors "0"."""
+        return tuple(int(v) for v in self.firmware.split(".")) <= (3, 7, 5)
+
     def _command(self, request):
         self.commands.append(request.cmd_str)
         response = message("fairino_msgs/srv/RemoteCmdInterface_Response")
+        ok, failed = ("1", "0") if self.legacy else ("0", "-1")
+        if request.cmd_str == "GetRobotVersion()" and not self.legacy:
+            return response(cmd_res=f"0,robot:V{self.firmware}")
         match = re.fullmatch(r"SetDO\((\d+),([01])\)", request.cmd_str)
         if match is None or int(match[1]) > 15:
-            return response(cmd_res="-1")
+            return response(cmd_res=failed)
         index, on = int(match[1]), match[2] == "1"
         if index == 0 and on != self.outputs[0]:
             self._vacuum_since, self._off_since = (
                 (time.monotonic(), None) if on else (None, time.monotonic())
             )
         self.outputs[index] = on
-        return response(cmd_res="0")
+        return response(cmd_res=ok)
 
     def _state(self):
         """The vacuum switch: DI1 while there is vacuum, DI0 once a sealed fish is held."""
@@ -540,14 +646,22 @@ class FakeRobot:
         word = lambda bits: sum(1 << i for i, on in enumerate(bits) if on)
         flange = self.tip()[:3, 3] * 1000
         torques = self.joint_torques()
-        state = message("fairino_msgs/msg/RobotNonrtState")(
+        controller = self.joints if self.controller_joints is None else self.controller_joints
+        kind = state_message(self.firmware)
+        state = kind(
             dgt_output_l=word(self.outputs) & 0xFF, dgt_output_h=word(self.outputs) >> 8,
             dgt_input_l=word(self.inputs) & 0xFF, dgt_input_h=word(self.inputs) >> 8,
             emg=int(self.emergency_stop),
             flange_x_cur_pos=float(flange[0]), flange_y_cur_pos=float(flange[1]),
             flange_z_cur_pos=float(flange[2]),
             **{f"j{i + 1}_cur_tor": float(torques[i]) for i in range(6)},
+            **{f"j{i + 1}_cur_pos": float(np.degrees(controller[i])) for i in range(6)},
         )  # fmt: skip
+        if "main_error_code" in kind._fields:
+            state.main_error_code, state.sub_error_code = self.error
+            state.reconnect_flag = self.reconnect_flag
+        else:  # up to firmware 3.8.0: one code
+            state.error_code = self.error[0]
         return state
 
     def joint_torques(self) -> np.ndarray:

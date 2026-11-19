@@ -24,6 +24,7 @@ ROOTS = [
     "moveit_msgs/action/MoveGroup",
     "moveit_msgs/action/ExecuteTrajectory",
     "moveit_msgs/srv/ApplyPlanningScene",
+    "moveit_msgs/srv/GetMotionSequence",
     "rcl_interfaces/srv/GetParameters",
     "sensor_msgs/msg/JointState",
     "std_msgs/msg/String",

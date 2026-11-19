@@ -9,12 +9,15 @@ Usage (from the repository root):
     ./setup.sh                    Linux: a development PC
     ./setup.sh --robot            the robot PC (Ubuntu 22.04): also ROS 2 Humble, MoveIt 2,
                                   ros2_control, librealsense, serial access, frcobot_ros2
+                                  for the controller's firmware, built
+    ./setup.sh --robot --firmware 3.7.8   the same, for this controller software version (if
+                                  it can't be read from the controller, 192.168.58.2)
     ... --check                   only report what is there and what is missing
     ... --yes                     install without asking (sudo still asks for its password)
     ... --test                    run the test suite at the end
 
-It can't, and says what to do instead: install the NVIDIA driver, choose FAIRINO's hardware
-package for your controller's software version, flash the valve board, measure the cell.
+It can't, and says what to do instead: install the NVIDIA driver, flash the valve board,
+measure the cell.
 """
 
 from __future__ import annotations
@@ -53,7 +56,22 @@ REALSENSE_REPO = "https://librealsense.realsenseai.com/Debian/apt-repo"
 ROS_APT_SOURCE = "https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest"
 ROS_APT_DEB = "https://github.com/ros-infrastructure/ros-apt-source/releases/download"
 FRCOBOT_URL = "https://github.com/FAIR-INNOVATION/frcobot_ros2"
-WORKSPACE = Path.home() / "rfp_ws"
+WORKSPACE = Path(os.environ.get("RFP_WS", Path.home() / "rfp_ws"))
+CONTROLLER_IP = "192.168.58.2"  # the FR5 controller's address (FAIRINO's drivers use this one)
+# frcobot_ros2 has a driver per controller firmware: a tag for most (V3.0.0_RobotV<firmware>,
+# found in the clone), these commits for the rest. 3.7.5 and older: the last V2 driver.
+FRCOBOT_COMMITS = {
+    "3.7.5": "e8a982767ce8459a7d859523734562344276372a",
+    "3.8.2": "b2b072192dea21cc0d2108810c43c5355504ef01",
+    "3.9.0": "f7a06f35c744dc042f61bc6359c78c52965c9eeb",
+    "3.9.2": "3e7d7ee2ed556fd9320cbd3c475efb8654533143",
+    "3.9.5": "6ee4abc1b832ced027e2b79c7be9b21b7b429d8d",
+}
+OLDEST_FIRMWARE = (3, 7, 2)  # FAIRINO: the ROS 2 driver needs firmware newer than 3.7.1
+BUILT_STAMP = ".rfp_built"  # in the workspace: the frcobot_ros2 commit it was built from
+# ... and the controller firmware its driver is for (pick_place.py compares it with the
+# controller's, so a firmware update without a new driver is said, not puzzled over)
+FIRMWARE_STAMP = ".rfp_firmware"
 IMPORTS = "import rfp_arm, rfp_vision, rfp_controlsys, rfp_sim, cv2, torch, ultralytics, pyvista"
 INTERPRETER = "python.defaultInterpreterPath"  # VS Code's (and Pylance's) Python for the folder
 Check = Callable[[], tuple[bool, str]]
@@ -374,8 +392,10 @@ def project_steps(env) -> list[Step]:
     ]
 
 
-def robot_steps() -> list[Step]:
-    """The robot PC (Ubuntu 22.04), before its Python environment."""
+def robot_steps(firmware: str | None = None) -> list[Step]:
+    """The robot PC (Ubuntu 22.04), before its Python environment. `firmware`: the
+    controller's software version, for FAIRINO's driver (None: unknown)."""
+    source = WORKSPACE / "src" / "frcobot_ros2"
 
     def jammy() -> tuple[bool, str]:
         info = os_release()
@@ -451,19 +471,64 @@ def robot_steps() -> list[Step]:
     def add_dialout() -> None:
         sh(["usermod", "-aG", "dialout", getpass.getuser()], sudo=True)
 
+    def wanted() -> str:
+        """The ref to check out: the driver for the firmware, else the pinned commit."""
+        if firmware is None:
+            return frcobot_commit()
+        return frcobot_ref(firmware, output(["git", "-C", source, "tag", "-l"]).split())
+
     def frcobot() -> tuple[bool, str]:
-        source = WORKSPACE / "src" / "frcobot_ros2"
         if not (source / ".git").is_dir():
             return False, f"not in {source}"
-        built = (WORKSPACE / "install" / "fairino5_v6_moveit2_config").is_dir()
         head = output(["git", "-C", source, "rev-parse", "HEAD"])
-        return True, f"{source} at {head[:8]}, {'built' if built else 'not built yet'}"
+        if firmware is None:
+            return True, f"{source} at {head[:8]} (the controller's firmware unknown: --firmware)"
+        ref = wanted()
+        at = output(["git", "-C", source, "rev-parse", f"{ref}^{{commit}}"])
+        keep, others = driver_folders(source, firmware)
+        ignored = all((folder / "COLCON_IGNORE").is_file() for folder in others)
+        if head == at and keep is not None and ignored:
+            return True, f"{source} at {ref}: the driver for firmware {firmware} ({keep.name})"
+        return False, f"{source} at {head[:8]}; firmware {firmware} needs {ref}"
 
-    def clone_frcobot() -> None:
-        source = WORKSPACE / "src" / "frcobot_ros2"
-        source.parent.mkdir(parents=True, exist_ok=True)
-        sh(["git", "clone", FRCOBOT_URL, source])
-        sh(["git", "-C", source, "checkout", frcobot_commit()])
+    def get_frcobot() -> None:
+        if not (source / ".git").is_dir():
+            source.parent.mkdir(parents=True, exist_ok=True)
+            sh(["git", "clone", FRCOBOT_URL, source])
+        sh(["git", "-C", source, "fetch", "--tags", "origin"])
+        sh(["git", "-C", source, "checkout", wanted()])
+        if firmware is None:
+            return
+        keep, others = driver_folders(source, firmware)
+        if keep is None:
+            raise RuntimeError(f"no driver for firmware {firmware} in {source}")
+        (keep / "COLCON_IGNORE").unlink(missing_ok=True)
+        for folder in others:  # the same ros2_control plugin: only one driver may be built
+            (folder / "COLCON_IGNORE").touch()
+        print(f"    driver for firmware {firmware}: {keep.name}")
+
+    def built() -> tuple[bool, str]:
+        if not (WORKSPACE / "install" / "fairino5_v6_moveit2_config").is_dir():
+            return False, f"{WORKSPACE} isn't built"
+        head = output(["git", "-C", source, "rev-parse", "HEAD"])
+        stamp = WORKSPACE / BUILT_STAMP
+        if stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == head:
+            return True, f"{WORKSPACE} built from {head[:8]}"
+        return False, f"{WORKSPACE} wasn't built from {head[:8]} (or was built by hand)"
+
+    def build() -> None:
+        script = (
+            "source /opt/ros/humble/setup.bash && "
+            "rosdep install --from-paths src -y --ignore-src && colcon build"
+        )
+        sh(["bash", "-c", script], cwd=WORKSPACE)
+        head = output(["git", "-C", source, "rev-parse", "HEAD"])
+        (WORKSPACE / BUILT_STAMP).write_text(head + "\n", encoding="utf-8")
+        stamp = WORKSPACE / FIRMWARE_STAMP
+        if firmware:
+            stamp.write_text(firmware + "\n", encoding="utf-8")
+        else:
+            stamp.unlink(missing_ok=True)
 
     venv = ["python3-venv", "python3-pip"]
     return [
@@ -507,8 +572,17 @@ def robot_steps() -> list[Step]:
         Step(
             "frcobot_ros2 (FAIRINO's driver)",
             frcobot,
-            clone_frcobot,
-            f"clone it into {WORKSPACE / 'src'} at the pinned commit",
+            get_frcobot,
+            f"clone it into {WORKSPACE / 'src'}, at "
+            + (f"the driver for firmware {firmware}" if firmware else "the pinned commit"),
+        ),
+        Step(
+            "FAIRINO's driver built",
+            built,
+            build if firmware else None,
+            f"rosdep install and colcon build in {WORKSPACE}"
+            if firmware
+            else "pass --firmware (the controller's software version), then run this again",
         ),
     ]
 
@@ -530,6 +604,70 @@ def frcobot_commit() -> str:
     return found.group(1)
 
 
+def firmware_parts(firmware: str) -> tuple[int, ...]:
+    """(3, 7, 8) of '3.7.8' or 'V3.7.8'; ValueError if it isn't a version."""
+    text = firmware.strip().lstrip("vV")
+    if not re.fullmatch(r"\d+(\.\d+){1,3}", text):
+        raise ValueError(f"'{firmware}' is not a controller software version like 3.7.8")
+    return tuple(int(part) for part in text.split("."))
+
+
+def frcobot_ref(firmware: str, tags: list[str]) -> str:
+    """The frcobot_ros2 tag or commit whose driver is for this controller firmware (FAIRINO:
+    the driver must match it). ValueError if there is none: then the controller needs a
+    firmware update to one there is a driver for."""
+    parts = firmware_parts(firmware)
+    version = ".".join(str(p) for p in parts)
+    if parts < OLDEST_FIRMWARE:
+        raise ValueError(f"firmware {version}: FAIRINO's ROS 2 driver needs 3.7.2 or newer")
+    if parts <= (3, 7, 5):
+        return FRCOBOT_COMMITS["3.7.5"]
+    tagged = re.compile(rf"v3\.0\.0_robotv{re.escape(version)}(_v[\d.]+)?", re.IGNORECASE)
+    matching = sorted(tag for tag in tags if tagged.fullmatch(tag))
+    if matching:
+        return matching[-1]  # its latest fix (_v1.1 after the plain tag)
+    if version in FRCOBOT_COMMITS:
+        return FRCOBOT_COMMITS[version]
+    raise ValueError(
+        f"frcobot_ros2 has no driver for firmware {version}: update the controller to one it "
+        "has (FAIRINO's ROS 2 guide), then run this again with --firmware"
+    )
+
+
+def driver_folders(source: Path, firmware: str) -> tuple[Path | None, list[Path]]:
+    """(The driver folder for this firmware, the other drivers' folders to leave out of the
+    build). From firmware 3.9.6 on frcobot_ros2 holds a folder per firmware
+    (fairino_hardware_v3_9_8, ...), each with the same ros2_control plugin: only the matching
+    one may be built. Older checkouts have one fairino_hardware folder, the driver itself."""
+    folders = sorted(p for p in source.glob("fairino_hardware_*") if p.is_dir())
+    if not folders:
+        single = source / "fairino_hardware"
+        return (single if single.is_dir() else None), []
+    parts = [str(p) for p in firmware_parts(firmware)]
+    names = ["fairino_hardware_v" + "_".join(parts), "fairino_hardware_v" + "_".join(parts[:3])]
+    keep = next((source / name for name in names if (source / name).is_dir()), None)
+    return keep, [p for p in folders if p != keep]
+
+
+def controller_firmware(
+    ip: str = CONTROLLER_IP, timeout: float = 2.0, port: int = 8080
+) -> str | None:
+    """The controller's software version, asked on its command port (8080) as FAIRINO's own
+    driver does; None if it doesn't answer. Reads only."""
+    import socket
+
+    request = b"/f/bIII4III905III20IIIGetSoftwareVersion()III/b/f"
+    try:
+        with socket.create_connection((ip, port), timeout=timeout) as connection:
+            connection.settimeout(timeout)
+            connection.sendall(request)
+            reply = connection.recv(1024).decode("ascii", errors="replace")
+    except OSError:
+        return None
+    found = re.search(r"v(\d+(?:\.\d+){1,3})[^,]*,V", reply)
+    return found.group(1) if found else None
+
+
 def os_release() -> dict:
     path = Path("/etc/os-release")
     if not path.is_file():
@@ -538,20 +676,14 @@ def os_release() -> dict:
     return {key: value.strip('"') for key, value in pairs}
 
 
-ROBOT_NEXT = f"""
+ROBOT_NEXT = """
 Still by hand on the robot PC:
-  1. Build FAIRINO's driver. frcobot_ros2 has a hardware package per controller software
-     version (fairino_hardware_v3_*, _v4_*): keep the one matching your controller (its
-     software version is on the teach pendant), as FAIRINO's ROS 2 guide says, then:
-         source /opt/ros/humble/setup.bash
-         cd {WORKSPACE} && rosdep install --from-paths src -y --ignore-src && colcon build
-  2. For the real arm, fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro
-     must load fairino_hardware/FairinoHardwareInterface (mock_components/GenericSystem for
-     --mode sim).
-  3. Flash the valve board (Arm/firmware/valve_control, Arduino IDE with the ESP32 boards),
+  1. Flash the valve board (Arm/firmware/valve_control, Arduino IDE with the ESP32 boards),
      with secrets.h copied from secrets.example.h.
-  4. Measure the workcell (README.md, "Set up the workcell").
-Then: source {REPO / ".venv" / "bin" / "activate"}"""
+  2. Measure the workcell (README.md, "Set up the workcell").
+Then everything runs through ./robot.sh (it sources ROS, the workspace and .venv, and starts
+MoveIt with the FR5's driver and FAIRINO's command server when a mode needs them):
+  ./robot.sh --mode check"""
 
 
 # ---------------------------------------------------------------------------
@@ -563,15 +695,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="only report, install nothing")
     parser.add_argument("-y", "--yes", action="store_true", help="install without asking")
     parser.add_argument("--test", action="store_true", help="run the tests at the end")
+    parser.add_argument(
+        "--firmware",
+        help="--robot: the controller's software version, e.g. 3.7.8 (default: ask it)",
+    )
     args = parser.parse_args(argv)
     if args.robot and WINDOWS:
         parser.error("--robot is for the robot PC (Ubuntu 22.04)")
+    firmware = None
+    if args.robot:
+        try:
+            firmware = args.firmware and ".".join(map(str, firmware_parts(args.firmware)))
+        except ValueError as e:
+            parser.error(str(e))
+        firmware = firmware or controller_firmware()
+        print(
+            f"Controller firmware: {firmware}"
+            + ("" if args.firmware else f" (read from {CONTROLLER_IP})")
+            if firmware
+            else f"Controller firmware: unknown ({CONTROLLER_IP} didn't say): pass --firmware"
+        )
 
     print("=" * 60)
     print(f"SETUP: {platform.system()} {platform.release()}, repository {REPO}")
     print("=" * 60)
     env = VenvEnv() if args.robot else CondaEnv()
-    steps = (robot_steps() if args.robot else []) + project_steps(env)
+    steps = (robot_steps(firmware) if args.robot else []) + project_steps(env)
     complete = Setup(check_only=args.check, yes=args.yes).run(steps)
     if args.test and env.python is not None and not args.check:
         print("\nTests:")

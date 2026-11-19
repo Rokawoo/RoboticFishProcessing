@@ -1,8 +1,11 @@
 """
 The FR5 through MoveIt 2 (AS-10): every move is planned by the Pilz industrial motion
 planner (PTP or LIN) with MoveIt's /move_action in plan-only mode, checked here in fixed
-code (safety.check_trajectory), then run with /execute_trajectory. The same code drives
-the real arm (frcobot_ros2's fairino_hardware) and MoveIt's mock hardware in RViz.
+code (safety.check_trajectory), then run with /execute_trajectory. Straight moves through
+several poses (lift, carry, lower) are planned as one with their corners rounded where
+move_group has Pilz's sequence service (/plan_sequence_path: Arm/ros/fr5_bringup.launch.py
+loads it), so the arm doesn't stop at each. The same code drives the real arm
+(frcobot_ros2's fairino_hardware) and MoveIt's mock hardware in RViz.
 
 THIS MOVES THE ARM. Nothing moves on import or on connect(): only move_joints, move_ptp and
 move_lin do. A Tick, a controller fault, Ctrl+C and stop() cancel the running trajectory
@@ -38,6 +41,8 @@ PIPELINE = "pilz_industrial_motion_planner"
 MOVE_ACTION = "move_action"
 EXECUTE_ACTION = "execute_trajectory"
 SCENE_SERVICE = "apply_planning_scene"
+SEQUENCE_SERVICE = "plan_sequence_path"  # Pilz's MoveGroupSequenceService
+BLEND_ROOM = 0.45  # a corner's blend reaches at most this share of either segment (Pilz: < half)
 MOVE_GROUP_NODE = "move_group"
 STATE_TIMEOUT = 0.5  # s without /joint_states: the link to the arm is lost (SF-42)
 TABLE_GAP = 0.01  # the table's collision box ends this far below the surface (m)
@@ -91,7 +96,7 @@ class MoveItArm:
         joint order) the controller reports, to feel contact with; None: the arm can't feel.
         """
         from moveit_msgs.action import ExecuteTrajectory, MoveGroup
-        from moveit_msgs.srv import ApplyPlanningScene
+        from moveit_msgs.srv import ApplyPlanningScene, GetMotionSequence
         from rcl_interfaces.srv import GetParameters
         from rclpy.action import ActionClient
         from rclpy.qos import DurabilityPolicy, QoSProfile
@@ -120,6 +125,8 @@ class MoveItArm:
         self._move = ActionClient(node, MoveGroup, MOVE_ACTION)
         self._execute = ActionClient(node, ExecuteTrajectory, EXECUTE_ACTION)
         self._scene = node.create_client(ApplyPlanningScene, SCENE_SERVICE)
+        self._sequence = node.create_client(GetMotionSequence, SEQUENCE_SERVICE)
+        self.can_blend = False  # move_group has Pilz's sequence service (found by connect())
         self._parameters = node.create_client(GetParameters, f"{MOVE_GROUP_NODE}/get_parameters")
         node.create_subscription(JointState, "joint_states", self._on_joints, 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -157,6 +164,12 @@ class MoveItArm:
         if missing:
             raise ArmError(E_COMM, f"workcell robot.joints lacks {sorted(missing)}")
         self._apply_scene(left())
+        self.can_blend = self._sequence.wait_for_service(timeout_sec=min(left(), 1.0))
+        if not self.can_blend:
+            self._log(
+                f"   (move_group has no /{SEQUENCE_SERVICE}: lift, carry and lower stop at each "
+                "corner; Arm/ros/fr5_bringup.launch.py loads Pilz's sequence capability)"
+            )
 
     def _have_joints(self) -> bool:
         with self._lock:
@@ -340,18 +353,100 @@ class MoveItArm:
         velocity_scale = min(1.0, speed / self._max_trans_vel)
         acceleration_scale = min(1.0, accel / self._max_trans_acc)
         goal = self._pose_goal(tcp_pose)
-        for attempt in range(3):  # near a singularity a straight line needs fast joints: slower
-            try:
-                plan = self._plan("LIN", goal, velocity_scale, acceleration_scale)
+        for _ in range(SLOWER_TRIES):
+            for attempt in range(3):  # near a singularity a straight line needs fast joints
+                try:
+                    plan = self._plan("LIN", goal, velocity_scale, acceleration_scale)
+                    break
+                except ArmError as e:
+                    if e.code != E_MOTION or attempt == 2:
+                        raise
+                    velocity_scale /= 2
+            check = self._check(plan, tcp_pose, limit)
+            if not check.too_fast:  # e.g. the camera, off the tool's axis, swung by a turn
                 break
-            except ArmError as e:
-                if e.code != E_MOTION or attempt == 2:
-                    raise
-                velocity_scale /= 2
-        check = self._check(plan, tcp_pose, limit)
+            velocity_scale *= 0.9 * limit / check.peak_tcp_speed
         if not check.ok:
             raise ArmError(E_MOTION, f"straight move refused: {check.problem}", self.tcp_pose())
         self._run(plan, f"straight move, {check.summary()}", tcp_pose, tick)
+
+    def move_through(
+        self,
+        poses: Sequence[np.ndarray],
+        speed: float,
+        accel: float,
+        blend: float,
+        tick: Tick | None = None,
+    ) -> bool:
+        """Straight moves through `poses` as one trajectory, each corner rounded by up to
+        `blend` m (Pilz's sequence service), checked like every plan, then run: True. False,
+        with nothing moved, where MoveIt can't blend them: then move one at a time."""
+        if not self.can_blend or blend <= 0 or len(poses) < 2:
+            return False
+        limit = self.workcell.motion.tcp_speed_max
+        velocity_scale = min(1.0, min(speed, limit) / self._max_trans_vel)
+        acceleration_scale = min(1.0, accel / self._max_trans_acc)
+        target = poses[-1]
+        for _ in range(SLOWER_TRIES):
+            try:
+                plan = self._plan_sequence(poses, velocity_scale, acceleration_scale, blend)
+            except ArmError as e:
+                if e.code != E_MOTION:
+                    raise
+                self._log(f"   (not blended: {e.message})")
+                return False
+            check = self._check(plan, target, limit)
+            if not check.too_fast:
+                break
+            velocity_scale *= 0.9 * limit / check.peak_tcp_speed
+        if not check.ok:
+            self._log(f"   (not blended: {check.problem})")
+            return False
+        self._run(plan, f"{len(poses)} straight moves blended, {check.summary()}", target, tick)
+        return True
+
+    def _plan_sequence(self, poses, velocity_scale: float, acceleration_scale: float, blend):
+        """One planned moveit_msgs/RobotTrajectory through the poses (LIN, corners blended),
+        from where the arm is now. Nothing moves."""
+        from moveit_msgs.msg import MotionSequenceItem
+        from moveit_msgs.srv import GetMotionSequence
+
+        if fault := self.fault():
+            raise ArmError(E_PROTECTIVE_STOP, fault, self.tcp_pose())
+        m = self.workcell.motion
+        corners = [self.tcp_pose()[:3, 3]] + [np.asarray(p, float)[:3, 3] for p in poses]
+        request = GetMotionSequence.Request()
+        for i, pose in enumerate(poses):
+            item = MotionSequenceItem()
+            req = item.req
+            req.group_name = self.workcell.group
+            req.pipeline_id = PIPELINE
+            req.planner_id = "LIN"
+            req.num_planning_attempts = 1
+            req.allowed_planning_time = float(m.planning_time)
+            req.max_velocity_scaling_factor = float(velocity_scale)
+            req.max_acceleration_scaling_factor = float(acceleration_scale)
+            if i == 0:  # only the first item has a start state: the arm's now
+                req.start_state.is_diff = True
+            req.goal_constraints.append(self._pose_goal(pose))
+            if i < len(poses) - 1:  # the last one ends at rest
+                before = np.linalg.norm(corners[i + 1] - corners[i])
+                after = np.linalg.norm(corners[i + 2] - corners[i + 1])
+                item.blend_radius = float(min(blend, BLEND_ROOM * min(before, after)))
+            request.request.items.append(item)
+        try:
+            answer = self.link.call(self._sequence, request, m.planning_time + 5.0)
+        except TimeoutError:
+            raise ArmError(E_COMM, "MoveIt didn't answer the sequence request") from None
+        response = answer.response
+        code = response.error_code.val
+        if code != 1:
+            name = ERROR_NAMES.get(code, f"error {code}")
+            raise ArmError(E_MOTION, f"blended planning failed: {name}", self.tcp_pose())
+        trajectories = list(response.planned_trajectories)
+        if not trajectories:
+            raise ArmError(E_MOTION, "the blended plan has no trajectory", self.tcp_pose())
+        return _joined(trajectories)
 
     def stop(self) -> None:
         handle = self._active
@@ -541,3 +636,24 @@ class MoveItArm:
             return self.tcp_pose()
         except ArmError:
             return None
+
+
+def _seconds(duration) -> float:
+    return duration.sec + duration.nanosec * 1e-9
+
+
+def _joined(trajectories: list):
+    """Several planned trajectories one after the other as one (each starts where the
+    last ended): its later points' times shifted, the repeated first point left out."""
+    first = trajectories[0]
+    points = first.joint_trajectory.points
+    for later in trajectories[1:]:
+        offset = _seconds(points[-1].time_from_start) if points else 0.0
+        for k, point in enumerate(later.joint_trajectory.points):
+            if k == 0 and points:
+                continue
+            t = offset + _seconds(point.time_from_start)
+            point.time_from_start.sec = int(t)
+            point.time_from_start.nanosec = round((t - int(t)) * 1e9)
+            points.append(point)
+    return first

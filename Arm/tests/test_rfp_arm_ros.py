@@ -334,6 +334,67 @@ def test_fairino_io_switches_outputs_and_reads_the_vacuum_switch(ros):
     assert error.value.code == E_COMM
 
 
+@pytest.mark.parametrize("firmware", ["3.7.5", "3.7.8", "3.9.5"])
+def test_fairino_io_works_with_each_firmware_driver(ros, firmware):
+    # Up to 3.8.0 the state has one error_code, and the 3.7.5 driver answers "1" for success
+    robot, link = ros(fairino=True, firmware=firmware)
+    io = FairinoIO(link)
+    io.connect(timeout=2.0)
+    assert io.driver == ("V2" if firmware == "3.7.5" else "V3") and io.fault() is None
+    io.set_output(0, True)  # confirmed from the state, whatever the answer means
+    assert robot.outputs[0] and io.output(0) is True
+    assert io.execute("SetDO(0,0)") == ("1" if firmware == "3.7.5" else "0")
+    with pytest.raises(ArmError, match="answered") as error:
+        io.execute("NoSuchCommand()")  # "0" means an error to the 3.7.5 driver
+    assert error.value.code == E_COMM
+    robot.error = (7, 3)
+    time.sleep(0.05)
+    sub = 3 if firmware == "3.9.5" else 0  # a sub code from 3.8.2 on
+    assert io.fault() == f"controller error 7-{sub}"
+    assert f"driver: {io.driver}" in "\n".join(io.report())
+    assert io.firmware() == (None if firmware == "3.7.5" else f"V{firmware}")
+    assert np.allclose(io.joint_positions(), robot.joints, atol=1e-6)  # its state: degrees
+
+
+@pytest.mark.parametrize("firmware", ["3.7.5", "3.9.5"])
+def test_a_command_server_that_sends_no_state_is_named_and_worked_without(ros, firmware):
+    # On the real 3.7 controller the command server sent no state: everything stopped at
+    # "no robot state". Say why; with require_state off, go on with what the answers tell
+    robot, link = ros(fairino=True, firmware=firmware)
+    robot.publish_state = False
+    with pytest.raises(ArmError, match="firmware") as error:
+        FairinoIO(link).connect(timeout=0.3)
+    assert "setup.sh --robot" in error.value.message
+    io = FairinoIO(link)
+    io.connect(timeout=0.3, require_state=False)
+    assert io.stateless and io.driver == ("V2" if firmware == "3.7.5" else "V3")
+    io.set_output(0, True)  # judged by the answer ("1" from the 3.7.5 driver, "0" after)
+    assert robot.outputs[0]
+    assert io.fault() is None and io.joint_positions() is None and io.joint_torques() is None
+    robot.publish_state = True  # a state after all: read as usual from then on
+    time.sleep(0.1)
+    assert np.allclose(io.joint_positions(), robot.joints, atol=1e-6)
+
+
+def test_the_empty_states_of_a_dispatcher_without_a_driver_read_as_nothing(ros):
+    # FAIRINO's newest server on a controller it has no driver for: states of zeros, which
+    # the check that MoveIt drives this arm took for the arm's joints
+    robot, link = ros(fairino=True)
+    robot.reconnect_flag = 2
+    io = FairinoIO(link)
+    io.connect(timeout=2.0)
+    assert io.joint_positions() is None and io.joint_torques() is None
+    assert "setup.sh --robot" in io.fault()
+
+
+def test_a_command_server_not_connected_to_the_controller_is_a_fault(ros):
+    robot, link = ros(fairino=True)
+    robot.reconnect_flag = 1  # the newest driver's dispatcher, still looking for the controller
+    io = FairinoIO(link)
+    io.connect(timeout=2.0)
+    assert "isn't connected to the controller" in io.fault()
+
+
 def test_without_a_command_server_the_real_arm_modes_stop(ros):
     robot, link = ros()
     assert not FairinoIO.present(link, wait=0.2)
@@ -378,13 +439,42 @@ def test_grasp_sequence_runs_through_moveit_and_the_controller_io(ros):
     sequence.run(plan)
     assert tuple(steps) == STEPS and not sequence.holding
     assert np.allclose(tcp(robot), plan.retreat, atol=1e-4)
-    assert [r.planner_id for r in robot.requests] == ["PTP", "LIN", "LIN", "LIN", "LIN", "LIN"]
-    approach, lift, carry = robot.requests[1:4]
+    planners = [r.planner_id for r in robot.requests]
+    # the move over the fish (planned again slower where a point of the arm was too fast),
+    # the approach and the retreat; lift, carry and lower as one blended sequence
+    assert planners[-2:] == ["LIN", "LIN"] and set(planners[:-2]) == {"PTP"}
+    approach = robot.requests[-2]
     assert approach.max_velocity_scaling_factor == pytest.approx(0.05)  # 50 mm/s (AS-22)
-    assert lift.max_velocity_scaling_factor == pytest.approx(0.15)
+    [sequence] = robot.sequences
+    lift, carry, lower = (item.req for item in sequence.items)
+    assert [item.blend_radius > 0 for item in sequence.items] == [True, True, False]
+    assert [r.start_state.is_diff for r in (lift, carry, lower)] == [True, False, False]
+    assert {r.planner_id for r in (lift, carry, lower)} == {"LIN"}
+    assert lift.max_velocity_scaling_factor == pytest.approx(0.20)  # carry_speed
     assert carry.max_acceleration_scaling_factor == pytest.approx(0.5 / 2.25)  # AS-43
     assert robot.commands == ["SetDO(1,0)", "SetDO(0,1)", "SetDO(0,0)", "SetDO(1,1)", "SetDO(1,0)"]
-    assert len(robot.executed) == 6 and robot.cancels == 0
+    assert len(robot.executed) == len(planners) - planners.count("PTP") + 2  # no stop between
+    assert robot.cancels == 0
+
+
+def test_without_pilz_s_sequence_service_lift_carry_and_lower_stop_at_each_corner(ros):
+    robot, link = ros(fairino=True)
+    del robot.services["plan_sequence_path"]
+    io = FairinoIO(link)
+    io.connect(timeout=2.0)
+    said = []
+    arm = MoveItArm(link, CELL, fault=io.fault, log=said.append)
+    arm.connect(timeout=5.0)
+    assert not arm.can_blend and any("plan_sequence_path" in line for line in said)
+    gripper = SuctionGripper(io, CELL.gripper, CELL.grasp.release_timeout)
+    steps = []
+    sequence = GraspSequence(arm, gripper, CELL, on_step=steps.append)
+    plan = plan_grasp(CELL, down(0.40, -0.10, 0.10), True, 0.60, 0.10, CELL.slots[0], YAW)
+    held = []
+    robot.sealed = lambda: bool(held) or (tcp(robot)[2, 3] < 0.095 and not held.append(1))
+    sequence.run(plan)
+    assert tuple(steps) == STEPS and robot.sequences == []
+    assert [r.planner_id for r in robot.requests][-5:] == ["LIN"] * 5  # approach to retreat
 
 
 def test_no_seal_and_a_drop_are_reported_from_the_controller_inputs(ros):

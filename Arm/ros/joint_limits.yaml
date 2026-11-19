@@ -1,0 +1,40 @@
+# The FR5's joint limits MoveIt (and the Pilz planner) plans with, for fr5_bringup.launch.py:
+# FAIRINO's fairino5_v6_moveit2_config/config/joint_limits.yaml with real accelerations.
+# Theirs are 0.7 rad/s2 for every joint ("for beginners"): at the pipeline's scaling a
+# 30 degree point-to-point move took over 5 s. Every plan is still scaled by the workcell's
+# motion.ptp_*_scale and checked against motion.tcp_speed_max before it runs.
+# Units: rad/s, rad/s2.
+default_velocity_scaling_factor: 0.1
+default_acceleration_scaling_factor: 0.1
+
+joint_limits:
+  j1:
+    has_velocity_limits: true
+    max_velocity: 3.15
+    has_acceleration_limits: true
+    max_acceleration: 2.5
+  j2:
+    has_velocity_limits: true
+    max_velocity: 3.15
+    has_acceleration_limits: true
+    max_acceleration: 2.5
+  j3:
+    has_velocity_limits: true
+    max_velocity: 3.15
+    has_acceleration_limits: true
+    max_acceleration: 2.5
+  j4:
+    has_velocity_limits: true
+    max_velocity: 3.2
+    has_acceleration_limits: true
+    max_acceleration: 2.5
+  j5:
+    has_velocity_limits: true
+    max_velocity: 3.2
+    has_acceleration_limits: true
+    max_acceleration: 2.5
+  j6:
+    has_velocity_limits: true
+    max_velocity: 3.2
+    has_acceleration_limits: true
+    max_acceleration: 2.5
