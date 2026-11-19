@@ -143,6 +143,51 @@ def test_inverse_kinematics_reaches_far_swings_in_the_same_posture():
     assert q[5] == pytest.approx(predicted, abs=1e-4)
 
 
+def test_a_plan_is_checked_pose_by_pose_from_the_arm_s_joints_before_it_runs():
+    import dataclasses
+
+    from rfp_arm.grasp import plan_problem
+    from rfp_arm.kinematics import wrist_angle_at
+
+    start = joints_for(0.40, -0.10, 0.36, yaw=1.2)
+
+    def wrist(pose):  # as the arm predicts it (Arm.wrist_angle)
+        if pose is None:
+            return float(start[-1])
+        return wrist_angle_at(FR5, dict(zip(FR5.joint_names, start)), CELL.tip_of_tcp(pose))
+
+    for x, y, heading in ((0.30, -0.25, 0.0), (0.45, 0.05, 2.0), (0.55, -0.20, -1.0)):
+        fish = poses.tool_down((x, y, 0.10), heading)
+        plan = plan_grasp(CELL, fish, True, 0.6, 0.1, tuple(CELL.slots[0]), 0.0, wrist=wrist)
+        assert plan_problem(plan, CELL, FR5, start) is None
+    # In the posture folded back over the base (the IK took it once, near the base) the
+    # gripper comes against the forearm: such a plan is refused before anything moves
+    folded = np.radians([93, -34, -58, -178, 90, 9])
+    into = CELL.tcp_of_tip(FR5.fk(np.radians([100, -34, -56, -180, 90, -10])))
+    bad = dataclasses.replace(plan, pregrasp=into)
+    assert (
+        plan_problem(bad, CELL, FR5, folded) == "the gripper would hit the forearm at 'pre-grasp'"
+    )
+    far = dataclasses.replace(plan, lift=poses.tool_down((1.5, 0.0, 0.3), 0.0))
+    assert "no joint solution at 'lift'" in plan_problem(far, CELL, FR5, start)
+
+
+def test_near_the_base_the_arm_swings_round_rather_than_fold_back_over_it():
+    # Close to the base the posture folded back over it is nearer in joint angles: a solve
+    # from here took it (the base turned 4 deg, not 107), and in that posture the gripper
+    # later ran into the forearm over fish near the base. The wrist's prediction agrees.
+    from rfp_arm.kinematics import wrist_angle_at
+
+    here = np.radians([-19, -36, -105, -129, 90, 56])  # TCP 0.12 m from the base's axis
+    target = FR5.fk(np.radians([-23, -27, -85, -158, 90, 38]))  # reached folded back
+    assert FR5.ahead(here) > 0 > FR5.ahead(np.radians([-23, -27, -85, -158, 90, 38]))
+    q = FR5.ik(target, here)
+    assert q is not None and np.allclose(FR5.fk(q), target, atol=1e-6)
+    assert FR5.ahead(q) > 0 and math.degrees(q[0]) == pytest.approx(-126, abs=2)
+    predicted = wrist_angle_at(FR5, dict(zip(FR5.joint_names, here)), target)
+    assert q[5] == pytest.approx(predicted, abs=1e-4)
+
+
 # ---------------------------------------------------------------------------
 # Workcell
 # ---------------------------------------------------------------------------
@@ -151,8 +196,8 @@ def test_default_workcell_loads_unverified_and_consistent():
     assert not cell.verified and not cell.calibrated  # placeholders: the real arm refuses them
     assert cell.problems() == [] and cell.group == "fairino5_v6_group"
     assert len(cell.slots) >= 2  # AS-51
-    assert cell.pick_area.x[1] - cell.pick_area.x[0] == pytest.approx(0.4)  # SY-15: 500 x 400 mm
-    assert cell.pick_area.y[1] - cell.pick_area.y[0] == pytest.approx(0.5)
+    spans = sorted(high - low for low, high in (cell.pick_area.x, cell.pick_area.y))
+    assert spans == pytest.approx([0.4, 0.5])  # SY-15: 500 x 400 mm
     assert cell.grasp.pregrasp_distance == 0.10 and cell.motion.tcp_speed_max == 0.25
     assert cell.gripper.driver == "serial" and cell.gripper.serial_port == "/dev/ttyACM0"
     for pose in cell.observation_poses:  # AS-11: straight down from 450 mm
@@ -521,8 +566,9 @@ def test_grasp_plan_turns_the_fish_to_the_placement_heading():
     # head pointing away from the tool's x axis: grasp the other way round, same result
     assert yaws(heading_deg=-80) == [100, 180, 80]
     assert yaws(heading_deg=100, tool_yaw_deg=-90) == [-80, 180, -100]
-    # head end unknown: the body ends along X by the shorter turn
-    assert yaws(heading_deg=100, known=False) == [100, 180, 80]
+    # head end unclear: into the slot as vision guessed it (still better than a coin toss;
+    # the shorter turn, 80 deg the other way round, placed it backwards half the time)
+    assert yaws(heading_deg=100, known=False) == [100, 0, -100]
     assert yaws(heading_deg=60, known=False) == [60, 0, -60]
 
 
@@ -864,8 +910,8 @@ def test_grasp_takes_the_way_round_that_turns_the_wrist_least():
     # clear of the range's ends (+-170) if a way allows: 159 deg rather than 151 to -165
     assert path(plan_with(fake_wrist(-14, -165), heading_deg=130)) == [-14, 145, 15]
 
-    # Head end unknown: the fish goes in either way round, whichever turns the wrist less;
-    # here the longer turn of the fish (-100 deg, not +80), as the grasp already turned it
+    # Head end unclear: the fish goes in as vision guessed where the wrist allows (here the
+    # longer turn of the fish, -100 deg, not +80, which also turns the wrist less)
     unknown = plan_with(fake_wrist(0, -40), known=False)
     assert path(unknown) == [0, 60, -40] and round(math.degrees(unknown.turn)) == -100
 
@@ -881,6 +927,61 @@ def test_grasp_takes_the_way_round_that_turns_the_wrist_least():
     assert arm.wrist_angle(
         poses.tool_down((0.4, 0.0, 0.3), poses.yaw_of(arm.tcp_pose()) + 0.5)
     ) == (pytest.approx(0.5))
+
+
+def fr5_wrist():
+    """The FR5's wrist (j6) as the arm predicts it (Arm.wrist_angle), at the first
+    observation pose in the posture the layout check assumes."""
+    from rfp_arm.kinematics import wrist_angle_at
+    from rfp_arm.layout import reach_joints
+
+    joints = reach_joints(CELL, CELL.observation_tcp(CELL.observation_poses[0]))
+    by_name = dict(zip(FR5.joint_names, joints))
+
+    def wrist(pose=None):
+        if pose is None:
+            return float(joints[-1])
+        return wrist_angle_at(FR5, by_name, CELL.tip_of_tcp(pose))
+
+    return wrist
+
+
+def test_a_carry_turns_the_wrist_evenly_on_its_straight_way():
+    # A straight move turns the tool evenly while the base swings unevenly, which can drag
+    # the wrist past its stop half way: the carry goes through poses where it is on its way
+    wrist = fr5_wrist()
+    fish = fish_pose(x=0.55, y=-0.25, heading_deg=-60.0)
+    p = plan_grasp(CELL, fish, True, 0.60, 0.10, SLOT, math.radians(-90), wrist=wrist)
+    assert p.carry_via  # 0.6 m and more: split every 0.15 m
+    _, at_grasp, at_slot = p.wrist
+    start, end = p.lift[:3, 3], p.carry[:3, 3]
+    shares = []
+    for pose in p.carry_via:
+        along = (pose[:3, 3] - start) @ (end - start) / ((end - start) @ (end - start))
+        assert np.allclose(pose[:3, 3], start + along * (end - start), atol=1e-9)  # on the way
+        expected = at_grasp + (at_slot - at_grasp) * along
+        assert wrist(pose) == pytest.approx(expected, abs=1e-3)  # the wrist on its way
+        assert CELL.pose_problem(pose, 0.60, True, p.middle_x) is None
+        shares.append(along)
+    assert shares == sorted(shares)
+
+
+def test_a_fish_that_would_sweep_off_the_table_is_turned_where_it_has_room(monkeypatch):
+    from rfp_arm import grasp
+
+    wrist = fr5_wrist()
+    fish = fish_pose(x=0.55, y=-0.25, heading_deg=-60.0)
+    monkeypatch.setattr(grasp, "_even_wrist_carry", lambda *args: None)  # its way sweeps out
+    p = plan_grasp(CELL, fish, True, 0.60, 0.10, SLOT, math.radians(-90), wrist=wrist)
+    spot = p.carry_via[0][:3, 3]
+    assert all(np.allclose(pose[:3, 3], spot) for pose in p.carry_via)  # turned in one place
+    assert poses.yaw_of(p.carry_via[0]) == pytest.approx(poses.yaw_of(p.lift))  # there as lifted
+    assert poses.yaw_of(p.carry_via[-1]) == pytest.approx(poses.yaw_of(p.carry))  # on as placed
+    turns = [wrist(pose) for pose in p.carry_via]
+    steps = np.diff(turns)
+    assert (steps * np.sign(steps.sum()) > 0).all()  # the wrist one way, evenly
+    for pose in p.carry_via:  # its ends on the table and out of the keep-out zones meanwhile
+        assert CELL.pose_problem(pose, 0.60, True, p.middle_x) is None
 
 
 def test_the_wrist_turns_a_held_fish_at_most_half_a_turn_and_no_move_further():
@@ -1024,7 +1125,11 @@ def test_controller_commands_bracket_the_press():
     sent.clear()
     rig = Rig(cell=soft, gripper=SimGripper(seals=False), controller=controller)
     assert rig.fails().code == E_NO_SEAL and [text for text, _ in sent] == ["Soft(1)", "Soft(0)"]
-    rig = Rig(cell=soft, controller=lambda text: "-1")
+
+    def refuses(text):
+        raise ArmError("E_COMM", f"the controller answered '-1' to {text} (driver V3)")
+
+    rig = Rig(cell=soft, controller=refuses)
     error = rig.fails()
     assert error.code == "E_COMM" and "answered '-1' to Soft(1)" in error.message
     assert [kind for kind, _ in rig.arm.moves] == ["ptp"]  # it didn't go down

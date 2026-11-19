@@ -252,10 +252,14 @@ def _seed_bearing(chain: Chain) -> float:
     return math.atan2(tip[1, 3], tip[0, 3])
 
 
-def _reaches(cell: Workcell, chain: Chain, xy, z: float, yaws) -> bool:
-    return any(
-        reach_joints(cell, tool_down((xy[0], xy[1], z), yaw), chain) is not None for yaw in yaws
-    )
+def _reach(cell: Workcell, chain: Chain, xy, z: float, yaws) -> np.ndarray | None:
+    """The joints putting the tool straight down at (xy, z), turned to the first of `yaws`
+    that the arm reaches; None if it reaches none."""
+    for yaw in yaws:
+        q = reach_joints(cell, tool_down((xy[0], xy[1], z), yaw), chain)
+        if q is not None:
+            return q
+    return None
 
 
 def reach_radius(cell: Workcell, z: float, chain: Chain = FR5) -> float:
@@ -263,13 +267,12 @@ def reach_radius(cell: Workcell, z: float, chain: Chain = FR5) -> float:
     `z` in {B} (the FR5's reach is nearly the same in every direction)."""
     yaws = YAWS[:2]  # straight down, the tool's turn only moves the last joint
     low, high = 0.15, 1.5
-    if not _reaches(cell, chain, (low, 0.0), z, yaws):
+    if _reach(cell, chain, (low, 0.0), z, yaws) is None:
         return 0.0
     for _ in range(11):  # to about a millimeter
         middle = (low + high) / 2
-        low, high = (
-            (middle, high) if _reaches(cell, chain, (middle, 0.0), z, yaws) else (low, middle)
-        )
+        reached = _reach(cell, chain, (middle, 0.0), z, yaws) is not None
+        low, high = (middle, high) if reached else (low, middle)
     return low
 
 
@@ -377,8 +380,9 @@ def check_layout(
     """
     What keeps this layout from working, errors first: the workcell's own problems, poses
     the arm can't reach (observation poses; the pick area at a fish's top and at the lift
-    height; each slot at the carry and release heights, the way the fish goes in), fish
-    that would reach out of the table or into an exclusion zone when lifted or placed,
+    height; each slot at the carry and release heights, the way the fish goes in), the arm
+    in an exclusion zone at those poses (its links and the gripper: the collision model),
+    fish that would reach out of the table or into an exclusion zone when lifted or placed,
     placed fish in the pick area, slots closer than a fish is wide, and the part of the
     pick area no observation pose sees.
     """
@@ -387,12 +391,20 @@ def check_layout(
     lift = lift_height(cell, fish.length)
     top = table + fish.thickness  # the cups on a fish's top
     release = table + fish.thickness + cell.grasp.release_clearance
+    postures = []  # (what, joints) the arm takes, checked against the exclusion zones
 
     low, high = cell.wrist_range
     middle = (low + high) / 2
     for pose in cell.observation_poses:
         if pose.camera is not None:
             joints = reach_joints(cell, cell.observation_tcp(pose), chain, wrist_range=False)
+        elif len(pose.joints) == len(chain.joints):  # taught (else one of the cell's problems)
+            joints = np.asarray(pose.joints, float)
+        else:
+            joints = None
+        if joints is not None:
+            postures.append((f"observation pose '{pose.name}'", joints))
+        if pose.camera is not None:
             if joints is None:
                 found.append(
                     Finding(
@@ -440,9 +452,12 @@ def check_layout(
                     xy,
                 )
             )
-        if not _reaches(cell, chain, xy, top, YAWS):
+        at_top = _reach(cell, chain, xy, top, YAWS)
+        at_lift = None if at_top is None else _reach(cell, chain, xy, lift, YAWS)
+        postures += [(f"picking at {where}", q) for q in (at_top, at_lift) if q is not None]
+        if at_top is None:
             found.append(Finding(True, f"pick area at {where}: out of the arm's reach", xy))
-        elif not _reaches(cell, chain, xy, lift, YAWS):
+        elif at_lift is None:
             found.append(
                 Finding(
                     False,
@@ -463,7 +478,10 @@ def check_layout(
         for ahead in (0.0, fish.cups_ahead) if fish.cups_ahead > 0 else (0.0,):
             tool = np.asarray(slot, float) + ahead * along  # the cups ahead, toward the head
             for z, what in ((lift, "carry"), (release, "release")):
-                if problem is None and not _reaches(cell, chain, tool, z, ways):
+                q = None if problem else _reach(cell, chain, tool, z, ways)
+                if q is not None:
+                    postures.append((f"slot {k} at the {what} height", q))
+                elif problem is None:
                     problem = (
                         f"slot {k}: out of the arm's reach at the {what} height "
                         f"({z - table:.2f} m), the way fish go in"
@@ -548,6 +566,21 @@ def check_layout(
                     f"'{exclusion.name}' when lifted: it can't be picked there",
                 )
             )
+    # The arm's links and gripper, not only the tool's point: e.g. the elbow over the base
+    # when it reaches near, into a zone behind the arm. Paths aren't checked: MoveIt does.
+    if cell.collision is not None:
+        for exclusion in cell.exclusion_zones:
+            for what, joints in postures:
+                if (hit := cell.collision.in_box(chain, joints, exclusion)) is not None:
+                    body, point = hit
+                    found.append(
+                        Finding(
+                            True,
+                            f"{what}: the arm's {body} would be in '{exclusion.name}'",
+                            (float(point[0]), float(point[1])),
+                        )
+                    )
+                    break
 
     if view is not None and cell.observation_poses:
         plane = table + fish.thickness / 2

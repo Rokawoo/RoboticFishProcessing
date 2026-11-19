@@ -21,6 +21,11 @@ DEFAULT_FILE = Path(__file__).resolve().parents[1] / "configs" / "workcell.yaml"
 
 PANEL_FILE = Path(__file__).resolve().parents[2] / "control_panel.yaml"
 PANEL_SECTIONS = ("run", "workcell", "vision", "control", "simulation")
+# Where vision puts a fish's middle is a few mm to cm off where it lies (raised ends, the
+# plane its outline is put on): one lying at the pick area's edge was measured 7 mm out and
+# left, the operator asked about it. Within this past the edge it still counts as inside
+# (CS-13); whether it is picked, the plan's own checks decide (reach, zones, the arm).
+PICK_AREA_TOLERANCE = 0.03  # m
 
 
 def panel_section(panel: Path | None, name: str) -> dict:
@@ -117,10 +122,11 @@ class MotionLimits:
     tcp_speed_max: float = 0.25  # m/s, every motion (SF-21, AS-42)
     tcp_accel_max: float = 0.5  # m/s2, straight moves (AS-43)
     approach_speed: float = 0.05  # m/s, onto the fish (AS-22)
-    carry_speed: float = 0.15  # m/s, straight moves with a fish
-    free_speed: float = 0.15  # m/s, straight moves without a fish
-    ptp_velocity_scale: float = 0.10  # share of the joint speed limits; lowered if the TCP is fast
-    ptp_acceleration_scale: float = 0.10
+    carry_speed: float = 0.20  # m/s, straight moves with a fish
+    free_speed: float = 0.25  # m/s, straight moves without a fish
+    # share of the joint limits; lowered where any point of the arm would be too fast
+    ptp_velocity_scale: float = 0.30
+    ptp_acceleration_scale: float = 0.30
     max_joint_travel_deg: float = 200.0  # a plan that turns a joint further is refused
     goal_tolerance: float = 0.002  # m: a move ending further from its target failed (AS-12)
     planning_time: float = 5.0  # s
@@ -129,6 +135,9 @@ class MotionLimits:
     # A straight carry turns the tool the short way, which can wind the wrist (j6) into its
     # stop where the planned turn goes the other way round: then carry point-to-point
     carry_ptp_fallback: bool = True
+    # Lift, carry and lower as one trajectory, each corner rounded by up to this (m), where
+    # the arm can plan that (MoveIt with Pilz's sequence service); 0: a stop at each corner
+    blend_radius: float = 0.05
 
 
 @dataclass
@@ -141,6 +150,9 @@ class GraspSettings:
     lift_length_share: float = 0.6  # lift height = this share of the fish's length + margin
     lift_margin: float = 0.05
     lift_height_max: float = 0.50  # above the table, whatever the fish's length
+    # Carried just over what vision saw on the way (control's carry_over_seen): a held fish
+    # hangs its height plus this share of its length below the cups (its ends droop)
+    droop_share: float = 0.10
     release_clearance: float = 0.015  # cup faces above the fish's resting height (AS-24)
     retreat_distance: float = 0.10
     seal_timeout: float = 1.0  # no hold this long after the approach: E_NO_SEAL
@@ -239,6 +251,18 @@ class Workcell:
     def observation_tcp(self, pose: ObservationPose) -> np.ndarray | None:
         """TCP pose of an observation pose given as a camera pose (None for taught joints)."""
         return None if pose.camera is None else self.tcp_of_camera(pose.camera)
+
+    # -- the pick area (CS-13) ---------------------------------------------
+    def in_pick_area(self, xy) -> bool:
+        """Whether a fish's middle seen at `xy` counts as in the pick area."""
+        return self.pick_area.contains(xy, -PICK_AREA_TOLERANCE)
+
+    @property
+    def pick_area_seen(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        """The pick area as vision checks it (x and y ranges): PICK_AREA_TOLERANCE wider."""
+        (x0, x1), (y0, y1) = self.pick_area.area
+        t = PICK_AREA_TOLERANCE
+        return (x0 - t, x1 + t), (y0 - t, y1 + t)
 
     # -- limits (SF-10, SF-13) ---------------------------------------------
     def pose_problem(

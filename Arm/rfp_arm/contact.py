@@ -7,7 +7,7 @@ the TCP moves with each joint), so F is the measured change projected on that pa
 Its sign depends on the controller's torque convention, so the size is reported. The
 arm must be at rest for a reading, and gravity's share drifts as the arm moves: zero it
 close to where it is used. Thresholds need tuning on the real arm
-(pick_place.py --mode feel shows the estimate live). No ROS.
+(pick_place.py --mode check shows the estimate live). No ROS.
 """
 
 from collections.abc import Mapping, Sequence

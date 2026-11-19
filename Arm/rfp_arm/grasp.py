@@ -11,10 +11,11 @@ joint torques the last centimeters are felt: down in small steps until the fish 
 back, then pressed on.
 """
 
+import itertools
 import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -33,6 +34,7 @@ from rfp_arm.interfaces import (
     MotionAborted,
     Tick,
 )
+from rfp_arm.kinematics import Chain
 from rfp_arm.poses import rot_z, tilt_from_down, tool_down, wrap, yaw_of
 from rfp_arm.workcell import Workcell
 
@@ -49,6 +51,13 @@ WRIST_MOVE = math.radians(180.0)  # no single move turns the wrist further
 # approach turns it up to 14 deg from where it was predicted (straight down; 10 deg in 95%
 # of grasps), and the tube twists less. In the placeholder cell some way always allows it.
 WRIST_MARGIN = math.radians(10.0)
+# A carry is split where the wrist turns more than this in one stretch: each stretch's tool
+# turn is set so the wrist goes evenly from its angle at the grasp to its angle at the slot
+CARRY_WRIST_STEP = math.radians(45.0)
+# and every this far (m): the base swings unevenly along a straight line, which can drag the
+# wrist past its stop half way even when it turns little from end to end
+CARRY_STEP = 0.15
+TURN_SPOT_STEP = 0.05  # m between the spots tried for turning a held fish where it has room
 
 STEPS = ("pre-grasp", "vacuum on", "approach", "confirm hold", "lift", "carry", "lower",
          "release", "retreat")  # fmt: skip
@@ -75,6 +84,10 @@ class GraspPlan:
     # the wrist turns back to its middle where it is before the pre-grasp: the turn to the
     # grasp is longer than WRIST_MOVE from where it is
     reset_first: bool = False
+    # TCP poses the carry goes through on its straight way, each turned so the wrist moves
+    # evenly the way the plan chose (a straight move alone turns the tool the short way,
+    # which can wind the wrist into its stop half way)
+    carry_via: list = field(default_factory=list)
 
     @property
     def wrist_sweep(self) -> float | None:
@@ -109,6 +122,7 @@ def plan_grasp(
     dry_run: bool = False,
     wrist: Callable[[np.ndarray], float | None] | None = None,
     middle: np.ndarray | None = None,
+    clear_z: float | None = None,
 ) -> GraspPlan:
     """
     The poses of Table AS-1. `grasp_pose` is the fish's grasp pose from the fish list (on
@@ -117,8 +131,10 @@ def plan_grasp(
     `wrist` (Arm.wrist_angle) tells the last joint's angle now (None) and at a TCP pose;
     without it the wrist is taken to turn with the tool's yaw from the middle of its range.
     `middle`: the fish's middle in {B} where the cups grasp it elsewhere (toward its heavier
-    head): the slot gets the middle. Raises ArmError(E_MOTION) if the fish or a pose is
-    outside the limits.
+    head): the slot gets the middle. `clear_z`: the top of what lies on the way (z in {B}):
+    the fish is carried just over it (its height and droop below the cups, lift_margin
+    clear), at most lift_height_max; None: at the fixed lift height. Raises
+    ArmError(E_MOTION) if the fish or a pose is outside the limits.
     """
     g = workcell.grasp
     point = grasp_pose[:3, 3]
@@ -128,7 +144,7 @@ def plan_grasp(
             E_MOTION,
             f"approach {tilt:.0f} deg off vertical (at most {g.max_approach_tilt_deg:.0f})",
         )
-    if not workcell.pick_area.contains(point if middle is None else middle):
+    if not workcell.in_pick_area(point if middle is None else middle):
         raise ArmError(E_MOTION, "the fish is outside the pick area (CS-13)")
     if not workcell.placement_zone.contains(slot):
         raise ArmError(E_MOTION, "the slot is outside the placement zone")
@@ -139,7 +155,11 @@ def plan_grasp(
 
     x, y, z = point
     table = workcell.table_z
-    lift_z = table + min(g.lift_length_share * fish_length + g.lift_margin, g.lift_height_max)
+    if clear_z is None:
+        lift_z = table + min(g.lift_length_share * fish_length + g.lift_margin, g.lift_height_max)
+    else:  # its underside lift_margin over what lies on the way
+        hang = max(thickness, 0.0) + g.droop_share * fish_length
+        lift_z = min(max(clear_z, table) + hang + g.lift_margin, table + g.lift_height_max)
     lift_z = max(lift_z, z + g.lift_margin)
     release_z = table + max(thickness, 0.0) + g.release_clearance
 
@@ -233,6 +253,9 @@ def plan_grasp(
 
     best = min(kind(way) for way in allowed)
     allowed = [way for way in allowed if kind(way) == best]
+    if not heading_known:  # the head end vision guessed, unsure, still beats a coin toss:
+        guessed = [way for way in allowed if abs(wrap(way["turn"] - turn)) < 1e-9]
+        allowed = guessed or allowed  # into the slot as guessed where the wrist allows
     least = min(way["travel"] for way in allowed)
     way = min(
         (way for way in allowed if way["travel"] <= least + WRIST_TIE),
@@ -266,7 +289,127 @@ def plan_grasp(
         held = fish_length if name in ("lift", "carry", "lower") else 0.0
         if problem := workcell.pose_problem(pose, held, True, plan.middle_x):
             raise ArmError(E_MOTION, f"{name} pose: {problem}")
+    if wrist and plan.wrist is not None:
+        plan.carry_via = _carry_via(workcell, plan, wrist)
     return plan
+
+
+def _carry_via(workcell: Workcell, plan: GraspPlan, wrist) -> list[np.ndarray]:
+    """The poses a carry goes through: on the straight way with the wrist turning evenly
+    (`_even_wrist_carry`), or, where the held fish would sweep off the table or into a
+    keep-out zone on that way, by way of a spot where it can turn (`_turning_carry`)."""
+    via = _even_wrist_carry(workcell, plan, wrist)
+    if via is None:
+        via = _turning_carry(workcell, plan, wrist) or []
+    return via
+
+
+def _aimed(point, yaw: float, wanted: float, wrist) -> np.ndarray | None:
+    """The tool straight down at `point`, turned (from `yaw`) so the wrist is at `wanted`:
+    the wrist turns one for one with the tool, one way or the other. None if it can't."""
+    for _ in range(4):
+        pose = tool_down(point, yaw)
+        now = wrist(pose)
+        if now is None:
+            return None
+        if abs(now - wanted) < 1e-4:
+            return pose
+        nudged = wrist(tool_down(point, yaw + 1e-3))
+        if nudged is None or abs(nudged - now) < 1e-6:
+            return None
+        yaw += (wanted - now) * 1e-3 / (nudged - now)
+    return None
+
+
+def _even_wrist_carry(workcell: Workcell, plan: GraspPlan, wrist) -> list[np.ndarray] | None:
+    """Poses on the straight way from the lift to the carry pose, each turned so the wrist
+    is a matching share of the way from its angle at the grasp to its angle at the slot
+    (`plan.wrist`). [] if the carry is short: one straight move. None if a pose can't be
+    found or isn't allowed (the held fish's ends)."""
+    _, at_grasp, at_slot = plan.wrist
+    start, end = plan.lift[:3, 3], plan.carry[:3, 3]
+    stretches = max(
+        math.ceil(abs(at_slot - at_grasp) / CARRY_WRIST_STEP),
+        math.ceil(float(np.linalg.norm(end - start)) / CARRY_STEP),
+    )
+    if stretches < 2:
+        return []
+    yaw_start, yaw_end = yaw_of(plan.lift), yaw_of(plan.carry)
+    poses = []
+    for k in range(1, stretches):
+        share = k / stretches
+        point = start + (end - start) * share
+        guess = yaw_start + wrap(yaw_end - yaw_start) * share
+        pose = _aimed(point, guess, at_grasp + (at_slot - at_grasp) * share, wrist)
+        if pose is None or workcell.pose_problem(pose, plan.fish_length, True, plan.middle_x):
+            return None
+        poses.append(pose)
+    return poses
+
+
+def _turning_carry(workcell: Workcell, plan: GraspPlan, wrist) -> list[np.ndarray] | None:
+    """By way of a spot where the held fish can turn: straight there keeping its heading,
+    turned there the way the plan chose (the wrist evenly), straight on to the slot. Of
+    the spots (TURN_SPOT_STEP apart on the table) where every pose of it, and of the
+    straight ways, keeps the fish's ends on the table and out of the keep-out zones and the
+    wrist in its range, the one making the least detour. None if there is none."""
+    low, high = workcell.wrist_range
+    _, at_grasp, at_slot = plan.wrist
+    start, end = plan.lift[:3, 3], plan.carry[:3, 3]
+    yaw_start, yaw_end = yaw_of(plan.lift), yaw_of(plan.carry)
+    zone = workcell.work_zone
+    xs = np.arange(zone.x[0], zone.x[1] + 1e-9, TURN_SPOT_STEP)
+    ys = np.arange(zone.y[0], zone.y[1] + 1e-9, TURN_SPOT_STEP)
+    spots = [np.array([x, y, start[2]]) for x in xs for y in ys]
+    direct = float(np.linalg.norm(end - start))
+
+    def detour(spot) -> float:
+        return float(np.linalg.norm(spot - start) + np.linalg.norm(end - spot))
+
+    def clear(pose) -> bool:
+        return workcell.pose_problem(pose, plan.fish_length, True, plan.middle_x) is None
+
+    for spot in sorted((s for s in spots if detour(s) < 2 * direct + 0.6), key=detour):
+        first = _aimed(spot, yaw_start, wrist(tool_down(spot, yaw_start)) or 0.0, wrist)
+        last = _aimed(spot, yaw_end, wrist(tool_down(spot, yaw_end)) or 0.0, wrist)
+        if first is None or last is None:
+            continue
+        before, after = wrist(first), wrist(last)
+        # the wrist stays in range, and goes on from the grasp and to the slot (a leg's
+        # base swing moves it less than half a turn)
+        if not (low <= before <= high and low <= after <= high):
+            continue
+        if abs(before - at_grasp) > math.pi / 2 or abs(after - at_slot) > math.pi / 2:
+            continue
+        legs = [tool_down(start + (spot - start) * s, yaw_start) for s in (0.25, 0.5, 0.75)]
+        legs += [tool_down(spot + (end - spot) * s, yaw_end) for s in (0.25, 0.5, 0.75)]
+        if not all(clear(pose) for pose in legs + [first, last]):
+            continue
+        stretches = max(2, math.ceil(abs(after - before) / CARRY_WRIST_STEP) * 2)
+        turning, ok = [], True
+        for k in range(1, stretches):
+            share = k / stretches
+            guess = yaw_start + wrap(yaw_end - yaw_start) * share
+            pose = _aimed(spot, guess, before + (after - before) * share, wrist)
+            if pose is None or not clear(pose):
+                ok = False
+                break
+            turning.append(pose)
+        if ok:
+            return [first, *turning, last]
+    return None
+
+
+def _nearest_segment(point: np.ndarray, corners: list[np.ndarray]) -> int:
+    """Which segment of the polyline through `corners` lies nearest to `point`."""
+    best, nearest = 0, math.inf
+    for i, (a, b) in enumerate(itertools.pairwise(corners)):
+        along = b - a
+        share = float(np.clip((point - a) @ along / max(along @ along, 1e-12), 0.0, 1.0))
+        distance = float(np.linalg.norm(point - (a + share * along)))
+        if distance < nearest - 1e-9:
+            best, nearest = i, distance
+    return best
 
 
 class OperatorStop(Exception):
@@ -294,6 +437,35 @@ def wrist_back_pose(arm: Arm, workcell: Workcell) -> np.ndarray | None:
     return None
 
 
+def plan_problem(plan: GraspPlan, workcell: Workcell, chain: Chain, joints) -> str | None:
+    """What keeps the arm from going through a plan's poses from where it is (`joints`, the
+    chain's order), the way it moves (each solved from the last, in the same posture): no
+    joint solution, or the arm into itself there (workcell.collision). None if nothing does.
+    Checked before anything moves, so a pick is never begun that would have to stop half
+    way with a fish on the cups; each move's path is still checked as it is planned."""
+    q = np.array(joints, float)
+    if plan.reset_first:  # the wrist turns back to its middle first
+        low, high = workcell.wrist_range
+        q[-1] = (low + high) / 2
+    steps = [
+        ("pre-grasp", plan.pregrasp),
+        ("approach", plan.approach_end),
+        ("lift", plan.lift),
+        *(("carry", via) for via in plan.carry_via),
+        ("carry", plan.carry),
+        ("lower", plan.lower),
+        ("retreat", plan.retreat),
+    ]
+    for step, pose in steps:
+        q = chain.ik(workcell.tip_of_tcp(pose), q)
+        if q is None:
+            return f"no joint solution at '{step}' in the arm's posture"
+        hit = workcell.collision.hit(chain, q) if workcell.collision is not None else None
+        if hit:
+            return f"{hit} at '{step}'"
+    return None
+
+
 class GraspSequence:
     """
     Runs a GraspPlan. `tick` is called while the arm moves (display, stop key): a returned
@@ -314,8 +486,9 @@ class GraspSequence:
         sleep: Callable[[float], None] = time.sleep,
         controller: Callable[[str], str] | None = None,
     ):
-        """`controller`: sends a command line to the arm's controller and returns its
-        answer (FairinoIO.send), for the grasp settings' press_*_commands."""
+        """`controller`: runs a command line on the arm's controller (FairinoIO.execute),
+        for the grasp settings' press_*_commands; raises ArmError if the controller refuses
+        it (what its answer means depends on the driver)."""
         self.arm = arm
         self.gripper = gripper
         self.workcell = workcell
@@ -361,17 +534,47 @@ class GraspSequence:
             raise
         self._send(self.workcell.grasp.press_end_commands)
         self._begin("lift")
-        self._move(lambda: self._lin(plan.lift, m.carry_speed))
-        self._begin("carry")
-        self._move(lambda: self._carry(plan.carry))
-        self._begin("lower")
-        self._move(lambda: self._lin(plan.lower, m.carry_speed))
+        if not self._blended(plan):  # one at a time, a stop at each corner
+            self._move(lambda: self._lin(plan.lift, m.carry_speed))
+            self._begin("carry")
+            self._move(lambda: self._carry(plan.carry, plan.carry_via))
+            self._begin("lower")
+            self._move(lambda: self._lin(plan.lower, m.carry_speed))
         if vacuum:
             self._begin("release")
             self._release()
         self._begin("retreat")
         self._move(lambda: self._lin(plan.retreat, m.free_speed))
         self.step = ""
+
+    def _blended(self, plan: GraspPlan) -> bool:
+        """Lift, carry and lower as one move with rounded corners, where the arm can plan
+        that (motion.blend_radius): True once done. False, nothing moved: one at a time.
+        While it moves the step follows where the cups are."""
+        m = self.workcell.motion
+        through = getattr(self.arm, "move_through", None)
+        if through is None or m.blend_radius <= 0:
+            return False
+        poses = [plan.lift, *plan.carry_via, plan.carry, plan.lower]
+        corners = [self.arm.tcp_pose()[:3, 3]] + [p[:3, 3] for p in poses]
+        segments = ["lift", *["carry"] * (len(plan.carry_via) + 1), "lower"]
+        steps = ("lift", "carry", "lower")
+
+        def reach(step: str) -> None:  # each step on the way is begun, in order
+            for later in steps[steps.index(self.step) + 1 : steps.index(step) + 1]:
+                self._begin(later)
+
+        def moving() -> str | None:
+            reach(segments[_nearest_segment(self.arm.tcp_pose()[:3, 3], corners)])
+            return self._moving()
+
+        done = []
+        self._move(lambda: done.append(through(poses, m.carry_speed, m.tcp_accel_max,
+                                               m.blend_radius, moving)))  # fmt: skip
+        if done and done[-1]:
+            reach("lower")
+            return True
+        return False
 
     def _reset_wrist(self) -> None:
         """Turn the wrist back to its middle where the tool is (about the vertical), so the
@@ -405,11 +608,12 @@ class GraspSequence:
         self.arm.move_lin(pose, speed, self.workcell.motion.tcp_accel_max, self._moving)
 
     def _send(self, commands) -> None:
-        """Controller commands of the grasp settings; an answer other than "0" is an error."""
+        """Controller commands of the grasp settings; one the controller refuses stops here."""
         for command in commands if self._controller else ():
-            answer = self._controller(command)
-            if answer != "0":
-                raise self._error(E_COMM, f"the controller answered '{answer}' to {command}")
+            try:
+                self._controller(command)
+            except ArmError as e:
+                raise self._error(E_COMM, e.message or str(e)) from None
 
     def _approach(self, plan: GraspPlan) -> None:
         """Onto the fish. If the arm can feel: slowly down from just above where the fish
@@ -443,9 +647,12 @@ class GraspSequence:
             self._lin(plan.at_depth(depth), g.feel_speed)
             self._sleep(g.feel_settle)
 
-    def _carry(self, pose: np.ndarray) -> None:
+    def _carry(self, pose: np.ndarray, via: list | None = None) -> None:
+        """Straight to the carry pose (through `via`: the wrist turning evenly the way the
+        plan chose), else point-to-point (carry_ptp_fallback)."""
         try:
-            self._lin(pose, self.workcell.motion.carry_speed)
+            for stop in [*(via or []), pose]:
+                self._lin(stop, self.workcell.motion.carry_speed)
         except ArmError as e:
             if e.code != E_MOTION or not self.workcell.motion.carry_ptp_fallback:
                 raise

@@ -1,21 +1,47 @@
-"""Shared by the arm and control tests: the default workcell with changes, a clock that
-only moves when told, a fake control box I/O and a small inverse kinematics solver."""
+"""Shared by the arm, control and simulation tests: the default workcell with the tests'
+own layout (and changes), a clock that only moves when told, a fake control box I/O and a
+small inverse kinematics solver."""
 
 import copy
 
 import numpy as np
 import yaml
 from rfp_arm.kinematics import FR5, Chain
+from rfp_arm.layout import Layout, with_layout
 from rfp_arm.workcell import DEFAULT_FILE, Workcell, workcell_from_mapping
 
 # The FR5 reaching forward over the table with the tool pointing down, well inside its
 # joint limits: where solve_ik starts from
 SEED = np.radians([20.0, -100.0, -100.0, -70.0, 90.0, -60.0])
 
+# The layout the tests are written for: the placeholder cell in front of the arm (+X), its
+# placement zone on the +Y side. The shipped layout is the real cell's, and the setup
+# editor saves into those files: tests take this one so neither breaks them.
+TEST_LAYOUT = Layout(
+    work={"x": [-0.40, 1.30], "y": [-0.85, 0.85], "height": 1.0},
+    pick_area={"x": [0.20, 0.60], "y": [-0.35, 0.15]},
+    placement_zone={"x": [0.15, 0.55], "y": [0.30, 0.72]},
+    exclusions=[
+        {"name": "operator side", "x": [1.00, 1.30], "y": [-0.85, 0.85], "z": [0.00, 1.50]}
+    ],
+    poses=[
+        {"name": "right", "camera_xy": [0.40, -0.18], "yaw_deg": -90.0},
+        {"name": "left", "camera_xy": [0.40, 0.02], "yaw_deg": -90.0},
+    ],
+    heading_deg=0.0,
+    slots=[[0.36, 0.37], [0.20, 0.57]],
+)
+
+
+def frozen_layout() -> Layout:
+    """A copy of TEST_LAYOUT, to change."""
+    return copy.deepcopy(TEST_LAYOUT)
+
 
 def workcell_data() -> dict:
-    """The mapping of Arm/configs/workcell.yaml, to change and load."""
-    return copy.deepcopy(yaml.safe_load(DEFAULT_FILE.read_text(encoding="utf-8")))
+    """The mapping of Arm/configs/workcell.yaml with the tests' layout, to change and load."""
+    data = yaml.safe_load(DEFAULT_FILE.read_text(encoding="utf-8"))
+    return with_layout(data, TEST_LAYOUT)
 
 
 def make_workcell(change=None) -> Workcell:

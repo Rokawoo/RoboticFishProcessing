@@ -11,6 +11,7 @@ import pytest
 np = pytest.importorskip("numpy")
 pytest.importorskip("yaml")
 
+from arm_helpers import frozen_layout, workcell_data
 from rfp_arm.layout import (
     CameraView,
     FishSize,
@@ -45,6 +46,11 @@ def check(layout, data) -> list:
     return check_layout(workcell_from_mapping(with_layout(data, layout)), FISH, VIEW)
 
 
+def frozen() -> tuple[dict, object]:
+    """(The workcell mapping, its layout): the tests' own layout, not the shipped one."""
+    return workcell_data(), frozen_layout()
+
+
 def test_the_shipped_layout_works():
     data, layout = load_layout_data(panel_file=None)
     found = check(layout, data)
@@ -56,7 +62,7 @@ def test_the_shipped_layout_works():
 
 
 def test_the_check_finds_what_keeps_the_cell_from_working():
-    data, layout = load_layout_data(panel_file=None)
+    data, layout = frozen()
     far = copy.deepcopy(layout)
     far.slots[1] = [0.38, 0.60]  # the old placeholder slot: past the reach when carrying
     texts = [f.text for f in check(far, data) if f.error]
@@ -89,10 +95,18 @@ def test_the_check_finds_what_keeps_the_cell_from_working():
     reaching = copy.deepcopy(layout)
     reaching.exclusions[0]["x"] = [0.95, 1.30]  # a fish at the far edge reaches into it
     assert any("into 'operator side' when lifted" in f.text for f in check(reaching, data))
+    # the arm's links, not only the tool: reaching near, the elbow comes back over the base,
+    # into a zone just behind the arm that the tool never enters
+    back = copy.deepcopy(layout)
+    back.exclusions[0]["x"] = [-0.40, -0.10]  # the operator's side moved behind the arm
+    arm = [f for f in check(back, data) if "the arm's upper arm would be in" in f.text]
+    assert arm and arm[0].error and arm[0].text.startswith("observation pose")
+    assert -0.40 <= arm[0].where[0] <= -0.10  # marked where it enters the zone
+    assert not any("the arm's" in f.text for f in check(layout, data))  # the shipped one: clear
 
 
 def test_turning_the_layout_about_the_arm():
-    data, layout = load_layout_data(panel_file=None)
+    data, layout = frozen()
     quarter = turned(layout, 1)
     x, y = layout.slots[0]
     assert quarter.slots[0] == pytest.approx([-y, x])  # counter-clockwise seen from above
@@ -164,13 +178,12 @@ def test_a_layout_that_cant_be_written_as_asked_is_not_written(files):
     layout.slots[0] = [0.0, 0.0]  # outside the placement zone: a problem of the workcell
     with pytest.raises(LayoutError, match="slot 1 is outside"):
         save_layout(layout, workcell, panel)
-    line = "  pick_area: {x: [0.20, 0.60], y: [-0.35, 0.15]}"
-    assert line in before
-    workcell.write_text(
-        before.replace(line, "  pick_area:\n    x: [0.20, 0.60]\n    y: [-0.35, 0.15]")
-    )
+    area = layout.pick_area
+    line = next(row for row in before.splitlines() if row.startswith("  pick_area: {"))
+    by_hand = f"  pick_area:\n    x: {area['x']}\n    y: {area['y']}"
+    workcell.write_text(before.replace(line, by_hand))
     _, layout = load_layout_data(workcell, panel)
-    layout.pick_area["x"] = [0.16, 0.56]  # written over several lines: changed by hand there
+    layout.pick_area["x"] = [v - 0.04 for v in area["x"]]  # several lines: changed by hand there
     with pytest.raises(LayoutError, match="by hand"):
         save_layout(layout, workcell, panel)
     assert not workcell.with_name("workcell.yaml.bak").exists()

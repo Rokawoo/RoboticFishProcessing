@@ -10,14 +10,15 @@ import pytest
 np = pytest.importorskip("numpy")
 pytest.importorskip("yaml")
 
+from arm_helpers import make_workcell, workcell_data
 from rfp_arm.collision import BODY_NAMES, CollisionModel
 from rfp_arm.kinematics import FR5
-from rfp_arm.layout import REACH_SEED, load_layout_data, reach_joints
+from rfp_arm.layout import REACH_SEED, reach_joints
 from rfp_arm.poses import tool_down
 from rfp_arm.safety import check_trajectory
-from rfp_arm.workcell import load_workcell, workcell_from_mapping
+from rfp_arm.workcell import workcell_from_mapping
 
-CELL = load_workcell(panel=None)
+CELL = make_workcell()
 
 
 def joints_at(x: float, y: float, z: float) -> np.ndarray:
@@ -56,6 +57,34 @@ def test_the_gripper_brought_against_the_base_hits_it():
     assert reach_joints(dataclasses.replace(CELL, collision=None), target) is not None
 
 
+def test_what_of_the_arm_is_in_a_box():
+    from rfp_arm.workcell import Box
+
+    q = joints_at(0.40, 0.0, 0.30)
+    cups = Box("cups", (0.38, 0.42), (-0.02, 0.02), (0.28, 0.32))  # around the TCP
+    assert CELL.collision.in_box(FR5, q, cups)[0] == "gripper"
+    base = Box("base", (-0.05, 0.05), (-0.05, 0.05), (0.0, 0.05))
+    body, point = CELL.collision.in_box(FR5, q, base)
+    ranges = (base.x, base.y, base.z)
+    assert body == "base" and all(low <= v <= high for v, (low, high) in zip(point, ranges))
+    far = Box("far", (1.00, 1.30), (-0.85, 0.85), (0.0, 1.5))  # the shipped operator's side
+    assert CELL.collision.in_box(FR5, q, far) is None
+
+
+def test_where_the_arm_hides_the_table_from_the_camera():
+    # Looking near the base, the detector took the shoulder for a fish cut off at the edge
+    pose = CELL.observation_poses[0]
+    tcp = CELL.observation_tcp(pose)
+    q, camera_z = reach_joints(CELL, tcp), CELL.camera_of_tcp(tcp)[2, 3]
+    model = CELL.collision
+    assert model.over(FR5, q, (0.0, 0.0), camera_z) == "base"
+    assert model.over(FR5, q, (0.0, -0.15), camera_z) == "upper arm"
+    assert model.over(FR5, q, (0.30, 0.0), camera_z) is None  # the table, in view
+    assert model.over(FR5, q, (0.0, -0.15), 0.10) is None  # above the camera: not in the way
+    # the gripper is beside the camera, out of its view: under it the table is seen
+    assert model.over(FR5, q, tcp[:2, 3], camera_z) is None
+
+
 def test_a_path_into_the_arm_is_refused_and_one_out_of_it_may_run():
     clear, against = joints_at(0.30, 0.0, 0.05), joints_at(0.15, 0.0, 0.05)
     path = clear + np.linspace(0, 1, 40)[:, None] * (against - clear)
@@ -76,7 +105,7 @@ def test_a_path_into_the_arm_is_refused_and_one_out_of_it_may_run():
     stuck = CELL.collision.path_problem(FR5, [against, against])
     assert stuck is not None and stuck[1].endswith("all the way")
     # tool.collision_model "" turns the check off
-    data, _ = load_layout_data(panel_file=None)
+    data = workcell_data()
     data["tool"]["collision_model"] = ""
     off = workcell_from_mapping(data)
     assert off.collision is None and check_trajectory(off, FR5, names, path, times).ok

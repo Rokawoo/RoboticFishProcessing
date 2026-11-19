@@ -5,8 +5,9 @@ forearm into the base...). The spheres cover each body's surface, at most `margi
 past it: Arm/configs/collision_model.yaml, made from the meshes by
 Simulation/make_collision_model.py. MoveIt's scene has the gripper as one box; this check
 doesn't depend on it: every planned path (safety.check_trajectory: MoveIt's plans and the
-3D simulator's) and the layout's reach (layout.reach_joints). NumPy only, no meshes: the
-robot PC needs nothing more. No ROS.
+3D simulator's) and the layout's reach (layout.reach_joints). The layout check also puts the
+same spheres against the keep-out zones (`in_box`). NumPy only, no meshes: the robot PC
+needs nothing more. No ROS.
 """
 
 import functools
@@ -122,6 +123,40 @@ class CollisionModel:
         nothing does."""
         found = self.touching(chain, [joints])[0]
         return self.what(self.pairs[int(np.argmax(found))]) if found.any() else None
+
+    def in_box(self, chain: Chain, joints: Sequence[float], box) -> tuple[str, np.ndarray] | None:
+        """(a body's name, a point of the box it reaches) where the arm at `joints` would be
+        inside `box` (x, y and z ranges in the base frame: a workcell.Box), within the
+        margins; None if it stays out."""
+        frames = chain.link_poses(np.asarray(joints, float))
+        links = [chain.base_link, *chain.links]
+        low = np.array([box.x[0], box.y[0], box.z[0]], float)
+        high = np.array([box.x[1], box.y[1], box.z[1]], float)
+        for body in self.bodies:
+            t = frames[links.index(body.link)]
+            centers = body.spheres[:, :3] @ t[:3, :3].T + t[:3, 3]
+            nearest = np.clip(centers, low, high)  # the box's point nearest each sphere
+            gap = nearest - centers
+            inside = np.einsum("ij,ij->i", gap, gap) < body.spheres[:, 3] ** 2
+            if inside.any():
+                return body.name, nearest[int(np.argmax(inside))]
+        return None
+
+    def over(self, chain: Chain, joints: Sequence[float], xy, below: float) -> str | None:
+        """The body (not on the tool's link) between a camera at height `below` looking
+        down and the table at (x, y), the arm at `joints`; None if none is. The camera
+        can't see a fish there: what it takes for one there is the arm itself."""
+        frames = chain.link_poses(np.asarray(joints, float))
+        links = [chain.base_link, *chain.links]
+        for body in self.bodies:
+            if body.link == chain.tip_link:  # the gripper: the camera's view is clear of it
+                continue
+            t = frames[links.index(body.link)]
+            centers = body.spheres[:, :3] @ t[:3, :3].T + t[:3, 3]
+            gap = np.hypot(centers[:, 0] - xy[0], centers[:, 1] - xy[1])
+            if ((gap < body.spheres[:, 3]) & (centers[:, 2] < below)).any():
+                return body.name
+        return None
 
     def path_problem(self, chain: Chain, positions) -> tuple[int, str] | None:
         """(the index of the given pose by which it happens, what hits what) where a path

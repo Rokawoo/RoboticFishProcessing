@@ -24,6 +24,8 @@ IK_STEP_SWING = math.radians(10.0)  # about the base
 IK_STEP_TURN = math.radians(15.0)  # of the tip's orientation
 IK_STEP = 0.05  # m
 IK_MAX_STEPS = 40
+# The tip this close to the first joint's axis is on neither side of it (see Chain.ahead)
+SIDE_MIN = 0.03  # m
 
 
 @dataclass(frozen=True)
@@ -93,19 +95,36 @@ class Chain:
         damped least squares (in steps about the base if one solve can't get there, unless
         `steps` is False: quicker where the seed already faces the target), so the arm keeps
         the seed's posture. Each angle is taken the nearest way round to the seed. None if it
-        doesn't converge or a joint limit is hit.
+        doesn't converge, a joint limit is hit or only the other side of the base reaches it
+        (see `ahead`).
         """
         seed = np.array(seed, float)
         q = self._solve(target, seed, iterations)
+        if q is not None and not self._same_side(q, seed):
+            q = None  # near the base the other side's posture is nearer: swing round instead
         if q is None and steps:  # a long move: one solve overshoots into another posture
             q = self._solve_in_steps(target, seed, iterations)
-        if q is None:
+        if q is None or not self._same_side(q, seed):
             return None
         lower = np.array([j.lower for j in self.joints if j.kind != "fixed"])
         upper = np.array([j.upper for j in self.joints if j.kind != "fixed"])
         q = q - 2 * np.pi * np.round((q - seed) / (2 * np.pi))
         q = np.where(q > upper, q - 2 * np.pi, np.where(q < lower, q + 2 * np.pi, q))
         return q if ((q >= lower) & (q <= upper)).all() else None
+
+    def ahead(self, positions: Sequence[float]) -> float:
+        """How far ahead of the first joint's axis (m, along the plane the arm reaches in) the
+        tip is, for an arm like the FR5 (first joint vertical, its zero toward +x). A point is
+        reached from either side, the base turned up to half a turn between: ahead, or behind
+        with the arm folded back over its base, where the tool passes close to the forearm.
+        Near the base the two are close in joint angles."""
+        tip = self.fk(positions)
+        first = float(positions[0])
+        return float(tip[0, 3] * math.cos(first) + tip[1, 3] * math.sin(first))
+
+    def _same_side(self, q: np.ndarray, seed: np.ndarray) -> bool:
+        a, b = self.ahead(q), self.ahead(seed)
+        return a * b >= 0 or min(abs(a), abs(b)) < SIDE_MIN
 
     def _solve(self, target: np.ndarray, q: np.ndarray, iterations: int) -> np.ndarray | None:
         for _ in range(iterations):
@@ -227,7 +246,12 @@ def wrist_angle_at(chain: Chain, joints: Mapping[str, float], tip_pose: np.ndarr
     if reach <= abs(offset) + 1e-9:
         return None
     toward, lean = np.arctan2(y, x), np.arcsin(offset / reach)
-    base = min((toward - lean, toward - np.pi + lean), key=lambda a: abs(wrapped(a - first)))
+    # the posture's side of the base (Chain.ik keeps it): ahead, or folded back over it
+    ahead = now[0, 3] * np.cos(first) + now[1, 3] * np.sin(first)
+    if abs(ahead) >= SIDE_MIN:
+        base = toward - lean if ahead > 0 else toward - np.pi + lean
+    else:
+        base = min((toward - lean, toward - np.pi + lean), key=lambda a: abs(wrapped(a - first)))
     return wrapped(sign * (yaw(tip_pose) - base - constant))
 
 

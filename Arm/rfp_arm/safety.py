@@ -1,9 +1,10 @@
 """
 Fixed-code check of a planned joint trajectory before it runs (CS-30, CS-43, SF-10, SF-21):
-the TCP's speed, where the tool, the camera and the held fish go, how far the joints turn,
-and that the arm doesn't run into itself (its links and the gripper as built,
-rfp_arm.collision). MoveIt checks collisions too; this is the layer that doesn't depend on
-its scene. No ROS.
+how fast any point of the arm moves (each joint, the TCP, the camera: none above the TCP's
+limit, so a wide swing doesn't take the elbow past it), where the tool, the camera and the
+held fish go, how far the joints turn, and that the arm doesn't run into itself (its links
+and the gripper as built, rfp_arm.collision). MoveIt checks collisions too; this is the
+layer that doesn't depend on its scene. No ROS.
 """
 
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from rfp_arm.workcell import Workcell
 class TrajectoryCheck:
     problem: str | None  # None: the trajectory may run
     too_fast: bool  # the only kind of problem a slower plan fixes
-    peak_tcp_speed: float  # m/s
+    peak_tcp_speed: float  # m/s, of the fastest point: a joint, the TCP or the camera
     duration: float  # s
     max_joint_travel: float  # rad, largest change of any joint from the start
     end_tcp: np.ndarray | None  # 4x4 TCP pose at the last point
@@ -29,7 +30,7 @@ class TrajectoryCheck:
 
     def summary(self) -> str:
         return (
-            f"{self.duration:.1f} s, TCP up to {self.peak_tcp_speed * 1000:.0f} mm/s, "
+            f"{self.duration:.1f} s, up to {self.peak_tcp_speed * 1000:.0f} mm/s, "
             f"joints turn up to {np.degrees(self.max_joint_travel):.0f} deg"
         )
 
@@ -60,14 +61,17 @@ def check_trajectory(
         empty.problem = f"the plan has no joint {', '.join(missing)}"
         return empty
 
-    poses = []
+    poses, points = [], []
     for row in positions:
         joints = dict(zip(joint_names, row))
         if violation := chain.limit_violation(joints, margin=1e-3):
             empty.problem = f"joint limit: {violation}"
             return empty
-        poses.append(workcell.tcp_of_tip(chain.fk(joints)))
-    points = np.array([pose[:3, 3] for pose in poses])
+        links = chain.link_poses(joints)
+        tcp = workcell.tcp_of_tip(links[-1])
+        poses.append(tcp)
+        camera = workcell.camera_of_tcp(tcp)[:3, 3]
+        points.append(np.vstack([[t[:3, 3] for t in links], tcp[:3, 3], camera]))
 
     peak = 0.0
     steps = np.diff(times)
@@ -76,9 +80,8 @@ def check_trajectory(
         return empty
     moving = steps > 1e-6
     if moving.any():
-        peak = float(
-            (np.linalg.norm(np.diff(points, axis=0), axis=1)[moving] / steps[moving]).max()
-        )
+        moves = np.linalg.norm(np.diff(np.array(points), axis=0), axis=2).max(axis=1)
+        peak = float((moves[moving] / steps[moving]).max())
     travel = float(np.abs(positions - positions[0]).max())
     check = TrajectoryCheck(None, False, peak, float(times[-1] - times[0]), travel, poses[-1])
 
@@ -118,6 +121,6 @@ def check_trajectory(
             f"{workcell.motion.max_joint_travel_deg:.0f}): the arm would change its posture"
         )
     elif peak > limit * 1.02:  # 2%: rounding of the sampled points
-        check.problem = f"TCP speed {peak * 1000:.0f} mm/s is above {limit * 1000:.0f} mm/s"
+        check.problem = f"the arm would move {peak * 1000:.0f} mm/s, above {limit * 1000:.0f} mm/s"
         check.too_fast = True
     return check
