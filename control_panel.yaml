@@ -9,13 +9,16 @@
 # pick_place.py's command line (an option given on the command line wins).
 
 run:
-  mode: null          # setup | observe | offline | sim3d | sim | check | feel | dry-run | run; null: ask
+  mode: null          # setup | sim3d | sim | check | dry-run | run; null: ask
   device: null        # realsense | a serial number | a camera index | a video; null: the D405
   model: null         # training run folder or .pt file; null: the newest run
   cycles: null        # stop after this many grasps; null: until the pick area is clear
   step: false         # wait for Enter before every move
   window: true        # show the camera image
   any_size: false     # skip the fish size checks (videos from other cameras)
+  bringup: true       # start MoveIt and the FR5's driver when a mode needs them and they aren't
+                      # running (Arm/ros/fr5_bringup.launch.py; ./robot.sh sources ROS for it)
+  twin: true          # beside the arm: a 3D window of it moving, the fish vision finds, depth
 
 workcell:
   verified: false     # true once the cell is measured: the real arm refuses to move before
@@ -26,12 +29,12 @@ workcell:
   motion:
     tcp_speed_max: 0.25         # m/s, the limit for every move
     approach_speed: 0.05        # m/s onto the fish
-    carry_speed: 0.15           # m/s with a fish
-    free_speed: 0.15            # m/s without
-    ptp_velocity_scale: 0.10    # share of the joint speed limits on point-to-point moves
+    carry_speed: 0.20           # m/s with a fish
+    free_speed: 0.25            # m/s without
+    ptp_velocity_scale: 0.30    # share of the joint speed limits on point-to-point moves
   grasp:
     feel_contact: true          # lower the cups until the fish pushes back (real arm)
-    contact_force: 15.0         # N that count as touching it      (tune: --mode feel)
+    contact_force: 15.0         # N that count as touching it     (tune: --mode check)
     press_force_max: 40.0       # N at which pressing stops
     press_distance: 0.010       # m pressed on after contact
     seal_dwell: 1.0             # s for the vacuum to build up
@@ -40,13 +43,13 @@ workcell:
   tool:
     wrist_range_deg: [-170, 170]   # how far the last joint may turn (vacuum tube)
   placement:
-    heading_deg: 0              # where placed fish point their heads: from +X toward +Y
+    heading_deg: -90            # where placed fish point their heads: from +X toward +Y
 
 vision:
-  min_confidence: 0.50          # weaker detections are flagged low_confidence
+  min_confidence: 0.60          # weaker detections are flagged low_confidence: not picked
   use_depth: true               # false: every fish is put on the table plane
   align_to_surface: true        # tilt the cups onto the fish's sloping surface
-  require_heading: true         # false: also pick fish whose head end is unknown
+  require_heading: false        # true: don't pick fish whose head end is unclear
   min_heading_confidence: 0.6
   check_size: true              # false: don't check length, width and thickness
   fish_type: stand_in           # whose size limits: stand_in (printed fish) or catfish (real)
@@ -57,7 +60,7 @@ vision:
 
 simulation:                     # pick_place.py --mode sim3d (Simulation/sim.yaml lists all)
   fish_model: models/catfish.3mf  # relative to Simulation/; missing: a plain stand-in shape
-  fish_length: 0.79             # m, scaled to it: the printed stand-ins (vision fish_type)
+  fish_length: 0.60             # m, scaled to it: about the real fish (0.79: the big prints)
   placement: anywhere           # anywhere: as fish really lie; view: only where a view sees all
   fish_count: 1
   seed: 1                       # where the fish lie
