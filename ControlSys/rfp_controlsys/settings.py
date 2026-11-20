@@ -1,39 +1,12 @@
-"""The Control System's fixed limits (CS-30), loaded from ControlSys/configs/control.yaml."""
+"""The Control System's fixed limits (CS-30): the defaults here, changed in the control panel
+(control_panel.yaml, section `control`) or a settings file given with --control."""
 
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_FILE = Path(__file__).resolve().parents[1] / "configs" / "control.yaml"
-
-
-PANEL_FILE = Path(__file__).resolve().parents[2] / "control_panel.yaml"
-PANEL_SECTIONS = ("run", "workcell", "vision", "control", "simulation")
-
-
-def panel_section(panel: Path | None, name: str) -> dict:
-    """One section of the control panel file (control_panel.yaml); {} without the file."""
-    import yaml
-
-    if panel is None or not panel.is_file():
-        return {}
-    data = yaml.safe_load(panel.read_text(encoding="utf-8")) or {}
-    unknown = sorted(set(data) - set(PANEL_SECTIONS)) if isinstance(data, dict) else ["?"]
-    if unknown:
-        raise ValueError(f"{panel.name}: unknown section(s): {', '.join(unknown)}")
-    section = data.get(name) or {}
-    if not isinstance(section, dict):
-        raise TypeError(f"{panel.name}: '{name}' must be a mapping of settings")
-    return section
-
-
-def merged(base: dict, over: dict) -> dict:
-    """`base` with the values of `over` on top; mappings inside are merged, not replaced."""
-    result = dict(base)
-    for key, value in over.items():
-        both = isinstance(value, dict) and isinstance(result.get(key), dict)
-        result[key] = merged(result[key], value) if both else value
-    return result
+from rfp_arm.workcell import PANEL_FILE, merged, panel_section
+from rfp_vision.settings import read_settings
 
 
 @dataclass
@@ -69,22 +42,16 @@ class ControlSettings:
 
 
 def load_settings(path: Path | None = None, panel: Path | None = PANEL_FILE) -> ControlSettings:
-    """Settings from a YAML file (default: ControlSys/configs/control.yaml; defaults if it's
-    missing) with the control panel's `control` section on top (`panel=None`: without it)."""
-    import yaml
-
-    path = path or DEFAULT_FILE
-    data = {}
-    if path.is_file():
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    elif path != DEFAULT_FILE:
-        raise FileNotFoundError(f"control settings not found: {path}")
+    """The defaults, with a settings file's values (`path`, optional) and the control panel's
+    `control` section on top (`panel=None`: without it)."""
+    data = read_settings(path, "control settings")
+    where = path.name if path else "control settings"
     if not isinstance(data, dict):
-        raise TypeError(f"{path.name}: expected a mapping of settings")
+        raise TypeError(f"{where}: expected a mapping of settings")
     data = merged(data, panel_section(panel, "control"))
     unknown = sorted(set(data) - {f.name for f in dataclasses.fields(ControlSettings)})
     if unknown:
-        raise ValueError(f"{path.name}: unknown setting(s): {', '.join(unknown)}")
+        raise ValueError(f"{where}: unknown setting(s): {', '.join(unknown)}")
     return ControlSettings(**data)
 
 

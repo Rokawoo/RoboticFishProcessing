@@ -11,7 +11,7 @@ Usage:
     python gripper_bench.py pulse 500       # valve board only: vacuum on for 500 ms
     python gripper_bench.py watch           # print the state until Ctrl+C
 
-The gripper section of Arm/configs/workcell.yaml (--workcell) says what switches the vacuum:
+workcell.gripper in control_panel.yaml (or --workcell) says what switches the vacuum:
     driver: serial      the ESP32 valve board over USB; needs pyserial, no ROS
     driver: http        the same board over Wi-Fi; no ROS
     driver: controller  the FR5 control box I/O with a vacuum switch (Table AS-4); needs

@@ -1,14 +1,17 @@
-# The workcell: frames, tool, zones, observation poses, placement slots, limits (SF-11).
-# Loaded before any motion by rfp_arm.workcell; unknown entries are errors.
+# The workcell as measured: frames, tool, camera mount, zones, observation poses, placement
+# slots (SF-11). Loaded before any motion by rfp_arm.workcell; unknown entries are errors.
+# Each setting is written in one place: the motion, grasp and gripper limits have their
+# defaults in rfp_arm/workcell.py, and control_panel.yaml (section `workcell`) holds what
+# the cell changes: verified, speeds, forces, the gripper's port, the wrist's range, the
+# placement heading. Any of them can also be set here, but not in both files.
 #
 # Units: meters, degrees, seconds. Every position is in the arm base frame {B}
 # (MoveIt's base_link: z up, origin at the middle of the base).
 #
 # !! THE VALUES BELOW ARE PLACEHOLDERS for simulation, not a measured cell. Before the
 # !! real arm moves: measure the table, zones and tool, teach the observation poses,
-# !! calibrate the camera, then set `verified: true`. Dry runs and real runs refuse to
-# !! start while it is false.
-verified: false
+# !! calibrate the camera, then set `verified: true` in control_panel.yaml. Dry runs and
+# !! real runs refuse to start while it is false.
 
 robot:
   group: fairino5_v6_group        # MoveIt planning group (fairino5_v6_moveit2_config)
@@ -24,12 +27,6 @@ tool:
   # uncompressed cup faces; z out of the cups, x along the footprint's long side.
   # 145.8 mm past the flange on the gripper's CAD model (Simulation/import_gripper.py).
   tcp: {xyz: [0.0, 0.0, 0.2458], rpy_deg: [0, 0, 0]}
-  # How far the last joint (j6) may turn. The vacuum tube runs into the gripper, so the
-  # wrist must never wind a full turn: plans that leave this range are refused, each grasp
-  # takes the way round that turns it least (and keeps 10 degrees clear of the ends if it
-  # can), and the arm returns to its observation pose (and this joint to its angle there)
-  # after every fish. Put 0 where the tube hangs free.
-  wrist_range_deg: [-170, 170]
   # Cups, bracket and camera as one box in the tip link frame, for MoveIt's collision
   # checks. Keep its far end short of the cup faces, or reaching a fish counts as a hit.
   body: {x: [-0.100, 0.100], y: [-0.123, 0.050], z: [0.100, 0.226]}
@@ -84,89 +81,7 @@ observation:
   close_height: 0.62
 
 placement:
-  heading_deg: -90  # where placed fish point their heads: degrees from +X toward +Y (AS-52)
   slots:            # slot centers, filled in this order (AS-56)
     - [-0.37, -0.36]
     - [-0.57, -0.20]
 
-motion:
-  tcp_speed_max: 0.25           # m/s, every motion (SF-21, AS-42); plans above it are refused
-  tcp_accel_max: 0.5            # m/s2 on straight moves (AS-43)
-  approach_speed: 0.05          # m/s onto the fish (AS-22)
-  carry_speed: 0.20             # m/s, straight moves with a fish
-  free_speed: 0.25              # m/s, straight moves without a fish
-  ptp_velocity_scale: 0.30      # point-to-point: share of the joint speed and acceleration
-  ptp_acceleration_scale: 0.30  # limits (Arm/ros/joint_limits.yaml), slowed where any point of
-                                # the arm or tool would pass tcp_speed_max
-  max_joint_travel_deg: 200     # a plan turning a joint further is refused
-  goal_tolerance: 0.002         # m (AS-12 asks for 0.001: tighten once the arm is characterized)
-  planning_time: 5.0
-  pilz_max_trans_vel: 1.0       # MoveIt's pilz_cartesian_limits.yaml, used if it can't be read
-  pilz_max_trans_acc: 2.25
-  carry_ptp_fallback: true      # carry point-to-point if no straight path is found (a
-                                # straight carry turns the tool the short way, which can wind
-                                # the wrist into its stop where the planned turn doesn't)
-  blend_radius: 0.05            # m: lift, carry and lower as one move, corners rounded by up
-                                # to this (MoveIt with Pilz's sequence service); 0: a stop at each
-
-grasp:                          # Table AS-1
-  pregrasp_distance: 0.10
-  press_distance: 0.010
-  dry_run_standoff: 0.05
-  lift_length_share: 0.6        # lift height without control's carry_over_seen: this
-  lift_margin: 0.05             # share of the fish's length + lift_margin, at most
-  lift_height_max: 0.50         # lift_height_max above the table
-  droop_share: 0.10             # carried over what vision saw on the way: a held fish hangs
-                                # its height + this share of its length below the cups, and
-                                # its underside stays lift_margin above what lies there
-  release_clearance: 0.015
-  retreat_distance: 0.10
-  seal_timeout: 1.0
-  seal_dwell: 1.0               # no vacuum switch: time for the vacuum to build up
-  release_dwell: 1.0            # no vacuum switch: time for it to let go
-  drop_time: 0.1
-  release_timeout: 1.0
-  max_approach_tilt_deg: 15     # the cups lean at most this far onto a sloping fish (AS-21)
-  # Feeling for the fish. On the real arm the joint torques tell when something pushes
-  # back: from feel_start above where the camera saw the fish's surface the cups go down
-  # in small steps until contact_force is felt, then press_distance further (or until
-  # press_force_max). No contact by feel_max_depth past the expected surface: no fish
-  # there (E_NO_SEAL). Tune the forces with: pick_place.py --mode check (push the cups)
-  feel_contact: true            # false: go to the expected surface + press_distance, blind
-  feel_start: 0.015
-  feel_step: 0.003
-  feel_speed: 0.01
-  feel_settle: 0.15
-  contact_force: 15.0           # N, tune
-  press_force_max: 40.0         # N, tune
-  feel_max_depth: 0.025
-  # Controller commands sent before pressing and after the hold is confirmed, as written
-  # for ros2_cmd_server. This is where a compliant wrist would be switched on and off, so
-  # the cups settle onto the fish by themselves, e.g. the controller's impedance mode:
-  #   ImpedanceControlStartStop(status, workSpace, forceThreshold x6, m x6, b x6, k x6,
-  #                             maxV, maxVA, maxW, maxWA)     (0: joint space)
-  # Left empty: its parameters have to be found on the arm, without a fish first.
-  press_start_commands: []
-  press_end_commands: []
-
-gripper:
-  # What switches the vacuum of the six cups:
-  #   serial      the ESP32 valve board over USB (firmware: Arm/firmware/valve_control)
-  #   http        the same board over Wi-Fi
-  #   controller  the FR5 control box's digital I/O (HW-33, HW-34), with a vacuum switch
-  # The valve board confirms each switch but can't tell whether the cups hold: with it,
-  # the camera confirms the hold. Try it with: python Arm/scripts/gripper_bench.py on
-  driver: serial
-  serial_port: /dev/ttyACM0     # Windows: COM3, ...
-  serial_baud: 115200
-  http_host: ""                 # 192.168.4.1 on the board's own access point
-  valve_timeout: 2.0
-  valve_inverted: false         # true: the vacuum is on while the valve is off
-  # driver: controller only
-  vacuum_do: 0
-  blowoff_do: 1
-  holding_di: 0
-  vacuum_di: 1
-  vacuum_switch: true           # false: no switch wired; the camera confirms the hold
-  blowoff_time: 0.2
-  state_timeout: 0.5

@@ -1,11 +1,9 @@
-"""Vision thresholds and camera settings, loaded from Vision/configs/vision.yaml."""
+"""Vision thresholds and camera settings: the defaults here, changed in the control panel
+(control_panel.yaml, section `vision`) or a settings file given with --vision."""
 
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-
-DEFAULT_FILE = Path(__file__).resolve().parents[1] / "configs" / "vision.yaml"
-
 
 PANEL_FILE = Path(__file__).resolve().parents[2] / "control_panel.yaml"
 PANEL_SECTIONS = ("run", "workcell", "vision", "control", "simulation")
@@ -194,14 +192,19 @@ def from_mapping(cls, data: dict, where: str):
 
 
 def load_settings(path: Path | None = None, panel: Path | None = PANEL_FILE) -> VisionSettings:
-    """Settings from a YAML file (default: Vision/configs/vision.yaml; defaults if it's
-    missing) with the control panel's `vision` section on top (`panel=None`: without it)."""
+    """The defaults, with a settings file's values (`path`, optional) and the control panel's
+    `vision` section on top (`panel=None`: without it)."""
+    data = read_settings(path, "vision settings")
+    where = path.name if path else "vision settings"
+    return from_mapping(VisionSettings, merged(data, panel_section(panel, "vision")), where)
+
+
+def read_settings(path: Path | None, what: str) -> dict:
+    """The mapping of a settings file; {} without one."""
     import yaml
 
-    path = path or DEFAULT_FILE
-    data = {}
-    if path.is_file():
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    elif path != DEFAULT_FILE:
-        raise FileNotFoundError(f"vision settings not found: {path}")
-    return from_mapping(VisionSettings, merged(data, panel_section(panel, "vision")), path.name)
+    if path is None:
+        return {}
+    if not path.is_file():
+        raise FileNotFoundError(f"{what} not found: {path}")
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}

@@ -24,6 +24,7 @@ from rfp_arm.kinematics import FR5, Chain
 from rfp_arm.poses import tool_down
 from rfp_arm.workcell import (
     DEFAULT_FILE,
+    HEADING_DEG,
     PANEL_FILE,
     Rect,
     Workcell,
@@ -96,7 +97,7 @@ def layout_of(data: dict) -> Layout:
             for zone in zones.get("exclusion") or []
         ],
         poses=poses,
-        heading_deg=float(placement.get("heading_deg", 0.0)),
+        heading_deg=float(placement.get("heading_deg", HEADING_DEG)),
         slots=[_floats(slot) for slot in placement["slots"]],
     )
 

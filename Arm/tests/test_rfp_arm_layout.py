@@ -52,7 +52,7 @@ def frozen() -> tuple[dict, object]:
 
 
 def test_the_shipped_layout_works():
-    data, layout = load_layout_data(panel_file=None)
+    data, layout = load_layout_data()  # the cell: workcell.yaml with the panel on top
     found = check(layout, data)
     assert [f.text for f in found if f.error] == []
     # the arm reaches 0.675 m out with the tool down where fish are carried (0.50 m up)

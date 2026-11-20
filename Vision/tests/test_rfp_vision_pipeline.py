@@ -614,8 +614,8 @@ def test_model_runs_are_found(tmp_path):
         find_weights(tmp_path / "no_weights")
 
 
-def test_settings_file_matches_the_defaults_and_rejects_unknown_names(tmp_path):
-    assert load_settings() == VisionSettings()  # Vision/configs/vision.yaml
+def test_settings_from_a_file_reject_unknown_names(tmp_path):
+    assert load_settings(panel=None) == VisionSettings()
     custom = tmp_path / "vision.yaml"
     custom.write_text("min_confidence: 0.7\nhold: {lost_frames: 5}\ndepth_range_m: [0.1, 0.6]\n")
     settings = load_settings(custom, panel=None)

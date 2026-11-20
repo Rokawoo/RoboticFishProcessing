@@ -36,7 +36,7 @@ Modes, in the order to bring a cell up (SF-43):
 
 --device: "realsense" (first one found), a RealSense serial number, an OpenCV camera index
 (0, 1, ...: color only), or a recording (.bag/.db3 with depth, any video without). Without
-depth, fish are placed on the table plane (Vision/configs/vision.yaml).
+depth, fish are placed on the table plane (vision.use_depth).
 
 On the robot PC run it through ./robot.sh (it sources ROS 2, the workspace and .venv). The
 modes that need MoveIt start it with the FR5's driver (mock hardware for sim) and FAIRINO's
@@ -658,8 +658,10 @@ def main() -> None:
     parser.add_argument("--device", help="camera: realsense, a serial number, an index, a video")
     parser.add_argument("--model", type=Path, help="run folder or .pt (default: the newest run)")
     parser.add_argument("--workcell", type=Path, help="workcell file (Arm/configs/workcell.yaml)")
-    parser.add_argument("--vision", type=Path, help="vision settings (Vision/configs/vision.yaml)")
-    parser.add_argument("--control", type=Path, help="limits (ControlSys/configs/control.yaml)")
+    parser.add_argument("--vision", type=Path, help="extra vision settings file (under the panel)")
+    parser.add_argument(
+        "--control", type=Path, help="extra control settings file (under the panel)"
+    )
     parser.add_argument(
         "--cycles", type=int, help="stop after this many grasps (default: no limit)"
     )

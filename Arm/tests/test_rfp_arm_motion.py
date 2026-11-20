@@ -505,9 +505,9 @@ def test_valve_gripper_turns_the_vacuum_off_first_and_cannot_feel_a_hold():
     other_way.vacuum_on()
     assert not inverted.valve and other_way.state() == GripperState.NO_SEAL
 
-    assert isinstance(make_gripper(GripperSettings(), FakeIO()), SuctionGripper)
+    assert isinstance(make_gripper(GripperSettings(driver="controller"), FakeIO()), SuctionGripper)
     with pytest.raises(ArmError, match="command server"):
-        make_gripper(GripperSettings(), None)
+        make_gripper(GripperSettings(driver="controller"), None)
     with pytest.raises(ArmError, match="can't be reached|can't open|pyserial"):
         make_gripper(GripperSettings(driver="serial", serial_port="/dev/no-such-port"), None)
 

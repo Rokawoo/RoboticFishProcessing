@@ -93,9 +93,8 @@ def test_the_stand_in_fish_is_centered_like_vision_sees_it():
     assert load_fish(None, 0.4).source == "plain stand-in shape"
 
 
-def test_settings_file_matches_the_defaults():
-    assert load_settings(panel=None) == SimSettings()  # Simulation/sim.yaml
-    assert load_settings() == SimSettings()  # the shipped control panel changes nothing
+def test_settings_without_the_panel_are_the_defaults():
+    assert load_settings(panel=None) == SimSettings()
 
 
 # ---------------------------------------------------------------------------

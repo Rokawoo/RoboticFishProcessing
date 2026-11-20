@@ -11,7 +11,7 @@ Workcell setup and bring-up on the real arm: [top README](../README.md#set-up-th
 | `rfp_arm/` | The modules below; `basic_move_demo.py` nods and swings the real arm (read its docstring first) |
 | `scripts/` | `gripper_bench.py`: vacuum `on`, `off`, `pulse <ms>`, `status`, `watch` by hand |
 | `firmware/valve_control/` | Valve board sketch (Adafruit Feather ESP32 V2). Wi-Fi credentials go in `secrets.h`, copied from `secrets.example.h`, never committed |
-| `configs/` | `workcell.yaml`: frames, tool, camera mount, zones, observation poses, slots, motion and gripper limits. `collision_model.yaml`: the arm and gripper as spheres (generated) |
+| `configs/` | `workcell.yaml`: frames, tool, camera mount, zones, observation poses, slots (the limits: `workcell.py`'s defaults, the control panel). `collision_model.yaml`: the arm and gripper as spheres (generated) |
 | `ros/` | `fr5_bringup.launch.py`: FAIRINO's MoveIt config with the real driver (or `hardware:=mock`), Pilz's sequence capability and FAIRINO's command server, without editing their files; `joint_limits.yaml`: the joint accelerations it plans with (`./robot.sh ros` runs it) |
 
 ## Modules (`rfp_arm/`)

@@ -8,7 +8,6 @@ Runs each pick-and-place cycle: checks Vision's fish list, has the selector (lat
 |---|---|
 | `rfp_controlsys/` | `pick_place.py` (the script), `cycle.py` (state machine, input checks, failure handling), `selector.py` (which fish next), `calibrate.py` (the camera's mount from small moves: dry-run and run do it first while it isn't calibrated, `--calibrate` again), `console.py` (operator interface), `run_log.py`, `demo.py` |
 | `prompts/` | VLM prompt templates |
-| `configs/` | `control.yaml`: attempt limits, timeouts, hold confirmation |
 | `runs/` | One folder per run: `cycles.csv`, each decision's image, `report.json` (not in Git) |
 
 ## Running

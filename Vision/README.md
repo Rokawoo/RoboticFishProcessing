@@ -7,7 +7,6 @@ Turns camera frames into a fish list (mask, keypoints, position and heading in t
 | `rfp_vision/` | Runtime vision (below) |
 | `data/` | Dataset and training tools ([details](data/README.md)) |
 | `trained_cv_models/` | One folder per training run; its `weights/best.pt` is the model, the one file of a run in Git |
-| `configs/` | `vision.yaml`: camera, model and thresholds |
 
 ## Building the fish model
 
@@ -27,13 +26,13 @@ Fix labels in the original set, then re-run step 3 (it replaces the copies) and 
 
 ## Runtime (`rfp_vision`)
 
-Plain Python, no ROS: ControlSys calls it directly (`vision_system.py`). Settings: `configs/vision.yaml`.
+Plain Python, no ROS: ControlSys calls it directly (`vision_system.py`). Settings: `rfp_vision/settings.py` (defaults), changed in the control panel's `vision` section.
 
 - **Camera (VS-10):** `camera.py`: the D405 with depth aligned to color, RealSense recordings, or any OpenCV camera or video (color only: fish are put on the table plane)
 - **Detection (VS-20):** `detector.py`: a training run's YOLO26 segmentation model
 - **Keypoints (VS-30):** YOLO26 pose model, not trained yet
 - **Pose (VS-40):** `fish_list.py`, `geometry.py`: middle, heading, size and the surface's slope under the cups, in the base frame. The table around each fish is measured with depth (`measure_table`), and its height and outline are measured from there: a wrong `table.z` or a camera higher than the arm thinks no longer shrinks every fish (which had made them fail the size and cup checks). The cups go where the fish balances: `balance_ahead_share` of its length ahead of the middle, toward the heavier head, as far as all six still seal, else the middle, else up to `grasp_behind_m` behind it (nowhere: `grasp_point_off_body`). Each cup is checked as the circle it is (`cup_overhang_m` past the outline at most), not the footprint's corners. They lean onto the body's plane under them; a bump under one cup's lip taller than the bellows' stroke (judged against that cup's own plane, so a round body's sloping shoulders don't count), or more unevenness across the cups than the stroke (`cup_stroke_m`), rules a spot out; a smaller fin rules it out only with `strict_seal_check` (off: real fish differ from the prints, and the hold check tells whether the cups sealed); cups over holes in the depth (shiny skin) are left to the outline (`min_cups_measured`). A fish whose head end is unclear is still picked (`require_heading: false`), the cups at its middle, into the slot either way round. `fish_heading.py`: head end from the outline's shape (where it is wide and narrow, where its girth lies: catfish are fattest toward the head) and the body's slope (one frame at a time)
-- **Fish types:** `fish_type` in `configs/vision.yaml` (or the control panel): `stand_in` (printed fish, 0.5-0.8 m: limits that only check it is a fish, 0.35-1.00 m long) or `catfish` (real ones, Table SY-1 ± 10%), each with its size limits and balance point
+- **Fish types:** `fish_type` in the control panel: `stand_in` (printed fish, 0.5-0.8 m: limits that only check it is a fish, 0.35-1.00 m long) or `catfish` (real ones, Table SY-1 ± 10%), each with its size limits and balance point
 - **Output (VS-50, IF-20):** `FishList` with the fields of Tables IF-1 and IF-2
 - **Failure flags (VS-60):** Table VS-2, except `covered` and `invalid_keypoints`; each failed fish says what was measured (`Fish.detail`, e.g. `length 0.62 m (stand_in: 0.80-1.00)`), which ends ran out of the image (`cut_ends`) and where its middle probably is (`Fish.estimate`)
 - **Hold check:** `hold_monitor.py`: whether a held fish is still on the gripper, from its outline and the depth near the camera while the arm moves

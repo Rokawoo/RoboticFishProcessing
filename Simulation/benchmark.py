@@ -5,7 +5,7 @@ scored against the simulator's truth. Run it before and after a change to vision
 or the cycle: the change is better if these numbers are. Nothing real moves; no ROS.
 
 Usage:
-    python Simulation/benchmark.py                 # 20 scenes, fish anywhere (sim.yaml's size)
+    python Simulation/benchmark.py                 # 20 scenes, fish anywhere, the panel's size
     python Simulation/benchmark.py --scenes 50 --label my-change
     python Simulation/benchmark.py --compare Simulation/benchmarks/<run>   # with the change
     python Simulation/benchmark.py --fish-length 0.55 --placement view     # the old easy case

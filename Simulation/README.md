@@ -2,7 +2,7 @@
 
 A virtual cell running the real pick-and-place code: a virtual FR5, gripper and RealSense D405, and catfish from a 3D model, in a 3D window. No ROS; Windows works. How to run it: [top README](../README.md#run-it-in-the-3d-simulation).
 
-Settings: the `simulation` section of [control_panel.yaml](../control_panel.yaml); all of them, explained: [sim.yaml](sim.yaml). Needs `pyvista` (the `sim` extra). The fish is [models/catfish.3mf](models/README.md), the file the stand-ins were printed from. The FR5 is drawn with FAIRINO's link meshes from [frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2), downloaded on the first run at a fixed commit, checked by SHA-256 and kept in `models/fr5/`. They carry no license, so they stay out of Git. A sourced ROS workspace's `fairino_description` or a `robot_meshes` folder is used first; offline or with `download_robot_meshes: false` the arm is plain tubes.
+Settings: the `simulation` section of [control_panel.yaml](../control_panel.yaml); all of them, explained: [rfp_sim/settings.py](rfp_sim/settings.py). Needs `pyvista` (the `sim` extra). The fish is [models/catfish.3mf](models/README.md), the file the stand-ins were printed from. The FR5 is drawn with FAIRINO's link meshes from [frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2), downloaded on the first run at a fixed commit, checked by SHA-256 and kept in `models/fr5/`. They carry no license, so they stay out of Git. A sourced ROS workspace's `fairino_description` or a `robot_meshes` folder is used first; offline or with `download_robot_meshes: false` the arm is plain tubes.
 
 ## Real and simulated
 

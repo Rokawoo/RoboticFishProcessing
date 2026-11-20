@@ -83,9 +83,9 @@ def main() -> None:
     print(f"  Arm/configs/workcell.yaml  tool.tcp: {{xyz: [0.0, 0.0, {gripper.tcp_z:.4f}]}}")
     print(f"                             tool.body: x {_range(low[0], high[0])}, "
           f"y {_range(low[1], high[1])}, z {_range(low[2], gripper.tcp_z - 0.02)}")  # fmt: skip
-    print(f"  Simulation/sim.yaml        cup_rows: {rows}, cup_columns: {columns}")
+    print(f"  rfp_sim/settings.py        cup_rows: {rows}, cup_columns: {columns}")
     span = gripper.cups.max(axis=0) - gripper.cups.min(axis=0) + 2 * gripper.cup_radius
-    print(f"  Vision/configs/vision.yaml cup_footprint_m: [{span[0]:.3f}, {span[1]:.3f}], "
+    print(f"  rfp_vision/settings.py     cup_footprint_m: [{span[0]:.3f}, {span[1]:.3f}], "
           f"cup_diameter_m: {gripper.cup_radius * 2:.3f}")  # fmt: skip
     print("  and camera.mount (workcell.yaml) at the camera's lens, in the same frame:")
     print(f"  the flange's middle at z {FLANGE_Z}, z toward the cups, x along the cup rows.")

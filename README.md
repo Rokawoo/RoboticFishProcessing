@@ -168,7 +168,7 @@ Details: [Simulation/README.md](Simulation/README.md).
 
 ## Set up the workcell
 
-[Arm/configs/workcell.yaml](Arm/configs/workcell.yaml) holds the cell's geometry and limits, in meters and degrees; the `workcell` section of [control_panel.yaml](control_panel.yaml) overrides any of it. It ships with placeholder values and `verified: false`: the real arm won't move until the cell is measured and `verified: true`.
+[Arm/configs/workcell.yaml](Arm/configs/workcell.yaml) holds the cell's geometry, in meters and degrees; its limits (speeds, grasp, gripper, the wrist's range, the placement heading) are in the `workcell` section of [control_panel.yaml](control_panel.yaml), with their defaults in `Arm/rfp_arm/workcell.py`. A setting is in one of the two files, not both. It ships with placeholder values and the panel's `verified: false`: the real arm won't move until the cell is measured and `verified: true`.
 
 ### Lay it out in 3D
 
@@ -190,7 +190,7 @@ The rest follows by itself:
 - A keep-out zone along a table edge stays along it as the table is sized; every zone turns with the cell.
 - Everything is checked after every change. Red is what can't work (out of the arm's reach, a placed fish off the table, the arm in a keep-out zone); yellow is what may not (a fish that can't be lifted there, part of the pick area no view sees, slots closer than a fish is wide). Save with red left asks for a second click.
 
-Save changes only the layout's lines (comments stay; a `.bak` copy of each file is kept), in control_panel.yaml where it overrides the workcell file. A `verified` cell becomes unverified: check the new zones on the real cell. Every mode prints the same checks when it starts. The placement heading, the keep-out zones' sizes and the observation poses are set in the files ([what to set](#what-to-set)).
+Save changes only the layout's lines (comments stay; a `.bak` copy of each file is kept), in control_panel.yaml for what it holds (the heading), else in the workcell file. A `verified` cell becomes unverified: check the new zones on the real cell. Every mode prints the same checks when it starts. The placement heading, the keep-out zones' sizes and the observation poses are set in the files ([what to set](#what-to-set)).
 
 ### Which way is which
 
@@ -233,7 +233,7 @@ Turned the other way, or the placements on the other side: `--mode setup` (two b
 | `table.z` | Height of the table top | 0 if the arm stands on the table. Vision measures the table around each fish with depth and says if it is more than 15 mm from this: set it then |
 | `zones.exclusion` | Boxes the arm never enters (operator, equipment) | The layout check puts the arm's links and gripper against them where it looks, picks and places; MoveIt checks them along every path on the real arm |
 | `observation.poses` | Where the camera looks down from while searching, `observation.height` above the table | Together they must see the whole pick area. From 0.45 m the camera sees about 0.85 × 0.48 m, long side along `yaw_deg`: one pose over the middle of a pick area smaller than that sees all of it, and the search is one look (`--mode setup` shows the views). Prefer taught `joints_deg`, with j6 near 0 |
-| `observation.close_height` | The highest a look at one fish goes | Looks over a fish are from as high as its expected length needs (`look_margin` in control.yaml), between `observation.height` and this. The image's long side spans about 1.9 × (height − the fish's height): 0.62 holds the 0.79 m stand-in |
+| `observation.close_height` | The highest a look at one fish goes | Looks over a fish are from as high as its expected length needs (`control.look_margin`), between `observation.height` and this. The image's long side spans about 1.9 × (height − the fish's height): 0.62 holds the 0.79 m stand-in |
 | `tool.wrist_range_deg` | How far j6 may turn (vacuum tube) | j6 = 0 where the tube hangs untwisted. Plans turn a held fish at most 180°, keep the empty gripper within 90° of the middle where they can and turn the wrist at most 180° in one move; the arm returns to the middle after each place |
 | `tool.tcp`, `camera.mount` | Cup faces' middle and camera lens, measured on the gripper | A `dry-run` or `run` measures the mount (its turn and where the lens is across the tool) from a few small moves over a fish while `camera.calibrated` is false, and sets it; `--calibrate` measures it again |
 | `gripper` | What switches the vacuum: `driver: serial` and `serial_port` for the valve board | Test: `python Arm/scripts/gripper_bench.py status` |
@@ -294,7 +294,7 @@ If the arm went the other way than the fish in the image, the camera is mounted 
 
 ## Control panel
 
-[control_panel.yaml](control_panel.yaml) holds the settings changed most often (mode, camera, model, gripper port, speeds, grasp forces, vision thresholds, attempt limits) and overrides the subsystem files: `Arm/configs/workcell.yaml`, `Vision/configs/vision.yaml`, `ControlSys/configs/control.yaml`, `Simulation/sim.yaml`. Any of their settings can be added to it.
+[control_panel.yaml](control_panel.yaml) is where settings are changed (mode, camera, model, gripper port, speeds, grasp forces, vision thresholds, attempt limits). Each setting is written once: its default and explanation in the code's settings class (`rfp_vision/settings.py`, `rfp_controlsys/settings.py`, `rfp_sim/settings.py`, `rfp_arm/workcell.py`), the cell's measurements in `Arm/configs/workcell.yaml`, and any value changed from its default in the panel. Any setting of those classes can be added to the panel under its section.
 
 ## Documentation
 

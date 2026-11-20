@@ -41,6 +41,8 @@ def frozen_layout() -> Layout:
 def workcell_data() -> dict:
     """The mapping of Arm/configs/workcell.yaml with the tests' layout, to change and load."""
     data = yaml.safe_load(DEFAULT_FILE.read_text(encoding="utf-8"))
+    for section in ("motion", "grasp", "gripper"):  # the defaults, to change in a test
+        data.setdefault(section, {})
     return with_layout(data, TEST_LAYOUT)
 
 

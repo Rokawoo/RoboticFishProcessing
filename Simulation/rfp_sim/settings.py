@@ -1,11 +1,14 @@
-"""Simulation settings, from Simulation/sim.yaml with the control panel's `simulation` section."""
+"""Simulation settings: the defaults here, changed in the control panel (control_panel.yaml,
+section `simulation`)."""
 
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
+from rfp_arm.workcell import PANEL_FILE, merged, panel_section
+from rfp_vision.settings import read_settings
+
 SIM_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_FILE = SIM_DIR / "sim.yaml"
 MESH_CACHE = SIM_DIR / "models" / "fr5"  # FAIRINO's FR5 meshes, downloaded (not in Git)
 
 
@@ -55,23 +58,15 @@ class SimSettings:
     window: tuple[int, int] = (1280, 800)
 
 
-def load_settings(path: Path | None = None, panel: Path | None = None) -> SimSettings:
-    """Settings from sim.yaml (defaults if missing) with the control panel's `simulation`
-    section on top; `panel` defaults to the repository's control_panel.yaml."""
-    import yaml
-    from rfp_controlsys.settings import PANEL_FILE, merged, panel_section
-
-    path = path or DEFAULT_FILE
-    data = {}
-    if path.is_file():
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    elif path != DEFAULT_FILE:
-        raise FileNotFoundError(f"simulation settings not found: {path}")
-    data = merged(data, panel_section(PANEL_FILE if panel is None else panel, "simulation"))
+def load_settings(path: Path | None = None, panel: Path | None = PANEL_FILE) -> SimSettings:
+    """The defaults, with a settings file's values (`path`, optional) and the control panel's
+    `simulation` section on top (`panel=None`: without it)."""
+    data = merged(read_settings(path, "simulation settings"), panel_section(panel, "simulation"))
     names = {f.name for f in dataclasses.fields(SimSettings)}
     unknown = sorted(set(data) - names)
     if unknown:
-        raise ValueError(f"{path.name}: unknown setting(s): {', '.join(unknown)}")
+        where = path.name if path else "simulation settings"
+        raise ValueError(f"{where}: unknown setting(s): {', '.join(unknown)}")
     return SimSettings(**{k: tuple(v) if isinstance(v, list) else v for k, v in data.items()})
 
 

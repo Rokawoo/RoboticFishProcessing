@@ -674,8 +674,8 @@ def test_a_stale_fish_list_starts_no_grasp():
 # ---------------------------------------------------------------------------
 # Settings, console, script
 # ---------------------------------------------------------------------------
-def test_control_settings_file_matches_the_defaults(tmp_path):
-    assert load_settings() == ControlSettings()  # ControlSys/configs/control.yaml
+def test_control_settings_from_a_file_reject_unknown_names(tmp_path):
+    assert load_settings(panel=None) == ControlSettings()
     custom = tmp_path / "control.yaml"
     custom.write_text("max_attempts_per_fish: 2\n")
     assert load_settings(custom, panel=None).max_attempts_per_fish == 2
@@ -805,18 +805,45 @@ def test_the_run_says_how_fast_the_cell_worked():
     assert pick_place.pace(0, 65.0) == "1 min 05 s"  # nothing placed: the time alone
 
 
-def test_control_panel_overrides_the_settings_files_everywhere(tmp_path):
+def test_each_setting_is_written_in_one_place():
+    import yaml
+    from rfp_arm.workcell import DEFAULT_FILE, PANEL_FILE
+
+    def leaves(data, path=()):
+        for key, value in data.items():
+            if isinstance(value, dict):
+                yield from leaves(value, (*path, key))
+            else:
+                yield (*path, key)
+
+    def has(data, path):
+        for key in path:
+            if not isinstance(data, dict) or key not in data:
+                return False
+            data = data[key]
+        return True
+
+    panel = yaml.safe_load(PANEL_FILE.read_text(encoding="utf-8"))["workcell"]
+    cell = yaml.safe_load(DEFAULT_FILE.read_text(encoding="utf-8"))
+    twice = [".".join(p) for p in leaves(panel) if has(cell, p)]
+    assert not twice, f"set in both control_panel.yaml and workcell.yaml: {twice}"
+    for folder in ("Vision/configs", "ControlSys/configs", "Simulation"):  # no copies of
+        root = PANEL_FILE.parent / folder  # the dataclasses' defaults
+        assert (
+            not list(root.glob("vision.yaml"))
+            + list(root.glob("control.yaml"))
+            + list(root.glob("sim.yaml"))
+        )
+
+
+def test_control_panel_overrides_the_defaults_everywhere(tmp_path):
     from rfp_arm.workcell import WorkcellError
     from rfp_controlsys.settings import run_defaults
+    from rfp_sim.settings import load_settings as load_sim
     from rfp_vision.settings import load_settings as load_vision
 
-    # The shipped panel repeats the files' values: with or without it, nothing changes.
-    assert load_vision() == load_vision(panel=None)
-    assert load_settings() == load_settings(panel=None)
-    with_panel, without = load_workcell(), load_workcell(panel=None)
-    for part in ("verified", "motion", "grasp", "gripper", "wrist_range", "placement_heading"):
-        assert getattr(with_panel, part) == getattr(without, part), part
-    assert run_defaults()["mode"] is None and run_defaults()["window"] is True
+    load_vision(), load_settings(), load_workcell(), load_sim()  # the shipped panel loads
+    assert run_defaults(tmp_path / "no_panel.yaml")["window"] is True
 
     panel = tmp_path / "panel.yaml"
     panel.write_text(

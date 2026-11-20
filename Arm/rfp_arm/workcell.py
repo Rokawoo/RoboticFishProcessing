@@ -1,7 +1,9 @@
 """
 The workcell: frames, tool, zones, observation poses, placement slots and every motion
-and gripper limit (SF-10, SF-11, AS-11, AS-51, AS-40), loaded from Arm/configs/workcell.yaml
-before any motion. The file uses meters and degrees; here angles are radians. No ROS.
+and gripper limit (SF-10, SF-11, AS-11, AS-51, AS-40), loaded before any motion from
+Arm/configs/workcell.yaml (the cell as measured) with control_panel.yaml on top. The limits'
+defaults are the dataclasses' here, and nowhere else. The files use meters and degrees; here
+angles are radians. No ROS.
 
 All positions are in the arm base frame {B} (MoveIt's base_link).
 """
@@ -26,6 +28,13 @@ PANEL_SECTIONS = ("run", "workcell", "vision", "control", "simulation")
 # left, the operator asked about it. Within this past the edge it still counts as inside
 # (CS-13); whether it is picked, the plan's own checks decide (reach, zones, the arm).
 PICK_AREA_TOLERANCE = 0.03  # m
+# How far the last joint (j6) may turn, unless the cell says otherwise (tool.wrist_range_deg).
+# The vacuum tube runs into the gripper, so the wrist must never wind a full turn: plans that
+# leave this range are refused, each grasp takes the way round that turns it least (10 deg
+# clear of the ends where it can), and the arm returns to its observation pose after every
+# fish. 0 is where the tube hangs free.
+WRIST_RANGE_DEG = (-170.0, 170.0)
+HEADING_DEG = 0.0  # where placed fish point their heads: from +X toward +Y (AS-52)
 
 
 def panel_section(panel: Path | None, name: str) -> dict:
@@ -156,13 +165,16 @@ class GraspSettings:
     release_clearance: float = 0.015  # cup faces above the fish's resting height (AS-24)
     retreat_distance: float = 0.10
     seal_timeout: float = 1.0  # no hold this long after the approach: E_NO_SEAL
-    seal_dwell: float = 1.0  # without a vacuum switch: wait this long for the vacuum to build
-    release_dwell: float = 1.0  # without a vacuum switch: wait this long for it to let go
+    seal_dwell: float = 0.6  # without a vacuum switch: wait this long for the vacuum to build
+    release_dwell: float = 0.6  # without a vacuum switch: wait this long for it to let go
     drop_time: float = 0.1  # holding not reported this long while carrying: E_DROP
     release_timeout: float = 1.0  # vacuum still there this long after release: E_RELEASE
     max_approach_tilt_deg: float = 15.0  # the cups lean at most this far onto a fish (AS-21)
     # Feeling for the fish (arms that report joint torques): from feel_start above where
-    # vision saw the surface, down in steps until something pushes back, then press.
+    # vision saw the surface, down in steps until contact_force pushes back, then
+    # press_distance further (or until press_force_max). No contact by feel_max_depth past
+    # the expected surface: no fish there (E_NO_SEAL). Tune the forces with --mode check
+    # (push the cups). False: to the expected surface + press_distance, blind
     feel_contact: bool = True
     feel_start: float = 0.015  # m
     feel_step: float = 0.003  # m
@@ -172,22 +184,29 @@ class GraspSettings:
     press_force_max: float = 40.0  # N: stop pressing, whatever press_distance says
     feel_max_depth: float = 0.025  # m past the expected surface with no contact: E_NO_SEAL
     # Controller commands (ros2_cmd_server lines) sent before pressing and after the hold
-    # is confirmed, e.g. to make the wrist compliant while the cups settle
+    # is confirmed, e.g. to make the wrist compliant while the cups settle: the controller's
+    # ImpedanceControlStartStop(status, workSpace, forceThreshold x6, m x6, b x6, k x6, maxV,
+    # maxVA, maxW, maxWA). Empty: its parameters have to be found on the arm, without a fish
+    # first
     press_start_commands: tuple[str, ...] = ()
     press_end_commands: tuple[str, ...] = ()
 
 
 @dataclass
 class GripperSettings:
-    """How the vacuum is switched (AS-30): by the ESP32 valve board (USB serial or
-    Wi-Fi), or by the FR5 control box I/O of HW-33 and HW-34."""
+    """How the vacuum of the six cups is switched (AS-30): "serial", the ESP32 valve board
+    over USB (Arm/firmware/valve_control); "http", the same board over Wi-Fi; "controller",
+    the FR5 control box's digital I/O with a vacuum switch (HW-33, HW-34). The valve board
+    confirms each switch but can't tell whether the cups hold: with it, the camera confirms
+    the hold. Try it with: python Arm/scripts/gripper_bench.py on"""
 
-    driver: str = "controller"  # "serial", "http" (the valve board) or "controller" (FR5 I/O)
-    serial_port: str = ""  # /dev/ttyACM0, COM3, ...
+    driver: str = "serial"
+    serial_port: str = "/dev/ttyACM0"  # Windows: COM3, ...
     serial_baud: int = 115200
     http_host: str = ""  # the board's address; 192.168.4.1 on its own access point
     valve_timeout: float = 2.0  # s to wait for the board's answer
     valve_inverted: bool = False  # True: the vacuum is on while the valve is off
+    # driver "controller" only
     vacuum_do: int = 0
     blowoff_do: int = 1
     holding_di: int = 0  # vacuum switch output 1: on at the holding threshold (AS-31)
@@ -221,7 +240,7 @@ class Workcell:
     # Camera height above the table (m) for a look centered on one fish; None: no such looks
     close_look_height: float | None = None
     # How far the last joint may turn (rad): the vacuum tube must not wind up
-    wrist_range: tuple[float, float] = (math.radians(-180.0), math.radians(180.0))
+    wrist_range: tuple[float, float] = tuple(math.radians(v) for v in WRIST_RANGE_DEG)
     motion: MotionLimits = field(default_factory=MotionLimits)
     grasp: GraspSettings = field(default_factory=GraspSettings)
     gripper: GripperSettings = field(default_factory=GripperSettings)
@@ -415,7 +434,7 @@ def workcell_from_mapping(data: dict) -> Workcell:
         calibration_version=str(camera.get("calibration_version", "")),
         tool_box=None if body is None else Box("tool", *(_range(body[k]) for k in "xyz")),
         wrist_range=tuple(
-            math.radians(v) for v in _range(tool.get("wrist_range_deg", (-170.0, 170.0)))
+            math.radians(v) for v in _range(tool.get("wrist_range_deg", WRIST_RANGE_DEG))
         ),
         table_z=table_z,
         table_clearance=float(table.get("clearance", 0.005)),
@@ -437,7 +456,7 @@ def workcell_from_mapping(data: dict) -> Workcell:
             if observation.get("close_height") is not None
             else None
         ),
-        placement_heading=math.radians(float(placement.get("heading_deg", 0.0))),
+        placement_heading=math.radians(float(placement.get("heading_deg", HEADING_DEG))),
         slots=[(float(x), float(y)) for x, y in placement["slots"]],
         motion=_settings(MotionLimits, data.get("motion"), "motion"),
         grasp=_settings(GraspSettings, data.get("grasp"), "grasp"),

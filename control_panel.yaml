@@ -1,12 +1,12 @@
-# Control panel: the settings changed most often, in one place.
-#
-# Every value here overrides the same setting in the subsystem's own file, which holds the
-# full list with explanations:
-#   workcell  Arm/configs/workcell.yaml        vision   Vision/configs/vision.yaml
-#   control   ControlSys/configs/control.yaml
-# Any setting of those files can be added below under its section. Unknown names are
-# errors. Units: meters, degrees, seconds, newtons. `run` holds the defaults of
-# pick_place.py's command line (an option given on the command line wins).
+# Control panel: where settings are changed. Each setting is written in one place: here,
+# or (the cell's measurements) in Arm/configs/workcell.yaml, never both. Anything not set
+# here has its default in the code, where every setting is listed with its explanation:
+#   workcell    Arm/rfp_arm/workcell.py (MotionLimits, GraspSettings, GripperSettings)
+#   vision      Vision/rfp_vision/settings.py        control  ControlSys/rfp_controlsys/settings.py
+#   simulation  Simulation/rfp_sim/settings.py
+# Any of them can be added below under its section. Unknown names are errors. Units: meters,
+# degrees, seconds, newtons. `run` holds the defaults of pick_place.py's command line (an
+# option given on the command line wins).
 
 run:
   mode: null          # setup | sim3d | sim | check | dry-run | run; null: ask
@@ -37,8 +37,8 @@ workcell:
     contact_force: 15.0         # N that count as touching it     (tune: --mode check)
     press_force_max: 40.0       # N at which pressing stops
     press_distance: 0.010       # m pressed on after contact
-    seal_dwell: 1.0             # s for the vacuum to build up
-    release_dwell: 1.0          # s for it to let go
+    seal_dwell: 0.6             # s for the vacuum to build up
+    release_dwell: 0.6          # s for it to let go
     lift_height_max: 0.50       # m above the table
   tool:
     wrist_range_deg: [-170, 170]   # how far the last joint may turn (vacuum tube)
@@ -58,7 +58,7 @@ vision:
     use_depth: true
     lost_frames: 3
 
-simulation:                     # pick_place.py --mode sim3d (Simulation/sim.yaml lists all)
+simulation:                     # pick_place.py --mode sim3d
   fish_model: models/catfish.3mf  # relative to Simulation/; missing: a plain stand-in shape
   fish_length: 0.60             # m, scaled to it: about the real fish (0.79: the big prints)
   placement: anywhere           # anywhere: as fish really lie; view: only where a view sees all
