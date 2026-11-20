@@ -1,12 +1,10 @@
 """
-The vacuum valve's ESP32 board (firmware: Arm/firmware/valve_control), from the PC:
-over USB serial or over Wi-Fi HTTP. The board answers every command with one line,
-"OK ON", "OK OFF" or "ERR ...", so a command that didn't take effect is noticed.
+The vacuum valve's ESP32 board (firmware: Arm/firmware/valve_control) over USB serial or
+Wi-Fi HTTP. It answers every command ("OK ON", "OK OFF", "ERR ..."), so a command that
+didn't take is noticed. Serial needs pyserial. No ROS.
 
     valve = SerialValve("/dev/ttyACM0")      # or HttpValve("192.168.4.1")
     valve.on(); valve.off(); valve.pulse(500); valve.is_on()
-
-Serial needs pyserial. No ROS.
 """
 
 import time

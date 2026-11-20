@@ -1,27 +1,18 @@
 """
-The FR5 controller through frcobot_ros2's ros2_cmd_server: digital outputs with the
-`SetDO(id,status)` string command on /fairino_remote_command_service, and digital inputs,
-outputs, emergency stop and error codes from the state it publishes on /nonrt_state_data
-(10-100 Hz). FairinoIO is the GripperIO of the real gripper (gripper.py).
+The FR5 controller through frcobot_ros2's ros2_cmd_server (./robot.sh starts it): digital
+outputs by `SetDO(id,status)` on /fairino_remote_command_service; inputs, outputs, emergency
+stop and errors from its state on /nonrt_state_data. FairinoIO is the real gripper's I/O.
 
-Firmware 3.7 and newer, read from each driver's source (frcobot_ros2's tags), not all
-checked on an arm:
-- The state message: up to firmware 3.8.0 one `error_code`; from 3.8.2 `main_error_code` and
-  `sub_error_code`. The newest driver's version dispatcher publishes empty states with
-  `reconnect_flag` 1 (or 2) while it isn't connected to the controller.
-- The command's answer: the driver for firmware 3.7.5 and older (V2, no `abnormal_stop` in
-  its state) answers "1" for success and "0" for an error; from 3.7.6 (V3, the SDK's
-  error code) "0" for success, "-1" for a command it can't read.
-Outputs are confirmed from the state as well, whatever the answer says.
-`pick_place.py --mode check` prints which driver it found and what it reads.
-
-A driver that publishes no state at all (with a 3.7 controller: one built for another
-firmware; FAIRINO's newest server publishes only empty ones there) is named as the cause;
-`connect(require_state=False)` goes on without it ("stateless"): the generation from whether
-it answers GetRobotVersion(), outputs judged by the answer, no faults or torques read here
-(the controller still stops the arm itself).
-
-Start the server with: ros2 run fairino_hardware ros2_cmd_server (./robot.sh starts it).
+Firmware 3.7 and newer, read from each driver's source:
+- State: up to 3.8.0 one `error_code`, from 3.8.2 `main_error_code` and `sub_error_code`.
+  The newest driver's dispatcher publishes empty states with `reconnect_flag` 1 or 2 while
+  it has no driver for the controller.
+- Answers: the 3.7.5 driver and older (no `abnormal_stop` in its state) "1" for success;
+  from 3.7.6 "0", "-1" for a command it can't read. Outputs are confirmed from the state.
+- No state at all (a driver for other firmware, the controller unreachable, a second
+  server): `connect` names the cause; `connect(require_state=False)` goes on without it,
+  outputs judged by the answer, no faults or torques read (the controller still stops the
+  arm itself).
 """
 
 import math

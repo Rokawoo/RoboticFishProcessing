@@ -1,12 +1,12 @@
 # Vision data pipeline
 
-Dataset and training tools; Requirement Spec **Section 2.3 (VD)**. How to run the six steps: [Vision/README.md](../README.md#building-the-fish-model).
+Dataset and training tools (Requirement Spec Section 2.3, VD). How to run the six steps: [Vision/README.md](../README.md#building-the-fish-model).
 
-| Folder | Stage | Spec |
-|---|---|---|
-| `preprocessing/` | Frames from recordings, named by fish and view, minus blurry and near-duplicate frames | VD-10 to VD-37, Appendix C.1 |
-| `annotating/` | Labeling (auto labeler and/or Label Studio), augmentation, label review | VD-40 to VD-65, Appendix C.2 |
-| `preprocessing/train_val_data_splitter.py`, `training/` | Train/val/test split, YOLO26 training with MLflow tracking, evaluation | VD-70 to VD-94, Appendix C.3 and C.10 |
+| Folder | Stage |
+|---|---|
+| `preprocessing/` | Frames from recordings, minus blurry and near-duplicate ones; the train/val/test split |
+| `annotating/` | Labeling (auto labeler or Label Studio), augmentation, label review |
+| `training/` | YOLO26 training with MLflow tracking |
 
 ```
 Vision/

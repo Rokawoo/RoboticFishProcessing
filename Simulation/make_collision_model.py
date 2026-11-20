@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
 """
-Make the arm's collision model: the FR5's links (FAIRINO's meshes) and the gripper as built
-(Simulation/models/gripper.stl) as spheres, written to Arm/configs/collision_model.yaml. The
-arm checks every planned path and pose against it so it never runs into itself
-(rfp_arm/collision.py, NumPy only: no meshes on the robot PC). Run it again after changing
-the gripper's model (a test checks the model was made from the gripper file there now).
-
-Each body is made solid (holes capped, gaps and hollows narrower than --closed counted as
-solid: the cups and the space between them, the camera bracket), then covered: every point
-of its surface lies in a sphere, and no sphere reaches more than its margin past the solid
-(--margin; less for the forearm and wrist 2, MARGINS). Neighbors at a joint always touch
-there and aren't checked against each other; nor are bodies whose meshes never come within
-NEVER of each other in random arm poses (where their spheres do touch): the checks follow
-the real shapes, not the margins.
+Make the arm's collision model: the FR5's links and the gripper as built as spheres, written
+to Arm/configs/collision_model.yaml (every planned path is checked against it). Run it again
+after changing the gripper's model (a test checks). Each body is made solid, then covered so
+every point of it is in a sphere and no sphere reaches more than its margin past it.
+Neighbors at a joint, and bodies that never come close in random poses, aren't checked
+against each other.
 
 Usage:
     python Simulation/make_collision_model.py                # write the model

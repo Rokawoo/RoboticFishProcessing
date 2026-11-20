@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Taught demos: play back a sequence of hand-taught arm poses with the vacuum switched on
-and off between them, or record a new one. No camera and no model: the arm goes where it
-was taught. Demo files live in Demos/ at the top of the repository.
+Taught demos: play back hand-taught arm poses with the vacuum switched on and off between
+them, or record a new one. No camera: the arm goes where it was taught. Files: Demos/.
 
 Usage:
     python demo.py                              # pick a demo and a mode in popups
@@ -12,17 +11,15 @@ Usage:
     python demo.py play fish_pickup --mode real --auto      # THE ARM MOVES, straight through
     python demo.py record my_demo               # teach a new one (the arm is only read)
 
-Playing: every step waits for Enter unless --auto. Taught poses are trusted as they are:
-the work zone and table checks of the workcell file are off for a demo, while the speed,
-wrist and joint-travel limits still apply. Ctrl+C stops the arm where it is.
+Taught poses are trusted: the zone checks are off for a demo; the speed, wrist and joint
+limits still apply. Ctrl+C stops the arm.
 
-Recording: bring the arm to a pose by hand or with the pendant, then type one of
+Recording: bring the arm to a pose by hand or with the pendant, then type
     j <name>   go to this pose with a joint move        on / off    switch the vacuum
     l <name>   go to this pose in a straight line       w <s>       wait
     done       save                                     undo        drop the last step
 
-sim, real and record need ROS 2 with MoveIt running (see pick_place.py); real also needs
-the gripper of the workcell file and, for the controller's fault state, ros2_cmd_server.
+sim, real and record need MoveIt running (see pick_place.py).
 """
 
 import argparse

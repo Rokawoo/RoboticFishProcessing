@@ -1,94 +1,10 @@
 """
-Head direction of each detected fish, from the geometry of its segmentation mask, kept
-while the camera moves closer and the head leaves the frame (Requirement Spec VS-40,
-VS-60).
-
-Status: measuring one outline (H-6 to H-11) is implemented; its cue weights and scales
-are first values, to be tuned on labeled real footage (H-23). Stricter than H-10 for
-now: an outline with a cut end gives no measurement. Not implemented yet: keypoints
-(H-12, no pose model) and HeadingMemory (H-13 to H-18).
-
-Requirements
-============
-
-Conventions
-    H-1  Heading = direction from tail to head. Image: unit vector and angle in pixels
-         (x right, y down). Base frame {B}: yaw about the table normal, radians,
-         counter-clockwise from +x of {B}, in (-pi, pi].
-    H-2  All lengths in pixels (image) or meters ({B}); angles in radians. Thresholds
-         live in HeadingSettings (later Vision/configs), each with its unit.
-    H-3  This module is plain Python + NumPy/OpenCV, no ROS: the vision node calls it,
-         and it is testable offline on recorded frames (model_viewer, labeled sets).
-
-Input (per frame)
-    H-4  Per fish: its outline from the segmentation model (polygon, image px) and
-         detection confidence. Plus the image size and the frame's timestamp.
-    H-5  Optional per frame: the camera pose in {B} (hand-eye calibration + arm
-         kinematics), camera intrinsics and depth. Without them only image-space
-         tracking (H-17) is possible.
-
-Measuring the heading in one frame (geometry only)
-    H-6  Body axis: the fish's centroid and long axis from the outline (second-order
-         moments / PCA). The axis has no sign yet: it says along which line the fish
-         lies, not which end is the head.
-    H-7  Head vs tail, from the catfish's shape along the axis:
-           - width profile: the head end is wide and blunt; toward the tail the body
-             narrows to the caudal peduncle and flares again at the tail fin;
-           - mass distribution: more of the area lies on the head side of the
-             centroid (skewness of the outline's projection onto the axis);
-           - girth: seen from above a catfish is an ellipse fattest toward its head, so
-             the widest section (tail fin aside) lies on the head side of the middle;
-           - tail fork: concave notch (convexity defect) at the tail end.
-         Each cue gives a signed vote with a weight; the sum gives the head end and a
-         confidence in [0, 1].
-    H-8  The fish's ends are found as the outline's extreme points along the axis;
-         head point and tail point are reported in image px (and in {B} with H-5).
-    H-9  Bent fish (curved body) must still give the right end: cues are measured near
-         each end, not only on the straight axis.
-    H-10 Fish cut by the frame edge: detect which ends touch the image border (within
-         a margin). Cues from a cut end are not used; a cut end may be the head. If
-         neither end can be judged, the frame gives no measurement (H-14).
-    H-11 Touching or overlapping fish: each outline is measured on its own; the cues
-         must not use pixels of a neighbor's outline.
-    H-12 Pose model (VS-30): when head/tail keypoints from a pose model are available
-         and confident, they take precedence; geometry is the fallback and a cross-
-         check. Disagreement above a threshold is flagged (H-19).
-
-Keeping the heading (camera moving closer, head out of frame)
-    H-13 The heading belongs to the fish, not to the image: fish on the table don't
-         move between the observation pose and the grasp, so the last confident
-         heading is stored per fish in {B}.
-    H-14 Each frame, detections are matched to stored fish by position in {B} (and
-         outline overlap). A matched fish whose heading can't be measured in this
-         frame (head out of frame, low confidence) keeps its stored heading.
-    H-15 A kept heading follows the current view: its axis is re-measured from the
-         current outline (more precise as the camera gets closer) and its sign is the
-         one closest to the stored heading (positive dot product).
-    H-16 A confident new measurement updates the stored heading (weighted by
-         confidence); one that contradicts it (about 180 degrees off) doesn't flip it
-         alone: it needs N consecutive confident frames, else the fish is flagged.
-    H-17 Without a camera pose (offline videos): match fish frame to frame in the image
-         (centroid distance, overlap) and keep the heading for at most a set time.
-    H-18 The memory of a fish is dropped when the fish moved (position change or axis
-         rotation above a threshold: picked, nudged, flipped) or wasn't seen for a
-         set time; it is re-measured, or reported unknown.
-
-Output (per fish, per frame)
-    H-19 HeadingEstimate: image angle and unit vector, yaw in {B} (with H-5), head and
-         tail points, confidence, source ("measured", "keypoints", "kept", "unknown"),
-         flags (end cut by the frame, ambiguous shape, keypoints disagree, kept for
-         too long), and the age of a kept heading.
-    H-20 Never guess (VS-60): below the confidence threshold the heading is "unknown".
-         ControlSys must not grasp or place a fish without a known heading.
-
-Performance and testing
-    H-21 Fast enough for every frame of the vision node (target in the Requirement
-         Spec; budget a few ms per fish on the CPU).
-    H-22 Deterministic: same outline + same settings = same result.
-    H-23 Tests: synthetic catfish outlines (body + forked tail) at every heading, bent,
-         cut by each frame edge, touching another fish; a camera approach sequence
-         where the head leaves the frame. Real frames: compare with hand-marked head
-         points; report the share of correct ends and the angle error.
+Which end of a fish is its head, from its outline (VS-40, VS-60): the body axis from the
+outline's moments, then votes from the width profile (the head end is wide and blunt), where
+the area and the girth lie (catfish are fattest toward the head) and the tail fork, plus the
+body's slope from depth when given. A cut-off end isn't used. Weights and scales are first
+values, to be tuned on labeled real footage. Not done: keypoints from a pose model, a heading
+kept per fish across frames. No ROS.
 """
 
 from dataclasses import dataclass, field
@@ -98,29 +14,22 @@ import numpy as np
 
 @dataclass
 class HeadingSettings:
-    """Thresholds (H-2). Values TBD from tests on real footage."""
-
-    min_confidence: float = 0.6  # H-20: below this the heading is unknown
-    edge_margin_px: float = 3.0  # H-10: an outline this close to the border is cut
-    max_keypoint_disagreement_rad: float = 0.5  # H-12
-    flip_confirm_frames: int = 3  # H-16
-    max_move_m: float = 0.03  # H-18: fish moved more than this: memory dropped
-    max_turn_rad: float = 0.35  # H-18
-    max_unseen_s: float = 2.0  # H-17, H-18
+    min_confidence: float = 0.6  # below this the heading is unknown
+    edge_margin_px: float = 3.0  # an outline this close to the image's border is cut off
 
 
 @dataclass
 class FishObservation:
-    """One detected fish in one frame (H-4)."""
+    """One detected fish in one frame."""
 
     polygon: np.ndarray  # (n, 2) image px
     confidence: float
-    keypoints: np.ndarray | None = None  # pose model (H-12): head, tail, ... (k, 3)
+    keypoints: np.ndarray | None = None  # from a pose model (not used yet): (k, 3)
 
 
 @dataclass
 class HeadingEstimate:
-    """Result per fish per frame (H-19)."""
+    """The heading of one fish in one frame."""
 
     angle_image: float | None  # rad, image coordinates; None if unknown
     direction_image: np.ndarray | None  # unit vector tail -> head
@@ -130,10 +39,9 @@ class HeadingEstimate:
     confidence: float
     source: str  # "measured", "keypoints", "kept", "unknown"
     flags: set[str] = field(default_factory=set)
-    kept_for_s: float = 0.0
 
 
-# Cues of head_vote: weight, and the raw value that counts as a full vote (H-7). First
+# Cues of head_vote: weight, and the raw value that counts as a full vote. First
 # values, from the outlines of the 3D-printed stand-in fish seen from above: centroid
 # 0.02-0.03 toward the head, end widths differing by 0.17-0.20, tail fin 2x its peduncle.
 CUE_WEIGHTS = {"mass": 1.0, "width": 2.0, "waist": 2.0, "girth": 1.0, "height": 2.0}
@@ -170,9 +78,9 @@ def polygon_moments(polygon: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]
 
 def body_axis(polygon: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    Centroid and unsigned unit long axis of an outline (H-6), from the area's second-order
+    Centroid and unsigned unit long axis of an outline, from the area's second-order
     moments. Of the two directions, the one with x > 0 (y > 0 if x is 0) is returned, so
-    the same outline always gives the same axis (H-22).
+    the same outline always gives the same axis.
     """
     _, centroid, covariance = polygon_moments(polygon)
     values, vectors = np.linalg.eigh(covariance)
@@ -226,7 +134,7 @@ def cut_ends(
     polygon: np.ndarray, axis: np.ndarray, image_size: tuple[int, int], margin_px: float
 ) -> tuple[bool, bool]:
     """
-    Whether the (+axis, -axis) ends touch the frame edge (H-10): an outline point within
+    Whether the (+axis, -axis) ends touch the frame edge: an outline point within
     `margin_px` of the border of the (width, height) image, in that end's quarter of the fish.
     """
     points = np.asarray(polygon, float).reshape(-1, 2)
@@ -247,16 +155,13 @@ def head_vote(
     height_rise: float | None = None,
 ) -> tuple[float, float, dict[str, float]]:
     """
-    (signed vote: > 0 = head toward +axis, confidence, per-cue votes) (H-7, H-9).
+    (signed vote: > 0 = head toward +axis, confidence, per-cue votes).
 
-    Cues, each in [-1, 1]: "mass" (the centroid lies on the head side of the middle),
-    "width" (the head is wider 10-20% from its end than the tail is 10-20% from its end,
-    where the caudal peduncle lies), "waist" (the narrowest section is near the tail
-    and the outline flares again beyond it: the tail fin) and "girth" (where it is widest,
-    between 15% and 85% of its length, lies toward the head). With depth there is a fifth,
-    "height": a fish is thickest toward its head, so its surface slopes down to the tail;
-    `height_rise` is how much higher (m) the surface is a quarter length toward +axis than
-    toward -axis. The cues compare both ends, so with an unusable (cut) end there is no vote.
+    Cues, each in [-1, 1]: "mass" (the centroid on the head side), "width" (wider near the
+    head end than near the tail end), "waist" (narrowest near the tail, the tail fin flaring
+    beyond), "girth" (widest toward the head) and, with depth, "height" (`height_rise`: how
+    much higher the surface is a quarter length toward +axis than toward -axis). The cues
+    compare both ends: with a cut end there is no vote.
     """
     if not (usable[0] and usable[1]):
         return 0.0, 0.0, {}
@@ -299,8 +204,7 @@ def measure_heading(
     fish: FishObservation, image_size: tuple[int, int], settings: HeadingSettings
 ) -> HeadingEstimate:
     """
-    Heading of one fish from this frame alone (H-6 to H-11); image_size = (width, height).
-    Keypoints (H-12) aren't used yet.
+    Heading of one fish from this frame alone; image_size = (width, height).
     """
     unknown = HeadingEstimate(None, None, None, None, None, 0.0, "unknown")
     try:
@@ -314,7 +218,7 @@ def measure_heading(
     if plus_cut or minus_cut:
         unknown.flags.add("end_cut")
         return unknown
-    if confidence < settings.min_confidence:  # H-20: never guess
+    if confidence < settings.min_confidence:  # never guess
         unknown.flags.add("ambiguous_shape")
         return unknown
     direction = axis if vote > 0 else -axis
@@ -329,26 +233,3 @@ def measure_heading(
         confidence=confidence,
         source="measured",
     )
-
-
-class HeadingMemory:
-    """Keeps each fish's heading across frames as the camera moves (H-13 to H-18)."""
-
-    def __init__(self, settings: HeadingSettings | None = None):
-        self.settings = settings or HeadingSettings()
-
-    def update(
-        self,
-        fish: list[FishObservation],
-        image_size: tuple[int, int],
-        stamp_s: float,
-        camera_pose: np.ndarray | None = None,  # 4x4 T_base_camera (H-5)
-        intrinsics: np.ndarray | None = None,  # 3x3 K
-        depth: np.ndarray | None = None,  # meters, aligned to the color image
-    ) -> list[HeadingEstimate]:
-        """One estimate per observation, in the same order."""
-        raise NotImplementedError
-
-    def reset(self) -> None:
-        """Forget all fish (new observation of the table, e.g. after a pick)."""
-        raise NotImplementedError

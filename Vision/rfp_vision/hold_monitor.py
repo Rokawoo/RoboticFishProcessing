@@ -1,20 +1,11 @@
 """
-Vision check that a held fish is still on the gripper. The camera sits on the tool flange,
-so a held fish stays where it is in the image while the arm moves; a fish that was not
-picked up, or dropped, stays behind: its outline shrinks and moves, and the surface that
-was close to the camera is gone.
-
-Use: `set_background(frame)` with nothing held (the cups and bracket the camera always
-sees), `start(frame)` when the cups are on the fish, then `update(frame)` for every frame
-while the arm lifts and carries. Two cues, each used when it is available:
-
-    mask   the detector's outline now, against the outline at the grasp (IoU)
-    depth  how much of the close surface seen at the grasp is still at its distance
-
-A frame counts as "fish there" if any available cue says so (depth is read first, and
-the detector only asked when depth doesn't settle it), and the fish counts as
-dropped after `lost_frames` such frames in a row without it. Depth needs the fish at
-least 7 cm from the D405's lens (its minimum range). Plain NumPy/OpenCV, no ROS.
+Whether a held fish is still on the gripper. The camera rides on the tool, so a held fish
+stays put in the image while the arm moves; one left behind or dropped shrinks and moves,
+and the close surface is gone. `set_background(frame)` with nothing held, `start(frame)`
+with the cups on the fish, then `update(frame)` while the arm lifts and carries. Two cues:
+the outline against the one at the grasp (IoU), and how much of the close surface is still
+at its distance (depth needs the fish 7 cm or more from the lens). Any cue saying "there"
+counts; `lost_frames` frames in a row without the fish: dropped. No ROS.
 """
 
 from dataclasses import dataclass

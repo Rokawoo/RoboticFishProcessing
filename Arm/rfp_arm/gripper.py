@@ -1,15 +1,7 @@
 """
-The suction gripper (AS-30), six cups under one vacuum, in the forms it can take:
-
-    ValveGripper    the vacuum switched by the ESP32 valve board (valve.py), over USB
-                    serial or Wi-Fi: the gripper as built
-    SuctionGripper  vacuum and blow-off valves on control box outputs, the vacuum switch
-                    on its inputs: the gripper states of Table AS-4. The I/O comes from a
-                    GripperIO (fairino.py on the real arm)
-    SimGripper      no hardware, for simulation and tests
-    NoGripper       dry run: the vacuum stays off
-
-All have vacuum_on(), release() and state() (interfaces.Gripper). No ROS.
+The suction gripper (AS-30), six cups under one vacuum: ValveGripper (the ESP32 valve board,
+as built), SuctionGripper (valves and a vacuum switch on the controller's I/O, Table AS-4),
+SimGripper (simulation, tests), NoGripper (dry run). All are interfaces.Gripper. No ROS.
 """
 
 import time

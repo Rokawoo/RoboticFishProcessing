@@ -1,13 +1,9 @@
 """
-The cell's layout as a person sets it up (pick_place.py --mode setup): the table (work
-zone), pick area, placement zone, slots and heading, exclusion zones and observation poses.
-
-Read from the workcell file with the control panel on top, turned about the arm's base in
-quarter turns, checked against what the arm reaches and the camera sees (`check_layout`),
-and saved where each value is set: the control panel where it overrides the file, else the
-file. Saving changes only those lines, so every comment stays, keeps a .bak copy of each
-file, and reads the files back: if anything but the layout changed, they are restored.
-No ROS.
+The cell's layout as a person sets it up (pick_place.py --mode setup): table, pick area,
+placement zone, slots and heading, keep-out zones, observation poses. Read from the workcell
+file with the control panel on top, turned about the arm in quarter turns, checked against
+what the arm reaches and the camera sees (`check_layout`), and saved line by line where each
+value is set (a .bak copy kept; anything else changed: restored). No ROS.
 """
 
 import copy

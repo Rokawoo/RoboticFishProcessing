@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
 """
-FR5 movement demo: from the current pose, nod up/down (shoulder j2) CYCLES
-times, then swing left/right (base j1) CYCLES times, returning home in between.
-
-This moves the arm. Run it in simulation (mock hardware) first; on the real
-arm, at low speed with someone on the emergency stop (see README.md, "Run it on the arm").
-Ctrl+C does not stop a trajectory the controller has accepted (ROS 2 actions
-keep running when the client exits): use the emergency stop.
-
-Needs the FR5 driver and trajectory controller running:
-    python3 basic_move_demo.py
-Angles are in radians (0.05 rad ~= 3 deg).
+FR5 movement demo: nods the shoulder (j2) and swings the base (j1) CYCLES times each, from
+the current pose. THIS MOVES THE ARM: simulation first; on the real arm at low speed with
+someone on the emergency stop (Ctrl+C doesn't stop a trajectory the controller accepted).
+Needs the FR5 driver and trajectory controller: python3 basic_move_demo.py
 """
 
 import rclpy

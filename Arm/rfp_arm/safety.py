@@ -1,10 +1,8 @@
 """
 Fixed-code check of a planned joint trajectory before it runs (CS-30, CS-43, SF-10, SF-21):
-how fast any point of the arm moves (each joint, the TCP, the camera: none above the TCP's
-limit, so a wide swing doesn't take the elbow past it), where the tool, the camera and the
-held fish go, how far the joints turn, and that the arm doesn't run into itself (its links
-and the gripper as built, rfp_arm.collision). MoveIt checks collisions too; this is the
-layer that doesn't depend on its scene. No ROS.
+no point of the arm faster than the TCP's limit, where the tool, camera and a held fish go,
+how far the joints turn, and the arm against itself (rfp_arm.collision). It doesn't depend on
+MoveIt's scene. No ROS.
 """
 
 from dataclasses import dataclass

@@ -1,18 +1,11 @@
 """
-Measuring the camera on the gripper (AS-60; a dry-run or run does it first while
-camera.calibrated is false, or with --calibrate): the arm makes small moves around where it
-is, the camera finds the same fish (or any object the model sees) in each, and the mount
-that puts every sighting on one point is solved for: the camera's optical frame in the tip
-link, `camera.mount` in the workcell. It catches a camera mounted turned or mirrored (the
-arm going the other way than the fish in the image) and measures where the lens is across
-the tool's axis. Along that axis the moves can't tell (a tilt shifts what the camera takes
-for the object's middle): the workcell's value, from the gripper's drawing, stays.
-
-The moves: the TCP STEP_M along the base's x, y and up and back (they give the camera's
-rotation: how a move of the arm shows in the image), turned TURN_DEG about the tool's axis
-and tilted TILT_DEG each way (they give where the lens is). Every move goes through the
-arm's own checks. The object must stay wholly in view: start with the camera 0.3-0.5 m over
-a fish lying in the middle of the image. No ROS.
+Measuring the camera on the gripper (AS-60), before a dry run or run while it isn't
+calibrated: small moves of the arm around a fish (or anything the model sees), and the mount
+that puts every sighting on one point (`camera.mount`, the lens frame in the tip link).
+Moves along x, y and z give its turn (also a camera mounted turned or mirrored); turns and
+tilts about the tool give where the lens is across it. Along the tool's axis the drawing's
+value stays (a tilt shifts the object's apparent middle). Start 0.3-0.5 m over a fish in the
+middle of the image. No ROS.
 """
 
 import math

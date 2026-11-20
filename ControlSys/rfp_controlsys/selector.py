@@ -1,11 +1,9 @@
 """
-Which fish next (CS-20, CS-30). A FishSelector looks at the candidates and answers with a
-Decision in the shape of the VLM answer of Table IF-5: pick a fish, re-observe, or end.
-Every answer goes through `validate_decision` before anything moves (CS-31, CS-32), and
-`fallback_choice` is the fixed rule used when a selector fails (CS-61).
-
-RuleSelector follows the goals of Table CS-2 with fixed rules. A VLM selector is another
-class with the same `choose`: nothing else in the Control System changes (CS-26).
+Which fish next (CS-20, CS-30). A FishSelector answers with a Decision shaped like the VLM's
+answer (Table IF-5): pick a fish, re-observe, or end. Every answer goes through
+`validate_decision` (CS-31, CS-32); `fallback_choice` is the fixed rule when a selector fails
+(CS-61). RuleSelector follows Table CS-2's goals; a VLM selector is another class with the
+same `choose` (CS-26).
 """
 
 from dataclasses import dataclass, field

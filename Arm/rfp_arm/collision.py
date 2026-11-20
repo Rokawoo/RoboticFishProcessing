@@ -1,13 +1,9 @@
 """
-The arm's own body as spheres: the FR5's links and the gripper as built, to check that a
-pose or a planned path doesn't run the arm into itself (the gripper into the upper arm, the
-forearm into the base...). The spheres cover each body's surface, at most `margin` (1 cm)
-past it: Arm/configs/collision_model.yaml, made from the meshes by
-Simulation/make_collision_model.py. MoveIt's scene has the gripper as one box; this check
-doesn't depend on it: every planned path (safety.check_trajectory: MoveIt's plans and the
-3D simulator's) and the layout's reach (layout.reach_joints). The layout check also puts the
-same spheres against the keep-out zones (`in_box`). NumPy only, no meshes: the robot PC
-needs nothing more. No ROS.
+The arm's own body as spheres (the FR5's links and the gripper as built, at most `margin`
+past them; Arm/configs/collision_model.yaml from Simulation/make_collision_model.py): whether
+a pose or a planned path runs the arm into itself, or a pose puts it in a box (keep-out
+zones). Checked on every planned path and in the layout's reach, whatever MoveIt's scene
+says. NumPy only, no ROS.
 """
 
 import functools
