@@ -55,11 +55,11 @@ table:
 zones:
   # The work zone is the table (SF-15). A fish reaches half its length past its grasp
   # point, so the table has to be that much larger than the pick area on every side.
-  work: {x: [-0.85, 0.85], y: [-1.30, 0.40], height: 1.00}
-  pick_area: {x: [-0.17, 0.33], y: [-0.58, -0.18]}           # SY-15
-  placement: {x: [-0.72, -0.30], y: [-0.55, -0.15]}          # AS-51
+  work: {x: [-0.79, 0.85], y: [-0.97, 0.90], height: 1.00}
+  pick_area: {x: [-0.225, 0.28], y: [-0.62, -0.18]}          # SY-15
+  placement: {x: [-0.69, -0.30], y: [-0.60, -0.11]}          # AS-51
   exclusion:                                                 # SF-12
-    - {name: operator side, x: [-0.85, 0.85], y: [-1.30, -1.00], z: [0.00, 1.50]}
+    - {name: operator side, x: [-0.79, 0.85], y: [0.60, 0.90], z: [0.00, 1.50]}
 
 observation:
   height: 0.45      # camera above the table (AS-11)
@@ -73,7 +73,7 @@ observation:
   # one sees a fish, then the arm goes over that fish: one look from over the pick area's
   # middle sees all of it (0.85 x 0.48 m of table from 0.45 m), so no other look is needed.
   poses:
-    - {name: over the pick area, camera_xy: [0.08, -0.38], yaw_deg: 180}  # j6 about 40 deg
+    - {name: over the pick area, camera_xy: [0.028, -0.40], yaw_deg: 180}  # j6 about 40 deg
   # A fish cut off at the image's edge gets a look centered on it: the camera straight above
   # its middle, the image's long side along the fish, this high above the table. There the
   # long side spans about 1.9 x (this - the fish's height): 0.62 holds a 0.79 m printed
@@ -82,6 +82,6 @@ observation:
 
 placement:
   slots:            # slot centers, filled in this order (AS-56)
-    - [-0.37, -0.36]
-    - [-0.57, -0.20]
+    - [-0.46, -0.365]
+    - [-0.515, -0.225]
 
