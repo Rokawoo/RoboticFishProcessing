@@ -565,12 +565,12 @@ def test_the_arm_feels_a_surface_through_the_controller_torques(ros):
 
 
 def test_grasp_feels_for_the_fish_on_the_fake_arm(ros):
-    quick = make_workcell(lambda d: d["grasp"].update(feel_settle=0.03))
-    robot, sequence, plan, steps, _ = grasp_rig(ros, quick)
-    robot.tcp = quick.tcp
+    # Trajectories at 4 times their speed: the 20 ms polls fall 1.6 mm apart on the way down
+    robot, sequence, plan, steps, _ = grasp_rig(ros, speedup=4.0)
+    robot.tcp = CELL.tcp
     robot.contact_z = 0.095  # 5 mm lower than the camera said
     sequence.arm._torques = sequence.arm._fault.__self__.joint_torques  # the same FairinoIO
     sequence.run(plan)
     assert tuple(steps) == STEPS
-    assert sequence.contact_depth == pytest.approx(0.012, abs=0.0035)  # felt, a step either way
-    assert sum(r.planner_id == "LIN" for r in robot.requests) > 8  # the small steps down
+    assert sequence.contact_depth == pytest.approx(0.010, abs=0.003)  # felt 5 mm into it
+    assert robot.cancels == 1  # one move down, stopped once the cups had pressed on

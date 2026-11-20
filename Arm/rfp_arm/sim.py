@@ -16,6 +16,7 @@ from rfp_arm.poses import interpolate, wrap, yaw_of
 from rfp_arm.workcell import Workcell
 
 STEP = 0.02  # m between simulated points
+UNTIL_STEP = 0.001  # m between them where a move stops when something is felt
 
 
 class SimArm:
@@ -78,9 +79,14 @@ class SimArm:
         self._move("ptp", tcp_pose, self.workcell.motion.free_speed, tick, straight=False)
 
     def move_lin(
-        self, tcp_pose: np.ndarray, speed: float, accel: float, tick: Tick | None = None
-    ) -> None:
-        self._move("lin", tcp_pose, speed, tick, straight=True)
+        self,
+        tcp_pose: np.ndarray,
+        speed: float,
+        accel: float,
+        tick: Tick | None = None,
+        until: Callable[[], bool] | None = None,
+    ) -> bool:
+        return self._move("lin", tcp_pose, speed, tick, straight=True, until=until)
 
     def stop(self) -> None:
         self._stop = True
@@ -88,7 +94,9 @@ class SimArm:
     def fault(self) -> str | None:
         return None
 
-    def _move(self, kind: str, target: np.ndarray, speed: float, tick, straight: bool) -> None:
+    def _move(
+        self, kind: str, target: np.ndarray, speed: float, tick, straight: bool, until=None
+    ) -> bool:
         target = np.array(target, float)
         self._stop = False
         if speed > self.workcell.motion.tcp_speed_max + 1e-9:
@@ -101,7 +109,7 @@ class SimArm:
             raise ArmError(E_MOTION, problem, self.tcp_pose())
         start = self._tcp.copy()
         distance = float(np.linalg.norm(target[:3, 3] - start[:3, 3]))
-        steps = max(1, math.ceil(distance / STEP))
+        steps = max(1, math.ceil(distance / (STEP if until is None else UNTIL_STEP)))
         for i in range(1, steps + 1):
             pose = interpolate(start, target, i / steps)
             # Only a straight move's path is known here; a real PTP path is checked by MoveIt.
@@ -117,5 +125,9 @@ class SimArm:
             reason = tick() if tick else None
             if reason or self._stop:
                 raise MotionAborted(reason or "stopped")
+            if until is not None and until():
+                self.moves.append((kind, pose))  # where it stopped
+                return True
         self._tcp = target
         self.moves.append((kind, target))
+        return False

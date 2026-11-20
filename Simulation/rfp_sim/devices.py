@@ -1,12 +1,9 @@
 """
-The virtual FR5 and suction gripper, behind the same interfaces as the real ones
-(rfp_arm.interfaces.Arm and Gripper), so the cycle runs unchanged. Like the MoveIt arm,
-every move is planned first (inverse kinematics along the path), checked by
-safety.check_trajectory, then run, a pose every `step_s` of simulated time. Moves are timed
-as MoveIt's Pilz planner times them on the arm: from rest to rest, speeding up and slowing
-down at the acceleration limits (point-to-point: the joints' limits in
-Arm/ros/joint_limits.yaml times the workcell's ptp scales; straight: the move's speed and
-motion.tcp_accel_max), then slowed wherever any point of the arm would pass tcp_speed_max.
+The virtual FR5 and gripper behind the real interfaces, so the cycle runs unchanged. Every
+move is planned first, checked by safety.check_trajectory, then played a pose every `step_s`
+of simulated time, timed as Pilz times it on the arm (from rest to rest at the joints' or the
+straight move's acceleration limits, slowed wherever any point of the arm would pass
+tcp_speed_max).
 """
 
 import itertools
@@ -158,8 +155,13 @@ class VirtualArm:
         self._run("ptp", *self._joint_path(target), tick)
 
     def move_lin(
-        self, tcp_pose: np.ndarray, speed: float, accel: float, tick: Tick | None = None
-    ) -> None:
+        self,
+        tcp_pose: np.ndarray,
+        speed: float,
+        accel: float,
+        tick: Tick | None = None,
+        until: Callable[[], bool] | None = None,
+    ) -> bool:
         start = self.tcp_pose()
         speed = min(speed, self.workcell.motion.tcp_speed_max)
         distance = float(np.linalg.norm(tcp_pose[:3, 3] - start[:3, 3]))
@@ -179,7 +181,7 @@ class VirtualArm:
                 raise ArmError(E_MOTION, "straight move: no joint solution", self.tcp_pose())
             positions.append(q)
         positions = np.array(positions)
-        self._run("lin", positions, self._paced(positions, np.diff(times)), tick)
+        return self._run("lin", positions, self._paced(positions, np.diff(times)), tick, until)
 
     def _joint_path(self, target: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Joint-space path timed as Pilz's PTP: every joint from rest to rest together, the
@@ -264,15 +266,31 @@ class VirtualArm:
         )  # fmt: skip
         return None if check.ok else check.problem
 
-    def _run(self, kind: str, positions: np.ndarray, times: np.ndarray, tick: Tick | None) -> None:
+    def _run(
+        self,
+        kind: str,
+        positions: np.ndarray,
+        times: np.ndarray,
+        tick: Tick | None,
+        until: Callable[[], bool] | None = None,
+    ) -> bool:
         if problem := self._problem(positions, times):
             raise ArmError(E_MOTION, f"{kind} move refused: {problem}", self.tcp_pose())
-        self._play(kind, positions, times, tick)
+        return self._play(kind, positions, times, tick, until)
 
-    def _play(self, kind: str, positions: np.ndarray, times: np.ndarray, tick: Tick | None) -> None:
+    def _play(
+        self,
+        kind: str,
+        positions: np.ndarray,
+        times: np.ndarray,
+        tick: Tick | None,
+        until: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Play the path; `until` True stops it there (True returned)."""
         self._stop = False
         started = self._clock()
-        for q, t in zip(positions[1:], times[1:]):
+        end = len(positions) - 1
+        for i, (q, t) in enumerate(zip(positions[1:], times[1:]), 1):
             self.world.set_joints(q)
             self._on_step()
             if self.speed > 0:
@@ -280,8 +298,12 @@ class VirtualArm:
             reason = tick() if tick else None
             if reason or self._stop:
                 raise MotionAborted(reason or "stopped")
-        self.moves.append((kind, float(times[-1])))
-        self.wrist_turns.append(float(abs(positions[-1][-1] - positions[0][-1])))
+            if until is not None and until():
+                end = i
+                break
+        self.moves.append((kind, float(times[end])))
+        self.wrist_turns.append(float(abs(positions[end][-1] - positions[0][-1])))
+        return end < len(positions) - 1
 
 
 class VirtualGripper:

@@ -1,13 +1,9 @@
 """
-Feeling contact without a force sensor: the force pressing back on the tool along its
-axis, estimated from how the joint torques changed since the estimate was zeroed.
-
-A force F on the TCP along the tool axis a changes the joint torques by J^T a F (J: how
-the TCP moves with each joint), so F is the measured change projected on that pattern.
-Its sign depends on the controller's torque convention, so the size is reported. The
-arm must be at rest for a reading, and gravity's share drifts as the arm moves: zero it
-close to where it is used. Thresholds need tuning on the real arm
-(pick_place.py --mode check shows the estimate live). No ROS.
+Feeling contact without a force sensor: the force pressing back along the tool's axis,
+from how the joint torques changed since the estimate was zeroed (a force F along the axis a
+changes them by J^T a F). Its size is reported (the sign depends on the controller). Read it
+as it was zeroed, at rest or moving steadily, near where it was zeroed (gravity's share
+drifts as the arm moves). Thresholds need tuning on the arm (--mode check shows it). No ROS.
 """
 
 from collections.abc import Mapping, Sequence

@@ -1,14 +1,10 @@
 """
-The grasp sequence of Table AS-1 (AS-20): `plan_grasp` turns a fish's grasp pose and a
-placement slot into the TCP poses of the nine steps and checks them against the workcell;
-`GraspSequence.run` drives an Arm and a Gripper through them and stops at the step that
-fails, with its Table AS-2 error code (AS-25). The same code runs the simulated arm, a dry
-run and the real thing. No ROS.
-
-The approach follows the grasp pose's z axis, which the Vision System lays square onto
-the fish's surface (within AS-21's 15 degrees of straight down). On an arm that reports
-joint torques the last centimeters are felt: down in small steps until the fish pushes
-back, then pressed on.
+The grasp sequence of Table AS-1 (AS-20): `plan_grasp` turns a fish and a slot into the TCP
+poses of the nine steps, checked against the workcell; `GraspSequence.run` drives an Arm and
+a Gripper through them and stops at a failed step with its Table AS-2 code (AS-25). The same
+code runs the simulated arm, a dry run and the real thing. The approach follows the fish's
+surface (up to 15 deg off vertical, AS-21); on an arm that reports joint torques the last
+centimeters are felt. No ROS.
 """
 
 import itertools
@@ -40,27 +36,26 @@ from rfp_arm.workcell import Workcell
 
 # Wrist arcs (rad) this close count as equal: then the one nearer the range's middle
 WRIST_TIE = math.radians(5.0)
-# The empty gripper stays this close to the wrist's middle where it can: the cups are
-# symmetric, so one way round always is, and there the camera is on the side away from the
-# arm (j6 near +-180 turns it toward the arm). A fish that must arrive the far way round for
-# its slot can need more (see plan_grasp).
+# The empty gripper stays this close to the wrist's middle where the fish allows (the cups
+# are symmetric); there the camera faces away from the arm
 EMPTY_WRIST = math.radians(90.0)
 HELD_TURN = math.radians(180.0)  # a held fish is turned at most half a turn
 WRIST_MOVE = math.radians(180.0)  # no single move turns the wrist further
-# Plans keep the wrist this far (rad) inside its range when a way round allows: the tilted
-# approach turns it up to 14 deg from where it was predicted (straight down; 10 deg in 95%
-# of grasps), and the tube twists less. In the placeholder cell some way always allows it.
+# Plans keep the wrist this far inside its range where a way allows: the tilted approach
+# turns it up to 14 deg from where it was predicted
 WRIST_MARGIN = math.radians(10.0)
-# A carry is split where the wrist turns more than this in one stretch: each stretch's tool
-# turn is set so the wrist goes evenly from its angle at the grasp to its angle at the slot
+# A carry goes through a pose every CARRY_STEP m and CARRY_WRIST_STEP of wrist turn, each
+# turned so the wrist goes evenly from grasp to slot: along one straight move the base swings
+# unevenly, which can drag the wrist into its stop half way
 CARRY_WRIST_STEP = math.radians(45.0)
-# and every this far (m): the base swings unevenly along a straight line, which can drag the
-# wrist past its stop half way even when it turns little from end to end
 CARRY_STEP = 0.15
 TURN_SPOT_STEP = 0.05  # m between the spots tried for turning a held fish where it has room
-# A fish may be set down again within this of where the cups took it (it lay there): the cups
-# hold it ahead of its middle, so that can be outside the pick area
-PUT_BACK_NEAR = 0.03  # m
+# m: a fish may be set down again this close to where the cups took it (which can be past
+# the pick area's edge: the cups hold it ahead of its middle)
+PUT_BACK_NEAR = 0.03
+# m into the slow descent before the force is zeroed: moving steadily, the joints' friction
+# is counted in (at rest it isn't)
+ZERO_AFTER = 0.002
 
 STEPS = ("pre-grasp", "vacuum on", "approach", "confirm hold", "lift", "carry", "lower",
          "release", "retreat")  # fmt: skip
@@ -128,16 +123,12 @@ def plan_grasp(
     clear_z: float | None = None,
 ) -> GraspPlan:
     """
-    The poses of Table AS-1. `grasp_pose` is the fish's grasp pose from the fish list (on
-    the fish, z = approach direction, x = along the body toward the head); `tool_yaw` is
-    the TCP's yaw now, at the observation pose, where the arm returns after the place.
-    `wrist` (Arm.wrist_angle) tells the last joint's angle now (None) and at a TCP pose;
-    without it the wrist is taken to turn with the tool's yaw from the middle of its range.
-    `middle`: the fish's middle in {B} where the cups grasp it elsewhere (toward its heavier
-    head): the slot gets the middle. `clear_z`: the top of what lies on the way (z in {B}):
-    the fish is carried just over it (its height and droop below the cups, lift_margin
-    clear), at most lift_height_max; None: at the fixed lift height. Raises
-    ArmError(E_MOTION) if the fish or a pose is outside the limits.
+    The poses of Table AS-1. `grasp_pose`: on the fish, z the approach, x toward the head.
+    `tool_yaw`: the TCP's yaw now (the arm comes back here). `wrist` (Arm.wrist_angle): j6
+    now (None) and at a pose; without it the wrist turns with the tool's yaw. `middle`: the
+    fish's middle, which goes on the slot when the cups grasp it elsewhere. `clear_z`: the
+    top of what lies on the way, carried just over (at most lift_height_max); None: the fixed
+    lift height. Raises ArmError(E_MOTION) if the fish or a pose is outside the limits.
     """
     g = workcell.grasp
     point = grasp_pose[:3, 3]
@@ -166,21 +157,12 @@ def plan_grasp(
     lift_z = max(lift_z, z + g.lift_margin)
     release_z = table + max(thickness, 0.0) + g.release_clearance
 
-    # Which way round: the cups fit the body both ways, and a fish whose head end isn't
-    # known may go into the slot either way. j6 has one angle per tool angle (its range is
-    # under a turn), so the ways differ only in the angles they ask for. For the vacuum tube
-    # and against long wrist turns:
-    # - a held fish is turned at most HELD_TURN, the wrist inside its range;
-    # - the empty gripper stays within EMPTY_WRIST of the range's middle where the fish
-    #   allows. Placed, the wrist ends at one of two angles half a turn apart (the cups either
-    #   way round); a fish that must arrive the far way round to be turned less than half a
-    #   turn needs the empty wrist further, as far as that takes;
-    # - no move turns the wrist more than WRIST_MOVE: a longer turn to the grasp first turns
-    #   it back to the middle where it is (reset_first); after the place the arm goes back
-    #   to its observation pose, near the middle.
-    # Of the ways allowed: clear of the range's ends (predictions miss by up to ~14 deg),
-    # the empty gripper within its band, the least turning in all (to the grasp, to the
-    # slot, back to the middle); of those within a few degrees, the one nearest the middle.
+    # Which way round (the cups either way, and a fish whose head end isn't known into the
+    # slot either way). For the vacuum tube: a held fish turned at most HELD_TURN, the wrist
+    # inside its range, the empty gripper within EMPTY_WRIST of the middle where the fish
+    # allows, no move over WRIST_MOVE (a longer one to the grasp turns back to the middle
+    # first: reset_first). Of the ways allowed: clear of the range's ends, then the least
+    # turning in all; of those within WRIST_TIE, the one nearest the middle.
     low, high = workcell.wrist_range
     center = (low + high) / 2
     move_limit = min(WRIST_MOVE, math.radians(workcell.motion.max_joint_travel_deg) - WRIST_MARGIN)
@@ -610,8 +592,10 @@ class GraspSequence:
         self.step = step
         self._on_step(step)
 
-    def _lin(self, pose: np.ndarray, speed: float) -> None:
-        self.arm.move_lin(pose, speed, self.workcell.motion.tcp_accel_max, self._moving)
+    def _lin(self, pose: np.ndarray, speed: float, until: Callable[[], bool] | None = None) -> bool:
+        return self.arm.move_lin(
+            pose, speed, self.workcell.motion.tcp_accel_max, self._moving, until
+        )
 
     def _send(self, commands) -> None:
         """Controller commands of the grasp settings; one the controller refuses stops here."""
@@ -622,36 +606,55 @@ class GraspSequence:
                 raise self._error(E_COMM, e.message or str(e)) from None
 
     def _approach(self, plan: GraspPlan) -> None:
-        """Onto the fish. If the arm can feel: slowly down from just above where the fish
-        should be until it pushes back, then press; otherwise to the planned depth."""
+        """Onto the fish. If the arm can feel: to just above where the fish should be, then
+        on down in one slow move that stops as soon as the fish pushes back and the cups have
+        pressed on; otherwise to the planned depth."""
         g, m = self.workcell.grasp, self.workcell.motion
         self.contact_depth = None
         feel = g.feel_contact and not plan.dry_run and self.arm.contact_force() is not None
         if not feel:
             self._lin(plan.approach_end, m.approach_speed)
             return
-        depth = -g.feel_start
-        self._lin(plan.at_depth(depth), m.approach_speed)
-        self._sleep(g.feel_settle)
-        self.arm.contact_force(zero=True)
-        while True:
+        start = -g.feel_start
+        self._lin(plan.at_depth(start), m.approach_speed)
+        deepest = self._deepest(plan, g.feel_max_depth + g.press_distance, start + ZERO_AFTER)
+        surface, axis = plan.surface[:3, 3], plan.surface[:3, 2]
+        zeroed = False
+
+        def pressed() -> bool:  # polled as the arm moves down
+            nonlocal zeroed
+            depth = float((self.arm.tcp_pose()[:3, 3] - surface) @ axis)
+            if not zeroed:
+                if depth < start + ZERO_AFTER:
+                    return False
+                self.arm.contact_force(zero=True)
+                zeroed = True
+                return False
             force = self.arm.contact_force()
+            if force is None:  # the controller stopped saying its joint torques
+                raise self._error(E_COMM, "the joint torques stopped while feeling for the fish")
             if self.contact_depth is None and force >= g.contact_force:
                 self.contact_depth = depth
             if self.contact_depth is None:
-                limit = g.feel_max_depth
-                if depth >= limit - 1e-9:
-                    raise self._error(
-                        E_NO_SEAL,
-                        f"nothing felt {limit * 1000:.0f} mm past where the fish should be",
-                    )
-            else:
-                limit = self.contact_depth + g.press_distance
-                if depth >= limit - 1e-9 or force >= g.press_force_max:
-                    return
-            depth = min(depth + g.feel_step, limit)
-            self._lin(plan.at_depth(depth), g.feel_speed)
-            self._sleep(g.feel_settle)
+                return depth >= g.feel_max_depth - 1e-9
+            pressed_on = depth >= self.contact_depth + g.press_distance - 1e-9
+            return pressed_on or force >= g.press_force_max
+
+        self._lin(plan.at_depth(deepest), g.feel_speed, until=pressed)
+        if self.contact_depth is None:
+            reached = min(deepest, g.feel_max_depth)
+            raise self._error(
+                E_NO_SEAL, f"nothing felt {reached * 1000:.0f} mm past where the fish should be"
+            )
+
+    def _deepest(self, plan: GraspPlan, depth: float, shallowest: float) -> float:
+        """`depth` past the fish's expected surface, or as far as the cups may go short of it
+        (the table's clearance under a thin fish, a zone)."""
+        while self.workcell.pose_problem(plan.at_depth(depth)):
+            depth -= 0.001
+            if depth <= shallowest:
+                raise self._error(E_MOTION, "no room to feel for the fish above the table")
+        return depth
 
     def _carry(self, pose: np.ndarray, via: list | None = None) -> None:
         """Straight to the carry pose (through `via`: the wrist turning evenly the way the

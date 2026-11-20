@@ -67,9 +67,16 @@ class Arm(Protocol):
         """Point-to-point move of the TCP to a pose in {B}; the path between is not straight."""
 
     def move_lin(
-        self, tcp_pose: np.ndarray, speed: float, accel: float, tick: Tick | None = None
-    ) -> None:
-        """Straight-line move of the TCP to a pose in {B} at up to `speed` m/s, `accel` m/s2."""
+        self,
+        tcp_pose: np.ndarray,
+        speed: float,
+        accel: float,
+        tick: Tick | None = None,
+        until: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Straight-line move of the TCP to a pose in {B} at up to `speed` m/s, `accel` m/s2.
+        `until`: polled as it moves; the arm stops where it first says True (the whole path
+        is checked before it starts). True if it stopped there, False if it reached the pose."""
 
     def wrist_angle(self, tcp_pose: np.ndarray | None = None) -> float | None:
         """Angle of the last joint (rad): now, or what it would be with the tool pointing
@@ -77,7 +84,8 @@ class Arm(Protocol):
 
     def contact_force(self, zero: bool = False) -> float | None:
         """Force (N) pressing back on the tool along its axis since the last call with
-        `zero=True`, read with the arm at rest. None if the arm can't feel."""
+        `zero=True`, read as it was zeroed: at rest, or moving steadily. None if the arm
+        can't feel."""
 
     def set_held_fish(self, length: float, middle_x: float = 0.0) -> None:
         """Tell the arm a fish of this length (m) hangs on the cups, its middle `middle_x`

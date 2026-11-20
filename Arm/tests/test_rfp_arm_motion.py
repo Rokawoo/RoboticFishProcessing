@@ -21,6 +21,7 @@ from rfp_arm.gripper import (
     wait_for,
 )
 from rfp_arm.interfaces import (
+    E_COMM,
     E_DROP,
     E_MOTION,
     E_NO_SEAL,
@@ -195,9 +196,9 @@ def test_default_workcell_loads_unverified_and_consistent():
     cell = load_workcell()
     assert not cell.verified and not cell.calibrated  # placeholders: the real arm refuses them
     assert cell.problems() == [] and cell.group == "fairino5_v6_group"
-    assert len(cell.slots) >= 2  # AS-51
+    assert len(cell.slots) >= 1  # AS-51: one is enough, placed fish are taken away
     spans = sorted(high - low for low, high in (cell.pick_area.x, cell.pick_area.y))
-    assert spans == pytest.approx([0.4, 0.5])  # SY-15: 500 x 400 mm
+    assert spans[0] >= 0.4 - 1e-9 and spans[1] >= 0.5 - 1e-9  # SY-15: at least 500 x 400 mm
     assert cell.grasp.pregrasp_distance == 0.10 and cell.motion.tcp_speed_max == 0.25
     assert cell.gripper.driver == "serial" and cell.gripper.serial_port == "/dev/ttyACM0"
     for pose in cell.observation_poses:  # AS-11: straight down from 450 mm
@@ -227,7 +228,8 @@ def test_workcell_file_errors_say_what_is_wrong(tmp_path):
         return "; ".join(workcell_from_mapping(data).problems())
 
     assert "slot 1 is outside" in problems(lambda d: d["placement"]["slots"].__setitem__(0, [0, 0]))
-    assert "at least 2 slots" in problems(lambda d: d["placement"]["slots"].pop())
+    assert problems(lambda d: d["placement"]["slots"].pop()) == ""  # one slot is enough
+    assert "needs a slot" in problems(lambda d: d["placement"].update(slots=[]))
     assert "overlaps the pick area" in problems(
         lambda d: d["zones"]["placement"].update(y=[0.10, 0.72])
     )
@@ -1136,19 +1138,20 @@ def test_the_cups_are_lowered_until_the_fish_pushes_back():
     rig.arm.contact_surface = 0.095  # the fish is 5 mm lower than the camera said (0.100)
     rig.run()
     assert tuple(rig.steps) == STEPS
-    # 15 N on a 3 N/mm surface: 5 mm into it, so 10 mm past the expected height, in 3 mm steps
+    # 15 N on a 3 N/mm surface: 5 mm into it, so 10 mm past the expected height
     felt = rig.sequence.contact_depth
-    assert felt == pytest.approx(0.012, abs=1e-6)
+    assert felt == pytest.approx(0.010, abs=0.0011)
     assert 0.100 - felt - 0.010 - 1e-9 <= lowest(rig) < 0.100 - felt  # pressed on, not through
-    start = next(pose for kind, pose in rig.arm.moves if kind == "lin")
-    assert start[2, 3] == pytest.approx(0.115)  # the slow part starts 15 mm above
+    # down in one smooth move from 15 mm above, stopped where it had pressed on (40 N), then up
+    heights = [pose[2, 3] for kind, pose in rig.arm.moves if kind == "lin"]
+    assert heights[0] == pytest.approx(0.115) and heights[1] == pytest.approx(lowest(rig))
+    assert lowest(rig) == pytest.approx(0.095 - 40 / 3000, abs=0.0011) and heights[2] > 0.115
 
     hard = Rig()
     hard.arm.contact_surface, hard.arm.contact_stiffness = 0.100, 20000.0
     hard.run()  # stiff: the force limit is reached before the press distance
-    assert hard.sequence.contact_depth == pytest.approx(0.003) and lowest(hard) == pytest.approx(
-        0.097
-    )
+    assert hard.sequence.contact_depth == pytest.approx(0.001, abs=1e-6)
+    assert lowest(hard) == pytest.approx(0.098)
 
     nothing = Rig()
     nothing.arm.contact_surface = 0.05  # no fish under the cups
@@ -1165,6 +1168,28 @@ def test_the_cups_are_lowered_until_the_fish_pushes_back():
     dry.arm.contact_surface = 0.095
     dry.run(dry_run=True)
     assert dry.sequence.contact_depth is None and lowest(dry) == pytest.approx(0.115)
+
+
+def test_the_cups_feel_no_further_than_the_table_lets_them():
+    thin = Rig()
+    thin.arm.contact_surface = CELL.table_z  # nothing under the cups above the table
+    error = thin.fails(thickness=0.025)  # 35 mm past its top would be below the table
+    assert error.code == E_NO_SEAL and "nothing felt 20 mm past" in error.message
+    assert lowest(thin) == pytest.approx(CELL.table_z + CELL.table_clearance)  # its clearance
+
+
+def test_joint_torques_that_stop_while_feeling_end_the_grasp_cleanly():
+    rig = Rig()
+    calls = []
+
+    def force(zero=False):
+        calls.append(zero)
+        return 0.0 if len(calls) < 3 else None  # then the controller's state stops
+
+    rig.arm.contact_force = force
+    error = rig.fails()
+    assert error.code == E_COMM and "joint torques stopped" in error.message
+    assert rig.sequence.step == "approach"
 
 
 def test_controller_commands_bracket_the_press():

@@ -1,18 +1,11 @@
 """
-The FR5 through MoveIt 2 (AS-10): every move is planned by the Pilz industrial motion
-planner (PTP or LIN) with MoveIt's /move_action in plan-only mode, checked here in fixed
-code (safety.check_trajectory), then run with /execute_trajectory. Straight moves through
-several poses (lift, carry, lower) are planned as one with their corners rounded where
-move_group has Pilz's sequence service (/plan_sequence_path: Arm/ros/fr5_bringup.launch.py
-loads it), so the arm doesn't stop at each. The same code drives the real arm
-(frcobot_ros2's fairino_hardware) and MoveIt's mock hardware in RViz.
+The FR5 through MoveIt 2 (AS-10): moves planned by Pilz (PTP, LIN, and blended sequences
+where move_group has Pilz's sequence service), checked here (safety.check_trajectory), then
+run with /execute_trajectory. The same code drives the real arm and MoveIt's mock hardware.
 
-THIS MOVES THE ARM. Nothing moves on import or on connect(): only move_joints, move_ptp and
-move_lin do. A Tick, a controller fault, Ctrl+C and stop() cancel the running trajectory
-(MoveIt then holds the arm where it is); if this process is killed instead, the move in
-progress runs to its end: use the emergency stop.
-
-Needs ROS 2 Humble with MoveIt 2 and move_group running (fairino5_v6_moveit2_config).
+THIS MOVES THE ARM, but only in move_*: nothing on import or connect(). A Tick, a fault,
+Ctrl+C and stop() cancel the running trajectory (the arm holds where it is); if this process
+is killed, the move runs to its end: use the emergency stop.
 """
 
 import math
@@ -344,10 +337,15 @@ class MoveItArm:
         return goal
 
     def move_lin(
-        self, tcp_pose: np.ndarray, speed: float, accel: float, tick: Tick | None = None
-    ) -> None:
+        self,
+        tcp_pose: np.ndarray,
+        speed: float,
+        accel: float,
+        tick: Tick | None = None,
+        until: Callable[[], bool] | None = None,
+    ) -> bool:
         if self._there(tcp_pose):
-            return
+            return False
         limit = self.workcell.motion.tcp_speed_max
         speed = min(speed, limit)
         velocity_scale = min(1.0, speed / self._max_trans_vel)
@@ -368,7 +366,7 @@ class MoveItArm:
             velocity_scale *= 0.9 * limit / check.peak_tcp_speed
         if not check.ok:
             raise ArmError(E_MOTION, f"straight move refused: {check.problem}", self.tcp_pose())
-        self._run(plan, f"straight move, {check.summary()}", tcp_pose, tick)
+        return self._run(plan, f"straight move, {check.summary()}", tcp_pose, tick, until)
 
     def move_through(
         self,
@@ -565,8 +563,16 @@ class MoveItArm:
             check.problem, check.too_fast = "the plan doesn't end at the target", False
         return check
 
-    def _run(self, plan, what: str, target: np.ndarray, tick: Tick | None) -> None:
-        """Execute a checked plan, watching the Tick and the controller. THE ARM MOVES."""
+    def _run(
+        self,
+        plan,
+        what: str,
+        target: np.ndarray,
+        tick: Tick | None,
+        until: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Execute a checked plan, watching the Tick and the controller; `until` True stops
+        it there (returns True). THE ARM MOVES."""
         from moveit_msgs.action import ExecuteTrajectory
 
         if self._confirm is not None and not self._confirm(what):
@@ -586,6 +592,7 @@ class MoveItArm:
         result = handle.get_result_async()
         result.add_done_callback(lambda _: finished.set())
         deadline = time.monotonic() + duration * 1.5 + 5.0
+        halted = False
         try:
             while not finished.wait(0.02):
                 reason = tick() if tick else None
@@ -593,6 +600,10 @@ class MoveItArm:
                     raise MotionAborted(reason)
                 if fault := self.fault():
                     raise ArmError(E_PROTECTIVE_STOP, fault)
+                if until is not None and until():
+                    self._cancel(handle, finished)  # the controller holds where it is
+                    halted = True
+                    break
                 if time.monotonic() > deadline:
                     raise ArmError(E_MOTION, "the move didn't finish in time")
         except BaseException as stopped:  # also Ctrl+C: never leave a trajectory running
@@ -602,6 +613,9 @@ class MoveItArm:
             raise
         finally:
             self._active = None
+        if halted:
+            self._settle()
+            return True
         code = result.result().result.error_code.val
         if code != 1:
             name = ERROR_NAMES.get(code, f"error {code}")
@@ -612,6 +626,7 @@ class MoveItArm:
             raise ArmError(
                 E_MOTION, f"the move ended {error * 1000:.1f} mm from its target", self.tcp_pose()
             )
+        return False
 
     def _cancel(self, handle, finished: threading.Event) -> None:
         try:

@@ -1,11 +1,8 @@
 """
-The workcell: frames, tool, zones, observation poses, placement slots and every motion
-and gripper limit (SF-10, SF-11, AS-11, AS-51, AS-40), loaded before any motion from
-Arm/configs/workcell.yaml (the cell as measured) with control_panel.yaml on top. The limits'
-defaults are the dataclasses' here, and nowhere else. The files use meters and degrees; here
-angles are radians. No ROS.
-
-All positions are in the arm base frame {B} (MoveIt's base_link).
+The workcell (SF-10, SF-11, AS-11, AS-51, AS-40): frames, tool, zones, observation poses,
+slots and every motion and gripper limit, from Arm/configs/workcell.yaml with
+control_panel.yaml on top. The limits' defaults are the dataclasses here, and nowhere else.
+Positions are in the arm's base frame {B}; the files use degrees, the code radians. No ROS.
 """
 
 import dataclasses
@@ -23,16 +20,11 @@ DEFAULT_FILE = Path(__file__).resolve().parents[1] / "configs" / "workcell.yaml"
 
 PANEL_FILE = Path(__file__).resolve().parents[2] / "control_panel.yaml"
 PANEL_SECTIONS = ("run", "workcell", "vision", "control", "simulation")
-# Where vision puts a fish's middle is a few mm to cm off where it lies (raised ends, the
-# plane its outline is put on): one lying at the pick area's edge was measured 7 mm out and
-# left, the operator asked about it. Within this past the edge it still counts as inside
-# (CS-13); whether it is picked, the plan's own checks decide (reach, zones, the arm).
-PICK_AREA_TOLERANCE = 0.03  # m
-# How far the last joint (j6) may turn, unless the cell says otherwise (tool.wrist_range_deg).
-# The vacuum tube runs into the gripper, so the wrist must never wind a full turn: plans that
-# leave this range are refused, each grasp takes the way round that turns it least (10 deg
-# clear of the ends where it can), and the arm returns to its observation pose after every
-# fish. 0 is where the tube hangs free.
+# m past the pick area's edge a fish's middle still counts as inside (CS-13): vision puts it
+# a few mm to cm off; the plan's own checks still decide whether it is picked
+PICK_AREA_TOLERANCE = 0.03
+# How far j6 may turn unless the panel says otherwise (tool.wrist_range_deg): the vacuum
+# tube runs into the gripper, so the wrist never winds a full turn. 0: the tube hangs free
 WRIST_RANGE_DEG = (-170.0, 170.0)
 HEADING_DEG = 0.0  # where placed fish point their heads: from +X toward +Y (AS-52)
 
@@ -171,34 +163,27 @@ class GraspSettings:
     release_timeout: float = 1.0  # vacuum still there this long after release: E_RELEASE
     max_approach_tilt_deg: float = 15.0  # the cups lean at most this far onto a fish (AS-21)
     # Feeling for the fish (arms that report joint torques): from feel_start above where
-    # vision saw the surface, down in steps until contact_force pushes back, then
-    # press_distance further (or until press_force_max). No contact by feel_max_depth past
-    # the expected surface: no fish there (E_NO_SEAL). Tune the forces with --mode check
-    # (push the cups). False: to the expected surface + press_distance, blind
+    # vision saw it, down at feel_speed until contact_force pushes back, then press_distance
+    # on (or to press_force_max). Nothing by feel_max_depth: E_NO_SEAL. Tune the forces with
+    # --mode check. False: blind, to the expected surface + press_distance
     feel_contact: bool = True
     feel_start: float = 0.015  # m
-    feel_step: float = 0.003  # m
-    feel_speed: float = 0.01  # m/s
-    feel_settle: float = 0.15  # s at rest before each reading
+    feel_speed: float = 0.02  # m/s
     contact_force: float = 15.0  # N pushing back: the cups are on the fish
     press_force_max: float = 40.0  # N: stop pressing, whatever press_distance says
     feel_max_depth: float = 0.025  # m past the expected surface with no contact: E_NO_SEAL
-    # Controller commands (ros2_cmd_server lines) sent before pressing and after the hold
-    # is confirmed, e.g. to make the wrist compliant while the cups settle: the controller's
-    # ImpedanceControlStartStop(status, workSpace, forceThreshold x6, m x6, b x6, k x6, maxV,
-    # maxVA, maxW, maxWA). Empty: its parameters have to be found on the arm, without a fish
-    # first
+    # Controller commands sent before pressing and after the hold is confirmed, e.g. the
+    # controller's ImpedanceControlStartStop(...) for a compliant wrist (parameters still to
+    # be found on the arm)
     press_start_commands: tuple[str, ...] = ()
     press_end_commands: tuple[str, ...] = ()
 
 
 @dataclass
 class GripperSettings:
-    """How the vacuum of the six cups is switched (AS-30): "serial", the ESP32 valve board
-    over USB (Arm/firmware/valve_control); "http", the same board over Wi-Fi; "controller",
-    the FR5 control box's digital I/O with a vacuum switch (HW-33, HW-34). The valve board
-    confirms each switch but can't tell whether the cups hold: with it, the camera confirms
-    the hold. Try it with: python Arm/scripts/gripper_bench.py on"""
+    """How the vacuum is switched (AS-30): "serial" or "http", the ESP32 valve board over USB
+    or Wi-Fi (it can't tell whether the cups hold: the camera confirms that); "controller",
+    the control box's I/O with a vacuum switch. Test: python Arm/scripts/gripper_bench.py on"""
 
     driver: str = "serial"
     serial_port: str = "/dev/ttyACM0"  # Windows: COM3, ...
@@ -292,12 +277,10 @@ class Workcell:
         fish_middle_x: float = 0.0,
     ) -> str | None:
         """
-        Why the tool may not be at this TCP pose, or None. The TCP, the camera and (with
-        `fish_length`) both ends of the held fish must be outside every exclusion zone and
-        inside the work zone, and over the table the TCP and camera must stay above it. The
-        fish lies along the TCP's x axis, its middle `fish_middle_x` from the TCP (the cups
-        hold it nearer its head). `work_zone=False` skips the inside-the-work-zone part (a
-        path may start outside).
+        Why the tool may not be at this TCP pose, or None: the TCP, the camera and (with
+        `fish_length`) both ends of a held fish, lying along the TCP's x with its middle
+        `fish_middle_x` from it, outside every exclusion zone, inside the work zone (unless
+        `work_zone` is False) and clear of the table.
         """
         tcp = t_base_tcp[:3, 3]
         points = [("TCP", tcp, True), ("camera", self.camera_of_tcp(t_base_tcp)[:3, 3], True)]
@@ -335,8 +318,8 @@ class Workcell:
                 found.append(f"the {name} is not inside the work zone")
         if self.pick_area.overlaps(self.placement_zone):
             found.append("the placement zone overlaps the pick area (AS-51)")
-        if len(self.slots) < 2:
-            found.append("the placement zone needs at least 2 slots (AS-51)")
+        if not self.slots:  # one is enough: placed fish are taken away, the slots used in turn
+            found.append("the placement zone needs a slot (AS-51)")
         for i, slot in enumerate(self.slots, 1):
             if not self.placement_zone.contains(slot):
                 found.append(f"slot {i} is outside the placement zone")
