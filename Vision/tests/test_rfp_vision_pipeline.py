@@ -242,9 +242,14 @@ def test_each_failed_check_gives_its_code_and_clears_the_poses():
     assert code(middle, pick_area=outside) == "geometry_out_of_range"
 
     def hole(frame, detections):
-        frame.depth[300:420, 580:700] = 0.0  # no depth under the grasp point
+        frame.depth[300:420, 580:700] = 0.0  # no depth at the middle: the rest of the body's
 
-    assert code(middle, change=hole) == "invalid_depth"
+    assert code(middle, change=hole) == "none"
+
+    def no_depth(frame, detections):
+        frame.depth[:] = 0.0
+
+    assert code(middle, change=no_depth) == "invalid_depth"  # none on it: no guessing its height
 
     def blob(frame, detections):
         angles = np.linspace(0, 2 * math.pi, 60, endpoint=False)
@@ -257,20 +262,19 @@ def test_each_failed_check_gives_its_code_and_clears_the_poses():
     def sliver(frame, detections):
         detections[0].polygon = np.array([[600, 350], [700, 352], [700, 356], [600, 354]], float)
 
-    # too narrow for the cups; with the size check off that is still caught
-    assert code(middle, change=sliver, require_heading=False, check_size=False) == (
-        "grasp_point_off_body"
-    )
+    # too narrow for the cups, or lumpy: picked all the same (the fish given to the arm are
+    # big enough; the hold check tells whether the cups sealed)
+    assert code(middle, change=sliver, require_heading=False) == "none"
 
     def lumpy(frame, detections):  # 3 cm steps every ~6 cm: no spot where all six cups seal
         rows, columns = np.indices(frame.depth.shape)
         on_fish = frame.depth < frame.depth.max() - 0.01
         frame.depth[on_fish] -= 0.03 * (((rows // 90) + (columns // 90)) % 2)[on_fish]
 
-    assert code(middle, change=lumpy, strict_seal_check=True) == "grasp_point_off_body"
+    assert code(middle, change=lumpy, strict_seal_check=True) == "none"
     assert code(middle, catfish=Catfish(length_range_m=(0.2, 0.5))) == "geometry_out_of_range"
-    big = StandIn(length_range_m=(0.80, 1.00))  # only the big prints
-    assert code(middle, fish_type="stand_in", stand_in=big) == "geometry_out_of_range"
+    big = StandIn(length_range_m=(0.80, 1.00))  # shorter than the type: picked
+    assert code(middle, fish_type="stand_in", stand_in=big) == "none"
     # VS-68: of several failed checks, the first in the table's order is the code
     frame, detections = render([(0.40, -0.10, 0.0, 0.3)])
     fish = locator().locate(frame, detections, CAMERA).fish[0]
@@ -340,9 +344,8 @@ def test_a_table_lower_than_the_workcell_says_doesnt_shrink_the_fish():
     assert fish.total_length == pytest.approx(0.585, abs=0.006)
     assert np.allclose(fish.middle, (0.40, -0.10, 0.02), atol=0.004)
     blind = locator(measure_table=False).locate(frame, detections, CAMERA).fish[0]
-    assert blind.failure_code == "geometry_out_of_range" and not blind.table_measured
-    assert "length 0.5" in blind.detail and "catfish: 0.54-0.82" in blind.detail
-    assert "height 0.02 m" in blind.detail  # measured from table.z
+    assert not blind.table_measured and blind.thickness == pytest.approx(0.02, abs=0.003)
+    assert blind.total_length < 0.56  # measured from table.z: short and thin
     far = locator(table_search_m=0.05).locate(frame, detections, CAMERA).fish[0]
     assert not far.table_measured  # farther from table.z than it may be: not the table
 
@@ -362,11 +365,7 @@ def test_the_cups_are_checked_as_six_circles_not_their_bounding_box():
 def test_a_failed_fish_says_what_was_measured():
     frame, detections = render([(0.40, -0.10, ALONG_Y, 0.9)])
     small = locator(catfish=Catfish(length_range_m=(0.2, 0.5))).locate(frame, detections, CAMERA)
-    assert small.fish[0].detail == "length 0.58 m (catfish: 0.20-0.50)"
-    detections[0].polygon = np.array([[600, 350], [700, 352], [700, 356], [600, 354]], float)
-    sliver = locator(require_heading=False, check_size=False).locate(frame, detections, CAMERA)
-    assert sliver.fish[0].failure_code == "grasp_point_off_body"
-    assert sliver.fish[0].detail.startswith("the six cups don't fit on it")
+    assert small.fish[0].detail == "length 0.58 m (over 0.50 for a catfish)"
     cut = locator().locate(*render([(0.40, -0.10, 0.0, 0.9)]), CAMERA).fish[0]
     assert cut.detail == "cut off at the image's edge"
     assert render([])[0] is not None and locator().locate(*render([]), CAMERA).fish == []
@@ -687,8 +686,8 @@ def test_surface_slope_tilts_the_grasp_and_helps_tell_head_from_tail():
     level = locator(align_to_surface=False).locate(frame, detections, CAMERA).fish[0]
     assert np.allclose(level.grasp_pose[:3, 2], (0, 0, -1)) and level.surface_tilt > 0.05
     frame, detections = render([middle], slope=0.50)  # steeper than the cups may lean:
-    steep = locator().locate(frame, detections, CAMERA).fish[0]  # pressed straight down, the
-    assert steep.failure_code == "grasp_point_off_body"  # cup rows' heights differ by 80 mm
+    steep = locator().locate(frame, detections, CAMERA).fish[0]  # straight down, not refused
+    assert steep.vision_ok and np.allclose(steep.grasp_pose[:3, 2], (0, 0, -1))
     # measured where the cups go; at the middle that is the slope itself (toward the narrower
     # head the cups' footprint also takes in the body's rounded sides)
     at_middle = locator(catfish=Catfish(balance_ahead_share=0.0))

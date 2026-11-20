@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-Pick and place: look over the table with the camera on the arm, find a fish, pick it up
-with the suction gripper and set it down in the next placement slot with a uniform heading,
-watching with the camera that the fish stays on the gripper. Repeats until the pick area
-is clear.
+Pick and place: find each fish with the camera on the arm, pick it up with the suction
+gripper and set it down in a slot with a uniform heading, until the pick area is clear.
 
 Usage:
-    python pick_place.py                          # pick the mode (model, camera) in popups
+    python pick_place.py                          # pick the mode in a popup
     python pick_place.py --mode setup             # lay out the cell
     python pick_place.py --mode sim3d             # the whole cycle in a virtual cell
     python pick_place.py --mode sim --cycles 2    # on MoveIt's mock arm (robot PC)
@@ -15,40 +13,23 @@ Usage:
     python pick_place.py --mode run               # THE ARM MOVES and picks fish
     python pick_place.py --mode run --calibrate   # measure the camera's mount again first
 
-Modes, in the order to bring a cell up (SF-43):
-    setup    Lay out the cell in a 3D window around the arm: the table, pick area, placement
-             zone and slots, checked against what the arm reaches and the camera sees as you
-             go. Saves the workcell file (and the control panel where it overrides it).
-    sim3d    The whole cycle in a virtual cell (Simulation/): a virtual FR5, gripper and D405
-             whose images go through the real vision code, moving as the arm does. No
-             hardware, no ROS; --video saves the 3D view.
-    sim      The whole cycle on MoveIt with mock hardware, shown in the 3D twin (robot PC).
-    check    Nothing moves. The arm's driver, firmware, state, I/O and gripper, then live what
-             the camera and the model see, where each fish lies in the arm's frame and the
-             force felt on the gripper (push the cups: contact_force). Without ROS or the arm,
-             the camera alone (any camera or video: --device).
-    dry-run  THE ARM MOVES: whole cycles, the vacuum off, every approach stopping 50 mm short
-             (CS-93).
-    run      THE ARM MOVES and picks fish.
-             Both first check that MoveIt drives this arm and that FAIRINO's driver is the one
-             for the controller's firmware, and while camera.calibrated is false (or with
-             --calibrate) measure where the camera sits over a fish in view and save it.
+Modes, in the order to bring a cell up:
+    setup    Lay out the cell in 3D, checked against what the arm reaches and the camera sees.
+    sim3d    The whole cycle in a virtual cell, through the real vision code. No hardware, no
+             ROS; --video records the 3D view.
+    sim      The whole cycle on MoveIt with mock hardware, in the 3D twin (robot PC).
+    check    Nothing moves: the driver, the arm's state and the gripper, then live what the
+             camera sees and the force on the gripper. Without the arm: the camera alone.
+    dry-run  THE ARM MOVES: whole cycles, vacuum off, every approach stopping 50 mm short.
+    run      THE ARM MOVES and picks fish. Both first measure the camera's mount while it
+             isn't calibrated (or with --calibrate).
 
---device: "realsense" (first one found), a RealSense serial number, an OpenCV camera index
-(0, 1, ...: color only), or a recording (.bag/.db3 with depth, any video without). Without
-depth, fish are placed on the table plane (vision.use_depth).
+--device: "realsense", a RealSense serial number, a camera index (color only) or a recording
+(.bag/.db3 with depth, any video without).
 
-On the robot PC run it through ./robot.sh (it sources ROS 2, the workspace and .venv). The
-modes that need MoveIt start it with the FR5's driver (mock hardware for sim) and FAIRINO's
-command server unless they are running (Arm/ros/fr5_bringup.launch.py; control panel:
-run.bringup), and stop them at the end.
-
-The settings changed most often, and the defaults of the options above, are in the
-control panel at the repository's top: control_panel.yaml (--panel for another file).
-
-Moving the real arm: README.md, "Run it on the arm". q or Esc
-in the camera window, or Ctrl+C, stops the arm where it is; a move that MoveIt no longer
-answers for needs the emergency stop. Each run is logged in ControlSys/runs/.
+On the robot PC run it through ./robot.sh: modes that need MoveIt start it and the arm's
+driver when they aren't running, and stop them at the end. Option defaults: control_panel.yaml.
+q or Esc in the camera window, or Ctrl+C, stops the arm. Runs are logged in ControlSys/runs/.
 """
 
 import argparse
@@ -88,7 +69,7 @@ from rfp_vision.settings import load_settings as load_vision_settings
 from rfp_vision.vision_system import VisionSystem
 
 from rfp_controlsys.console import Console, ask
-from rfp_controlsys.cycle import PickPlaceCycle
+from rfp_controlsys.cycle import LENS_WARNING_DEG, PickPlaceCycle
 from rfp_controlsys.run_log import RunLog
 from rfp_controlsys.selector import RuleSelector
 from rfp_controlsys.settings import PANEL_FILE, ControlSettings, run_defaults
@@ -375,7 +356,10 @@ def check(
     except ArmError as e:
         print(f"Gripper ({workcell.gripper.driver}): NOT AVAILABLE: {e.message}")
     frame = vision.frame()
-    print(f"Camera: {frame.size[0]} x {frame.size[1]} px, fx {frame.intrinsics.fx:.0f}")
+    seen, assumed = frame.intrinsics.hfov_deg, vision.settings.hfov_deg
+    fix = f": set vision.hfov_deg: {seen:.1f}" if abs(seen - assumed) > LENS_WARNING_DEG else ""
+    width, height = frame.size
+    print(f"Camera: {width} x {height} px, {seen:.1f} deg wide (settings {assumed:g}{fix})")
     if frame.depth is not None:
         low, high = vision.settings.depth_range_m
         valid = float(((frame.depth >= low) & (frame.depth <= high)).mean())
@@ -544,9 +528,10 @@ def confirm_real_motion(mode: str, yes: bool) -> None:
         sys.exit("Cancelled.")
 
 
-def open_twin(workcell: Workcell, console: Console, arm, panel: Path, wanted: bool):
+def open_twin(workcell: Workcell, console: Console, arm, panel: Path, wanted: bool, lens=None):
     """The arm's 3D twin (Simulation/rfp_sim/twin.py) following `arm`, its states and what
-    vision finds; None if the control panel says not to (run.twin) or pyvista is missing."""
+    vision finds; None if the control panel says not to (run.twin) or pyvista is missing.
+    `lens`: the camera's view until its first frame (VisionSettings.lens())."""
     if not wanted:
         return None
     try:
@@ -556,7 +541,7 @@ def open_twin(workcell: Workcell, console: Console, arm, panel: Path, wanted: bo
         print(f"   (no 3D twin: {e}; pip install pyvista)")
         return None
     try:
-        twin = make_twin(workcell, load_sim_settings(panel=panel))
+        twin = make_twin(workcell, load_sim_settings(panel=panel), lens)
     except Exception as e:  # noqa: BLE001 - a window that can't open (no display) mustn't stop a run
         print(f"   (no 3D twin: {e})")
         return None
@@ -591,6 +576,7 @@ def run_cycles(
     vision_hold: bool | None = None,
     twin=None,
 ) -> None:
+    """`twin`: a 3D window with show_fish (the twin, sim3d's viewer) shown what vision finds."""
     log = RunLog(
         {
             "mode": mode,
@@ -748,7 +734,9 @@ def main() -> None:
             check_driver(io)
             same_arm(arm, io, workcell)
         if not args.no_window:
-            twin = open_twin(workcell, console, arm, args.panel, run["twin"])
+            twin = open_twin(
+                workcell, console, arm, args.panel, run["twin"], vision_settings.lens()
+            )
         if mode == "check":
             check(arm, io, vision, workcell, console, twin)
             return
@@ -850,7 +838,9 @@ def sim3d(args, run: dict, model: Path | None, cycles: int | None) -> None:
     for line in layout_report(workcell, vision_settings):  # fix with --mode setup
         print(f"Layout:   {line}")
     window = run["window"] and not args.no_window
-    session = build_session(workcell, sim_settings, show=window, video=args.video)
+    session = build_session(
+        workcell, sim_settings, show=window, video=args.video, lens=vision_settings.lens()
+    )
     console = Console(window=window, step=args.step or run["step"])
     if session.viewer is not None:
         console.on_state = session.viewer.set_status
@@ -859,7 +849,7 @@ def sim3d(args, run: dict, model: Path | None, cycles: int | None) -> None:
     print(f"Model:    {vision.detector.version}")
     try:
         run_cycles("sim3d", session.arm, session.gripper, vision, workcell, control_settings,
-                   console, cycles, sleep=session.wait)  # fmt: skip
+                   console, cycles, sleep=session.wait, twin=session.viewer)  # fmt: skip
         if window and session.viewer is not None and not session.viewer.closed:
             print("Close the 3D window (or press q in it) to finish.")
             while not session.viewer.closed:

@@ -1,18 +1,9 @@
 """
-The fish list (VS-40 to VS-60, IF-20): detections in one frame turned into fish with a
-position, heading and size in the arm base frame {B}, each checked and flagged.
-
-Meters and radians here; `as_record()` gives the IF-1/IF-2 fields in mm and degrees for logs.
-Without a pose model the middle is the centroid of the outline (on the stand-in fish 49% of
-the length from the snout; VS-33 asks for 40-50%); the cups go ahead of it toward the heavier
-head, as far as they fit, and without depth the approach is straight down.
-
-With depth, a plane through the body under the six cups gives the approach direction (VS-44)
-and tells where all six seal; the surface's slope along the body is a head/tail cue; and the
-table around each fish is measured, so its height and size don't depend on the workcell's
-table.z or how high the camera really is (the outline's plane is between the two).
-
-Not implemented yet: `covered` (VS-25), keypoints (VS-30, VS-62).
+The fish list (VS-40 to VS-60, IF-20): the detections of one frame as fish with a position,
+heading and size in the arm's base frame {B}, each checked. Meters and radians here;
+`as_record()` gives mm and degrees for logs. With depth: each fish's height, the table
+around it, and the plane under the cups that the approach follows. Not done yet: `covered`,
+keypoints.
 """
 
 import math
@@ -44,7 +35,6 @@ FAILURE_ORDER = (
     "covered",
     "invalid_keypoints",
     "wrong_heading",
-    "grasp_point_off_body",
     "geometry_out_of_range",
     "invalid_depth",
     "unstable",
@@ -57,6 +47,7 @@ TABLE_GRID = 200  # the same, for the table around it
 # above the breadboard's holes and below other fish and the gripper
 TABLE_PERCENTILE = 30
 MIN_TABLE_POINTS = 50
+MIN_BODY_POINTS = 30  # depth points on a fish for its height when there are none at its middle
 
 
 @dataclass
@@ -269,16 +260,22 @@ class FishLocator:
                 table_z, fish.table_measured = around, True
         fish.table_z = table_z
 
-        # How high the fish is: measured depth at the middle of its outline, else the default.
+        # How high the fish is: from depth at the middle of its outline, else (a hole there:
+        # shiny skin) from the rest of its body; no depth on it at all: not picked (the
+        # approach would go by a guess). Without depth: the default.
         fish.thickness = s.default_thickness_m
+        points = None
         if depth:
+            points = self._surface_points(frame, polygon, t_base_camera)
             top = self._surface_from_depth(frame, centroid_px, t_base_camera)
-            if top is None:
-                failed.add("invalid_depth")
-                details["invalid_depth"] = "no depth at the middle of its outline"
-            else:
-                fish.depth_measured = True
+            if top is not None:
                 fish.thickness = float(top[2] - table_z)
+            elif len(points) >= MIN_BODY_POINTS:
+                fish.thickness = float(np.percentile(points[:, 2], 90) - table_z)
+            else:
+                failed.add("invalid_depth")
+                details["invalid_depth"] = "no depth on its body"
+            fish.depth_measured = top is not None or len(points) >= MIN_BODY_POINTS
 
         # The outline in {B}. The camera sees the silhouette of the fish's widest section,
         # about half way up, so that is the plane its pixels are put on; using the top
@@ -298,9 +295,8 @@ class FishLocator:
             edge = fish_heading.at_border(polygon, frame.size, s.border_margin_px)
             share = (along[edge] - along.min()) / max(fish.total_length, 1e-9)
             fish.cut_ends = (bool((share <= 0.25).any()), bool((share >= 0.75).any()))
-        points = rise = middle_plane = None
+        rise = middle_plane = None
         if fish.depth_measured:
-            points = self._surface_points(frame, polygon, t_base_camera)
             rise, middle_plane = self._surface_shape(points, center, axis, fish.total_length)
         if middle_plane is not None:
             fish.thickness = float(middle_plane[1] - table_z)
@@ -317,21 +313,25 @@ class FishLocator:
             failed.add("wrong_heading")
             details["wrong_heading"] = f"which end is the head is unclear ({confidence:.2f})"
 
-        # The cups go where the fish balances: ahead of its middle, toward the heavier head,
-        # as far as they still fit on the body and all six seal; else the middle, else up to
-        # grasp_behind_m behind it. Head end unknown: the middle, then either way. Nowhere:
-        # grasp_point_off_body. The cups lean onto the body's plane under them.
-        grasp_xy, plane, seals, fits = center, middle_plane, False, 0
-        for distance in self._grasp_offsets(fish.total_length, fish.heading_known):
+        # The cups go where the fish balances (ahead of its middle, toward the heavier head),
+        # else as near it as they fit on the body and all six seal, back to grasp_behind_m
+        # behind the middle; head end unknown: the middle, then either way. No such spot: the
+        # first they fit on, else the balance point (the fish given to the arm are big
+        # enough; the hold check tells). The cups lean onto the body's plane under them.
+        offsets = self._grasp_offsets(fish.total_length, fish.heading_known)
+        grasp_xy, plane, found = center + direction * offsets[0], middle_plane, None
+        for distance in offsets:
             point = center + direction * distance
             if not self._footprint_fits(outline_xy, point, axis):
                 continue
-            fits += 1
             sealed, under_cups = self._cup_contact(points, point, axis)
-            if sealed is not False:  # None: too little depth under the cups; the outline says
-                grasp_xy, seals = point, True
-                plane = under_cups if under_cups is not None else plane
+            if found is None or sealed is not False:  # None: too little depth to tell
+                found = (point, under_cups)
+            if sealed is not False:
                 break
+        if found is not None:
+            grasp_xy = found[0]
+            plane = found[1] if found[1] is not None else plane
         approach = (0.0, 0.0, -1.0)
         if plane is not None:  # the surface's height and slope right at the grasp point
             normal, height = plane
@@ -352,25 +352,20 @@ class FishLocator:
             float(table_z), float(table_z + max(fish.thickness, middle_height)),
         )  # fmt: skip
 
-        if not seals:  # the cups would hang off the body, or not all of them reach it
-            failed.add("grasp_point_off_body")
-            details["grasp_point_off_body"] = (
-                "something under a cup keeps the six from sealing (a fin, a step)"
-                if fits
-                else f"the six cups don't fit on it ({width_middle * 1000:.0f} mm wide)"
-            )
+        # Too big for one fish of its type: two seen as one. Smaller isn't refused: the fish
+        # given to the arm are big enough
         sizes = (
-            ("length", fish.total_length, s.fish.length_range_m),
-            ("width", width_middle, s.fish.width_range_m),
-            ("height", middle_height, s.fish.thickness_range_m),
+            ("length", fish.total_length, s.fish.length_range_m[1]),
+            ("width", width_middle, s.fish.width_range_m[1]),
+            ("height", middle_height, s.fish.thickness_range_m[1]),
         )
-        wrong = [item for item in sizes if s.check_size and not _within(item[1], item[2])]
+        wrong = [item for item in sizes if s.check_size and item[1] > item[2]]
         if wrong or not _in_area(center, self.pick_area):
             failed.add("geometry_out_of_range")
             details["geometry_out_of_range"] = (
                 "; ".join(
-                    f"{name} {value:.2f} m ({s.fish_type}: {low:.2f}-{high:.2f})"
-                    for name, value, (low, high) in wrong
+                    f"{name} {value:.2f} m (over {high:.2f} for a {s.fish_type})"
+                    for name, value, high in wrong
                 )
                 or "outside the pick area"
             )
@@ -481,16 +476,12 @@ class FishLocator:
 
     def _cup_contact(self, points: np.ndarray | None, point_xy, axis):
         """
-        Whether all six cups (3 x 2, filling the footprint) would seal with the footprint's
-        middle at `point_xy` (None: the depth can't tell), and the body's plane under them as
-        (upward normal, height at `point_xy`), None without it. The plane goes through the
-        body under each cup (its median); the cups lean onto it (if allowed and not too
-        steep, else straight down). Each cup's lip meets the highest surface under it first
-        (a high percentile, so one stray point doesn't count): something standing well above
-        the body there, like a fin, keeps that cup off the fish. Pressed until the last cup
-        touches, the first is compressed by the difference between their heights: that must
-        be within the stroke. A cup over a hole in the depth (shiny skin, an edge) isn't
-        judged; with fewer than min_cups_measured judged the depth can't tell.
+        Whether all six cups would seal with their middle at `point_xy` (None: the depth
+        can't tell, fewer than min_cups_measured cups have depth under them), and the body's
+        plane under them as (upward normal, height at `point_xy`) or None. The cups lean onto
+        the plane through each cup's median (not too steep, else straight down); a bump under
+        a cup's lip (a fin) or heights across the cups differing by more than the stroke rule
+        the spot out.
         """
         s = self.settings
         if points is None or len(points) == 0:
@@ -571,10 +562,6 @@ def _lip_bump(heights, along, across, fit) -> float:
     else:
         rest = heights - np.column_stack([along, across]) @ fit[:2]
     return float(np.percentile(rest, 90) - np.median(rest))
-
-
-def _within(value: float, limits: tuple[float, float]) -> bool:
-    return limits[0] <= value <= limits[1]
 
 
 def _in_area(xy, area: Area | None) -> bool:

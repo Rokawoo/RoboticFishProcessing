@@ -1,39 +1,34 @@
-# Control panel: where settings are changed. Each setting is written in one place: here,
-# or (the cell's measurements) in Arm/configs/workcell.yaml, never both. Anything not set
-# here has its default in the code, where every setting is listed with its explanation:
-#   workcell    Arm/rfp_arm/workcell.py (MotionLimits, GraspSettings, GripperSettings)
-#   vision      Vision/rfp_vision/settings.py        control  ControlSys/rfp_controlsys/settings.py
-#   simulation  Simulation/rfp_sim/settings.py
-# Any of them can be added below under its section. Unknown names are errors. Units: meters,
-# degrees, seconds, newtons. `run` holds the defaults of pick_place.py's command line (an
-# option given on the command line wins).
+# Control panel: the settings you change. A setting is here or in Arm/configs/workcell.yaml
+# (the cell's measurements), not both. Everything else keeps its default; the full lists:
+# Arm/rfp_arm/workcell.py, Vision/rfp_vision/settings.py, ControlSys/rfp_controlsys/settings.py,
+# Simulation/rfp_sim/settings.py. Units: m, degrees, s, N. Unknown names are errors.
 
-run:
+run:                  # pick_place.py's defaults; the command line wins
   mode: null          # setup | sim3d | sim | check | dry-run | run; null: ask
   device: null        # realsense | a serial number | a camera index | a video; null: the D405
   model: null         # training run folder or .pt file; null: the newest run
   cycles: null        # stop after this many grasps; null: until the pick area is clear
   step: false         # wait for Enter before every move
   window: true        # show the camera image
-  any_size: false     # skip the fish size checks (videos from other cameras)
-  bringup: true       # start MoveIt and the FR5's driver when a mode needs them and they aren't
-                      # running (Arm/ros/fr5_bringup.launch.py; ./robot.sh sources ROS for it)
-  twin: true          # beside the arm: a 3D window of it moving, the fish vision finds, depth
+  any_size: false     # don't refuse fish for their size (videos from other cameras)
+  bringup: true       # start MoveIt and the FR5's driver if a mode needs them and they're down
+  twin: true          # 3D window of the arm, the fish vision finds and the depth
 
 workcell:
-  verified: false     # true once the cell is measured: the real arm refuses to move before
+  verified: false     # true once the cell is measured; the real arm won't move before
   gripper:
     driver: serial              # serial | http (the valve board) | controller (FR5 I/O)
     serial_port: /dev/ttyACM0   # Windows: COM3, ...
     http_host: ""               # the valve board over Wi-Fi; 192.168.4.1 on its own network
   motion:
     tcp_speed_max: 0.25         # m/s, the limit for every move
-    approach_speed: 0.05        # m/s onto the fish
+    approach_speed: 0.05        # m/s down over the fish (onto it, if the arm can't feel)
     carry_speed: 0.20           # m/s with a fish
     free_speed: 0.25            # m/s without
     ptp_velocity_scale: 0.30    # share of the joint speed limits on point-to-point moves
   grasp:
     feel_contact: true          # lower the cups until the fish pushes back (real arm)
+    feel_speed: 0.02            # m/s down onto the fish, in one move, until it pushes back
     contact_force: 15.0         # N that count as touching it     (tune: --mode check)
     press_force_max: 40.0       # N at which pressing stops
     press_distance: 0.010       # m pressed on after contact
@@ -46,13 +41,18 @@ workcell:
     heading_deg: -90            # where placed fish point their heads: from +X toward +Y
 
 vision:
+  hfov_deg: 74                  # camera's view across the image, deg (data sheet: 87); a run
+                                # says if the camera reports another
   min_confidence: 0.60          # weaker detections are flagged low_confidence: not picked
   use_depth: true               # false: every fish is put on the table plane
   align_to_surface: true        # tilt the cups onto the fish's sloping surface
   require_heading: false        # true: don't pick fish whose head end is unclear
   min_heading_confidence: 0.6
-  check_size: true              # false: don't check length, width and thickness
-  fish_type: stand_in           # whose size limits: stand_in (printed fish) or catfish (real)
+  check_size: true              # false: don't refuse fish too big to be one
+  fish_type: stand_in           # stand_in (printed fish) or catfish (real): sizes, balance point
+  stand_in:
+    balance_ahead_share: 0.115  # cups this share of the length ahead of the middle, toward
+                                # the head (a stand-in balances at 0.126)
   hold:                         # camera check that a held fish is still there
     use_mask: true
     use_depth: true

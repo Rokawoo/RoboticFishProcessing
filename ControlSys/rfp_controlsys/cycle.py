@@ -1,24 +1,9 @@
 """
-The pick-and-place cycle (SY-20, CS-10 to CS-64): find a fish, go over it and look from
-straight above, let the selector choose, check its answer, run the grasp sequence, and
-answer every failure as in Table CS-1. It talks to the arm, the gripper, the vision system
-and the operator only through their interfaces, so the same cycle runs offline, in
-simulation, as a dry run and with vacuum (CS-90).
-
-How it moves, to be quick and sure of each fish:
-- search: the observation poses one after another, a quick look from each, until one sees
-  a fish; every fish seen is remembered (`Sighting`), so after a place the arm goes straight
-  to the next one it knows of;
-- focus: the camera over the fish's middle, level, the image's long side along it, as high
-  as it takes to see all of it (from observation.height up to close_height), each look aimed
-  at what the last one saw (a fish cut off at the image's edge: its middle half its expected
-  length from the end that shows), up to focus_steps looks;
-- a fish whose position jumps when the camera moves means the camera's mount is wrong:
-  the run stops and says so (pick_place.py --calibrate measures it);
-- the look before the grasp (CS-41) is taken again only if the decision took longer than
-  recheck_after_s; the carry height follows what lies on the way.
-
-Not done here yet: the payload update (CS-45) and the VLM (a FishSelector, selector.py).
+The pick-and-place cycle (SY-20, CS-10 to CS-64): find a fish, look at it from straight
+above, let the selector choose, check its answer, run the grasp sequence, and answer every
+failure as in Table CS-1. It reaches the arm, gripper, vision and operator only through
+their interfaces, so the same cycle runs offline, in simulation, dry and for real (CS-90).
+Not done yet: the payload update (CS-45), the VLM (a FishSelector, selector.py).
 """
 
 import itertools
@@ -53,6 +38,7 @@ from rfp_vision.camera import CameraError, Frame
 from rfp_vision.fish_list import Fish, FishList, heading_difference, match_fish
 from rfp_vision.geometry import to_frame
 from rfp_vision.overlay import draw_fish_list
+from rfp_vision.settings import VisionSettings
 from rfp_vision.vision_system import Observation
 
 from rfp_controlsys.selector import (
@@ -90,6 +76,7 @@ CAMERA_MOVED = 0.03  # m the camera moves between two looks for the mount check 
 # close together, one taken for the other, stopped a run in the simulator
 MOUNT_JUMP_SHARE = 1.0
 DEFAULT_LENGTH = 0.6  # m: a fish's expected length when vision's settings don't say
+LENS_WARNING_DEG = 2.0  # the camera's view this much wider or narrower than the setting: say so
 STILL_AIMED = 0.02  # m: a fish's estimated middle moved less, the next look aims the same
 
 
@@ -221,6 +208,8 @@ class PickPlaceCycle:
         self._attempts = Attempts(settings.same_fish_m)  # by the fish's middle
         self.sightings: list[Sighting] = []  # fish seen and not placed yet
         self._pose_index = 0
+        # Slots are used in turn, round and round: a placed fish is taken away before its
+        # slot comes round again, so one slot is enough
         self._slot = 0
         self._placed: list[tuple[tuple[float, float], float, float]] = []  # slot, length, height
         self._empty = 0  # search passes in a row without any fish
@@ -236,6 +225,7 @@ class PickPlaceCycle:
         self._hold_text = ""
         self._live_at = -math.inf  # when the tick last ran the detector
         self._table_said = False
+        self._lens_said = False
         # Called with each fish list (and its frame) vision makes: the 3D view shows them
         self.on_fish_list: Callable[[FishList, Frame], None] | None = None
 
@@ -297,12 +287,6 @@ class PickPlaceCycle:
         if not candidates:
             target.looks += 1
             return True
-        if self._slot >= len(self.workcell.slots):
-            self._pause("The placement zone is full (AS-56). Clear it, then resume.")
-            self._slot = 0
-            self._placed.clear()
-            return True  # look again: someone was at the table
-
         decision = self._decide(observation, candidates)
         if decision.action == "reobserve":  # another look, not the fish's fault (max_reobserve)
             return True
@@ -499,8 +483,9 @@ class PickPlaceCycle:
     def _hfov(self) -> float:
         frame = self._frame
         if frame is not None:
-            return 2.0 * math.atan(frame.intrinsics.width / 2.0 / frame.intrinsics.fx)
-        return math.radians(getattr(getattr(self.vision, "settings", None), "hfov_deg", 87.0))
+            return math.radians(frame.intrinsics.hfov_deg)
+        settings = getattr(self.vision, "settings", None)
+        return math.radians(getattr(settings, "hfov_deg", VisionSettings.hfov_deg))
 
     def _expected_length(self) -> float:
         """A fish's length as vision measures it: the middle of the fish type's range."""
@@ -543,6 +528,7 @@ class PickPlaceCycle:
         except CameraError as e:
             raise RunStopped(f"camera failure: {e}") from None
         self._frame = observation.frame
+        self._say_lens(observation.frame)
         self.vision.hold.set_background(observation.frame)  # nothing is held here
         self._remember(observation)
         self._show(observation)
@@ -641,6 +627,21 @@ class PickPlaceCycle:
             if sighting not in taken and distance <= limit:
                 near.append((distance, i))
         return self.sightings[min(near)[1]] if near else None
+
+    def _say_lens(self, frame: Frame) -> None:
+        """Once a run: the camera's own field of view, if the settings have it otherwise (the
+        layout check and the simulator go by the setting)."""
+        settings = getattr(self.vision, "settings", None)
+        if self._lens_said or settings is None:
+            return
+        self._lens_said = True
+        seen = frame.intrinsics.hfov_deg
+        if abs(seen - settings.hfov_deg) > LENS_WARNING_DEG:
+            self.console.info(
+                f"⚠️  the camera reports a {seen:.1f} deg wide view, the settings "
+                f"{settings.hfov_deg:g}: set vision.hfov_deg: {seen:.1f} in control_panel.yaml "
+                "(the layout check and the simulator go by it)"
+            )
 
     def _say_table(self, fish: Fish) -> None:
         """Once a run: the table measured around a fish, if the workcell has it elsewhere."""
@@ -785,6 +786,8 @@ class PickPlaceCycle:
         started = self._clock()
         point = fish.grasp_point
         slot = cell.slots[self._slot]
+        # the fish placed there last has been taken away: nothing lies there now
+        self._placed = [placed for placed in self._placed if placed[0] != tuple(slot)]
         clear = self._clear_height(fish, slot, fish_list)
         row = {
             "cycle": self.report.cycles,
@@ -858,7 +861,7 @@ class PickPlaceCycle:
             self._log_row(row, started)
             self.console.info(f"✅ fish placed in slot {self._slot + 1}")
             self._placed.append((tuple(slot), fish.total_length, max(fish.thickness, 0.0)))
-            self._slot += 1
+            self._slot = (self._slot + 1) % len(cell.slots)
             self.report.successes += 1
             self._failed_in_row = 0
             self._last_result, self._last_failed = "success", None
@@ -946,14 +949,11 @@ class PickPlaceCycle:
                 error.fish_put_back
                 and self.workcell.placement_zone.contains(error.tcp_pose[:2, 3])
                 and not self.workcell.in_pick_area(error.tcp_pose[:2, 3])
-            ):  # off its slot, turned anyhow: the next fish would go on top of it
-                slot = self.workcell.slots[self._slot]
+            ):  # off its slot, turned anyhow: taken away like a placed fish, the slot stays
                 self._pause(
                     f"The fish was set down at {_where(error.tcp_pose[:2, 3])}, off its slot. "
-                    f"Put it in slot {self._slot + 1} or take it away, then resume."
+                    "Take it away, then resume."
                 )
-                self._placed.append((tuple(slot), fish.total_length, max(fish.thickness, 0.0)))
-                self._slot += 1
             elif sequence.step and not error.fish_put_back:  # the arm is somewhere in the grasp
                 sequence.let_go()
                 if code != E_DROP:

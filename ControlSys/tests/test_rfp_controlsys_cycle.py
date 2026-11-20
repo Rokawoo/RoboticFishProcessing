@@ -34,12 +34,12 @@ from rfp_controlsys.selector import (
 from rfp_controlsys.settings import ControlSettings, load_settings
 from rfp_vision.camera import Frame
 from rfp_vision.fish_list import Fish, FishList
-from rfp_vision.geometry import Intrinsics, pose_down
+from rfp_vision.geometry import pose_down
 from rfp_vision.settings import VisionSettings
 from rfp_vision.vision_system import Observation
 
 CELL = make_workcell()
-K = Intrinsics.from_fov(320, 180, 87.0)
+K = VisionSettings(width=320, height=180).lens()  # the camera as set, small
 
 
 def fish(fish_id, x, y, heading_deg=90.0, confidence=0.9, code="none", overlap=False, known=True):
@@ -164,16 +164,18 @@ class Operator(Console):
 
 
 class Rig:
-    def __init__(self, *fish_at, answers=(), gripper=None, selector=None, log=None, **options):
+    def __init__(
+        self, *fish_at, answers=(), gripper=None, selector=None, log=None, cell=CELL, **options
+    ):
         self.table = Table(*fish_at)
-        self.arm = SimArm(CELL)
+        self.arm = SimArm(cell)
         self.gripper = gripper or TableGripper(self.table, self.arm)
         self.clock = Clock()
         self.operator = Operator(self.clock, answers)
         settings = options.pop("settings", ControlSettings(settle_s=0.0))
         options.setdefault("vision_hold", False)
         self.cycle = PickPlaceCycle(
-            self.arm, self.gripper, self.table, selector or RuleSelector(), CELL, settings,
+            self.arm, self.gripper, self.table, selector or RuleSelector(), cell, settings,
             self.operator, log, clock=self.clock, sleep=self.clock.sleep, **options,
         )  # fmt: skip
 
@@ -345,7 +347,7 @@ def test_arm_faults_stop_the_run_until_the_operator_resets():
     rig = Rig(A)
     moves = []
 
-    def protective_stop(pose, speed, accel, tick=None):
+    def protective_stop(pose, speed, accel, tick=None, until=None):
         moves.append(pose)
         raise ArmError(E_PROTECTIVE_STOP, "emergency stop pressed")
 
@@ -366,10 +368,11 @@ def test_unreachable_fish_are_skipped_and_the_others_picked():
     assert len(report.skipped) == 1 and B not in [f[:2] for f in rig.table.fish]
 
 
-def test_a_fish_set_down_off_its_slot_is_the_operators_and_the_next_goes_to_the_next_slot():
+def test_a_fish_set_down_off_its_slot_is_taken_away_and_its_slot_used_next():
     # The move down into slot 1 fails twice: the fish is set down where the arm is, in the
-    # placement zone. Vision doesn't pick fish there, and the next one went on top of it.
-    slot1, slot2 = CELL.slots[0], CELL.slots[1]
+    # placement zone. Vision doesn't pick fish there: the operator takes it away, as placed
+    # fish are, and slot 1 is still free for the next.
+    slot1 = CELL.slots[0]
     refused = []
 
     def fail(kind, target):
@@ -384,9 +387,9 @@ def test_a_fish_set_down_off_its_slot_is_the_operators_and_the_next_goes_to_the_
     report = rig.run()
     assert len(refused) == 2 and report.successes == 1
     assert len(rig.operator.alerts) == 1 and "off its slot" in rig.operator.alerts[0]
-    assert "slot 1" in rig.operator.alerts[0]
+    assert "Take it away" in rig.operator.alerts[0]
     lowered = [pose for kind, pose in rig.arm.moves if kind == "lin" and pose[2, 3] < 0.3]
-    assert math.dist(lowered[-1][:2, 3], slot2) < 0.01  # the next fish: slot 2
+    assert math.dist(lowered[-1][:2, 3], slot1) < 0.01  # the next fish: slot 1
 
 
 def test_a_fish_put_back_where_it_lay_is_not_taken_for_one_set_down_off_its_slot():
@@ -575,12 +578,17 @@ def test_every_mode_starts_by_saying_what_keeps_the_layout_from_working():
     assert not [line for line in lines if line.startswith("❌")]  # the placeholder layout works
 
 
-def test_a_full_placement_zone_pauses_the_run():
-    rig = Rig(A, B, C, answers=[True])
-    report = rig.run()
-    assert report.successes == 3 and "placement zone is full" in rig.operator.alerts[0]
-    stopped = Rig(A, B, C).run()
-    assert stopped.successes == 2 and stopped.ended.startswith("stopped at: The placement zone")
+def test_slots_are_used_in_turn_as_placed_fish_are_taken_away():
+    def slots_used(rig):
+        return [s.rsplit(" ", 1)[1] for s in rig.operator.states if s.startswith("✅ fish placed")]
+
+    rig = Rig(A, B, C)  # three fish, two slots: no pause for a full placement zone
+    assert rig.run().successes == 3 and not rig.operator.alerts
+    assert slots_used(rig) == ["1", "2", "1"]
+    one = make_workcell(lambda d: d["placement"].update(slots=[list(CELL.slots[0])]))
+    single = Rig(A, B, cell=one)  # one slot is enough
+    assert single.run().successes == 2 and slots_used(single) == ["1", "1"]
+    assert len(single.cycle._placed) == 1  # the first was taken away: carries don't clear it
 
 
 class Scripted:
