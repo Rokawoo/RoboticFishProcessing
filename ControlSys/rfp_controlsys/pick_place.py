@@ -52,6 +52,7 @@ answers for needs the emergency stop. Each run is logged in ControlSys/runs/.
 """
 
 import argparse
+import contextlib
 import math
 import os
 import re
@@ -607,13 +608,17 @@ def run_cycles(
     if twin is not None:
         cycle.on_fish_list = twin.show_fish
     print(f"\nRunning ({mode}). Log: {log.folder}")
-    stopped = ""
+    stopped, failure = "", None
     started = time.monotonic()
     try:
         cycle.run(max_cycles)
     except KeyboardInterrupt:
         stopped = "stopped with Ctrl+C"
         arm.stop()
+    except Exception as e:  # noqa: BLE001 - one the cycle doesn't know: say what the gripper holds
+        stopped, failure = f"stopped by an error: {e!r}", e
+        with contextlib.suppress(Exception):  # the error is what to show, not this one
+            arm.stop()
     elapsed = time.monotonic() - started
     report = cycle.report
     report.ended = stopped or report.ended
@@ -633,6 +638,8 @@ def run_cycles(
             cycle.sequence.let_go()
         else:
             print("   Turn it off with: python Arm/scripts/gripper_bench.py off")
+    if failure is not None:
+        raise failure
     if mode == "sim3d":
         print("Next: --mode sim on the robot PC (MoveIt's mock hardware in RViz)")
     elif mode == "sim":

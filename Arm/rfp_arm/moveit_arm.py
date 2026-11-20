@@ -653,7 +653,10 @@ def _joined(trajectories: list):
             if k == 0 and points:
                 continue
             t = offset + _seconds(point.time_from_start)
-            point.time_from_start.sec = int(t)
-            point.time_from_start.nanosec = round((t - int(t)) * 1e9)
+            # in whole nanoseconds: a time a hair under a whole second had its fraction
+            # round up to 1e9 ns, which no Duration holds
+            point.time_from_start.sec, point.time_from_start.nanosec = divmod(
+                round(t * 1e9), 1_000_000_000
+            )
             points.append(point)
     return first

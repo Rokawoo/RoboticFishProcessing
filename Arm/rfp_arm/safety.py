@@ -14,6 +14,8 @@ import numpy as np
 from rfp_arm.kinematics import Chain
 from rfp_arm.workcell import Workcell
 
+JUMP = 1e-4  # m any point of the arm may move between two points of a plan at one time
+
 
 @dataclass
 class TrajectoryCheck:
@@ -79,9 +81,13 @@ def check_trajectory(
         empty.problem = "the plan's times go backward"
         return empty
     moving = steps > 1e-6
-    if moving.any():
+    if len(steps):
         moves = np.linalg.norm(np.diff(np.array(points), axis=0), axis=2).max(axis=1)
-        peak = float((moves[moving] / steps[moving]).max())
+        if (moves[~moving] > JUMP).any():  # a move in no time would pass any speed limit
+            empty.problem = "the plan moves the arm in no time (two points, one time)"
+            return empty
+        if moving.any():
+            peak = float((moves[moving] / steps[moving]).max())
     travel = float(np.abs(positions - positions[0]).max())
     check = TrajectoryCheck(None, False, peak, float(times[-1] - times[0]), travel, poses[-1])
 

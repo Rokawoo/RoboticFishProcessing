@@ -389,6 +389,38 @@ def test_a_fish_set_down_off_its_slot_is_the_operators_and_the_next_goes_to_the_
     assert math.dist(lowered[-1][:2, 3], slot2) < 0.01  # the next fish: slot 2
 
 
+def test_a_fish_put_back_where_it_lay_is_not_taken_for_one_set_down_off_its_slot():
+    # Lying just past the pick area's edge (it counts as inside), a failed lift sets it
+    # down again where it lay: not in the placement zone, so no slot is given up for it
+    edge = CELL.pick_area.x[1]
+    lifts = []
+
+    def fail(kind, target):
+        lifting = math.dist(target[:2, 3], (edge + 0.02, -0.10)) < 0.01 and target[2, 3] > 0.15
+        if kind == "lin" and lifting and len(lifts) < 2:
+            lifts.append(kind)
+            return "no straight path"
+        return None
+
+    rig = Rig((edge + 0.02, -0.10))
+    rig.arm.fail = fail
+    report = rig.run(max_cycles=2)
+    assert len(lifts) == 2 and not any("off its slot" in a for a in rig.operator.alerts)
+    assert report.successes == 1 and rig.cycle._slot == 1  # placed in slot 1 after all
+
+
+def test_a_detour_to_turn_the_fish_is_carried_over_what_lies_on_it():
+    # Straight from the fish to the slot nothing is in the way; the detour to a turning
+    # spot passes over a fish placed already
+    rig = Rig()
+    fish_ = fish(1, 0.40, -0.10)
+    slot = CELL.slots[0]
+    rig.cycle._placed.append(((1.20, -0.10), 0.60, 0.20))  # 0.8 m off the straight way
+    straight = rig.cycle._clear_height(fish_, slot, None)
+    detour = rig.cycle._clear_height(fish_, slot, None, way=[(1.00, -0.10)])
+    assert straight == pytest.approx(CELL.table_z) and detour == pytest.approx(0.20)
+
+
 def test_a_plan_refused_for_where_a_fish_lies_skips_it_without_pausing(monkeypatch):
     from rfp_arm.interfaces import E_MOTION
     from rfp_controlsys import cycle as cycle_module
@@ -515,6 +547,26 @@ def test_what_lies_under_the_arm_is_the_arm_not_a_fish(monkeypatch):
     report = rig.run()
     assert report.ended == "pick area clear" and report.successes == 1 and under
     assert all(not math.dist(s.xy, B) < 0.01 for s in rig.cycle.sightings)
+
+
+def test_a_fish_cut_off_even_from_the_highest_look_gets_one_look_from_there():
+    # The same look again, from as high as looks go and aimed at the same place, would see
+    # the same: a move and a camera pass for nothing
+    heights = []
+
+    class AlwaysCut(Table):
+        def observe(self, t_base_camera, on_frame=None, frames=None):
+            observation = super().observe(t_base_camera, on_frame)
+            heights.append(round(float(t_base_camera[2, 3]), 3))
+            for f in observation.fish_list.fish:
+                f.failures, f.failure_code, f.seen_at = ("out_of_frame",), "out_of_frame", (*A, 0.0)
+            return observation
+
+    rig = Rig((*A, {"code": "out_of_frame"}))
+    rig.table.__class__ = AlwaysCut
+    rig.run()  # set aside after its looks; the operator is asked, nobody answers: stop
+    top = max(heights)
+    assert heights.count(top) <= ControlSettings().max_looks_per_fish  # once each time
 
 
 def test_every_mode_starts_by_saying_what_keeps_the_layout_from_working():
@@ -721,6 +773,31 @@ def test_a_driver_built_for_other_firmware_is_said_before_anything_moves(tmp_pat
         pick_place.check_driver(Controller("V3.9.5"))
     monkeypatch.setenv("AMENT_PREFIX_PATH", "")
     pick_place.check_driver(Controller("V3.9.5"))  # built by hand, no stamp: no check
+
+
+def test_an_unexpected_error_still_says_the_fish_may_be_on_the_gripper(monkeypatch, capsys):
+    # Anything the cycle doesn't know stopped the program without a word about the vacuum
+    import types
+
+    from rfp_controlsys import cycle as cycle_module
+
+    def broken(self, max_cycles=None):
+        self.sequence = types.SimpleNamespace(holding=True, let_go=lambda: None)
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr(cycle_module.PickPlaceCycle, "run", broken)
+    monkeypatch.setattr(pick_place, "RunLog", lambda info: RunLog(info, root=None))
+    vision = types.SimpleNamespace(
+        camera=types.SimpleNamespace(name="test"), detector=types.SimpleNamespace(version="t")
+    )
+    arm = SimArm(CELL)
+    with pytest.raises(RuntimeError, match="a bug"):
+        pick_place.run_cycles(
+            "run", arm, SimGripper(), vision, CELL, ControlSettings(),
+            Console(window=False, interactive=False), 1,
+        )  # fmt: skip
+    out = capsys.readouterr().out
+    assert "stopped by an error" in out and "vacuum is still on" in out
 
 
 def test_the_run_says_how_fast_the_cell_worked():

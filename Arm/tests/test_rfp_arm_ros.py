@@ -387,6 +387,27 @@ def test_the_empty_states_of_a_dispatcher_without_a_driver_read_as_nothing(ros):
     assert "setup.sh --robot" in io.fault()
 
 
+def test_joined_trajectories_keep_each_time_a_valid_duration():
+    # A time just under a whole second rounded its fraction up to 1e9 ns: no Duration holds
+    # that, and the blended trajectory would have been refused
+    from fake_ros import message
+    from rfp_arm.moveit_arm import _joined
+
+    def trajectory(*times):
+        made = message("moveit_msgs/msg/RobotTrajectory")()
+        for sec, nanosec in times:
+            point = message("trajectory_msgs/msg/JointTrajectoryPoint")(positions=[0.0] * 6)
+            point.time_from_start.sec, point.time_from_start.nanosec = sec, nanosec
+            made.joint_trajectory.points.append(point)
+        return made
+
+    joined = _joined([trajectory((0, 0), (1, 999_999_999)), trajectory((0, 0), (0, 1))])
+    last = joined.joint_trajectory.points[-1].time_from_start
+    assert (last.sec, last.nanosec) == (2, 0)
+    nanoseconds = [p.time_from_start.nanosec for p in joined.joint_trajectory.points]
+    assert all(0 <= ns < 1_000_000_000 for ns in nanoseconds)
+
+
 def test_a_command_server_not_connected_to_the_controller_is_a_fault(ros):
     robot, link = ros(fairino=True)
     robot.reconnect_flag = 1  # the newest driver's dispatcher, still looking for the controller

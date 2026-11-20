@@ -21,6 +21,7 @@ How it moves, to be quick and sure of each fish:
 Not done here yet: the payload update (CS-45) and the VLM (a FishSelector, selector.py).
 """
 
+import itertools
 import math
 import time
 from collections.abc import Callable
@@ -89,6 +90,7 @@ CAMERA_MOVED = 0.03  # m the camera moves between two looks for the mount check 
 # close together, one taken for the other, stopped a run in the simulator
 MOUNT_JUMP_SHARE = 1.0
 DEFAULT_LENGTH = 0.6  # m: a fish's expected length when vision's settings don't say
+STILL_AIMED = 0.02  # m: a fish's estimated middle moved less, the next look aims the same
 
 
 class RunStopped(Exception):
@@ -378,6 +380,9 @@ class PickPlaceCycle:
             found = (pose, observation, target)
             if "out_of_frame" not in fish.failures:
                 break
+            highest = pose.camera[2, 3] - self.workcell.table_z >= self._look_heights()[1] - 1e-3
+            if highest and float(np.linalg.norm(target.xy - before[0])) < STILL_AIMED:
+                break  # as high as a look goes, aimed where it was: the next would see the same
             # It didn't fit: it is at least as long as the view along it, so look from higher
             height = pose.camera[2, 3] - self.workcell.table_z - target.thickness * 0.5
             target.length = max(target.length, 2.0 * height * math.tan(self._hfov() / 2.0))
@@ -815,10 +820,19 @@ class PickPlaceCycle:
             controller=self._controller,
         )
         try:
-            plan = plan_grasp(
-                cell, fish.grasp_pose, fish.heading_known, fish.total_length, fish.thickness,
-                slot, self._tool_yaw, self.dry_run, self.arm.wrist_angle, fish.middle, clear,
-            )  # fmt: skip
+
+            def planned(clear_z: float | None):
+                return plan_grasp(
+                    cell, fish.grasp_pose, fish.heading_known, fish.total_length, fish.thickness,
+                    slot, self._tool_yaw, self.dry_run, self.arm.wrist_angle, fish.middle, clear_z,
+                )  # fmt: skip
+
+            plan = planned(clear)
+            if clear is not None and plan.carry_via:  # over what lies where it really goes
+                way = [(p[:3, 3] + p[:3, 0] * plan.middle_x)[:2] for p in plan.carry_via]
+                higher = self._clear_height(fish, slot, fish_list, way)
+                if higher > clear + 1e-9:  # a detour to turn the fish passes over another
+                    plan = planned(higher)
             if problem := self._plan_problem(plan):  # nothing moved: like a refused plan
                 raise ArmError(E_MOTION, f"the plan can't run: {problem}")
             row["carry_mm"] = round((plan.carry[2, 3] - cell.table_z) * 1000)
@@ -860,15 +874,17 @@ class PickPlaceCycle:
             if np.linalg.norm(sighting.xy - xy) <= max(SAME_CUT, sighting.length / 4)
         ]
 
-    def _clear_height(self, fish: Fish, slot, fish_list: FishList | None) -> float | None:
+    def _clear_height(self, fish: Fish, slot, fish_list: FishList | None, way=None) -> float | None:
         """The top (z in {B}) of what a fish carried from where it lies to the slot passes
         over: the other fish seen near the way (from vision's heights) and the fish placed
-        already; the table if nothing. None to carry at the fixed height (carry_over_seen
-        off)."""
+        already; the table if nothing. `way`: where the held fish's middle passes on the
+        way (x, y), if not straight there (a detour to turn it). None to carry at the fixed
+        height (carry_over_seen off)."""
         cell, s = self.workcell, self.settings
         if not s.carry_over_seen:
             return None
         start, end = np.asarray(fish.middle[:2], float), np.asarray(slot, float)
+        path = [start, *(np.asarray(point, float)[:2] for point in way or ()), end]
         reach = fish.total_length / 2 + s.carry_corridor_m  # the held fish swings this far
         top = cell.table_z
         others = []
@@ -889,7 +905,8 @@ class PickPlaceCycle:
         for placed, length, height in self._placed:
             others.append((np.asarray(placed, float), length / 2, cell.table_z + height))
         for middle, half, height in others:
-            if _segment_distance(middle, start, end) <= reach + half:
+            near = min(_segment_distance(middle, a, b) for a, b in itertools.pairwise(path))
+            if near <= reach + half:
                 top = max(top, height)
         return top
 
@@ -925,8 +942,10 @@ class PickPlaceCycle:
                 sequence.let_go()
             elif code == E_RELEASE:
                 self._pause("The gripper didn't release the fish (E_RELEASE). Check the vacuum.")
-            elif error.fish_put_back and not self.workcell.pick_area.contains(
-                error.tcp_pose[:2, 3]
+            elif (
+                error.fish_put_back
+                and self.workcell.placement_zone.contains(error.tcp_pose[:2, 3])
+                and not self.workcell.in_pick_area(error.tcp_pose[:2, 3])
             ):  # off its slot, turned anyhow: the next fish would go on top of it
                 slot = self.workcell.slots[self._slot]
                 self._pause(
@@ -943,7 +962,7 @@ class PickPlaceCycle:
                 if (
                     code == E_DROP
                     and dropped_at is not None
-                    and not self.workcell.pick_area.contains(dropped_at[:2, 3])
+                    and not self.workcell.in_pick_area(dropped_at[:2, 3])
                 ):
                     self._pause("The fish was dropped outside the pick area. Put it back or away.")
         except MotionAborted as aborted:

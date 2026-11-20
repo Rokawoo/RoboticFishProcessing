@@ -306,6 +306,21 @@ def joint_path(start, end, seconds, points=40):
     return start + (end - start) * shares, np.linspace(0, seconds, points)
 
 
+def test_a_plan_that_moves_the_arm_in_no_time_is_refused():
+    # A step of no time was left out of the speed check: a jump passed any speed limit
+    from rfp_arm.safety import check_trajectory
+
+    start = joints_for(0.40, -0.10, 0.36, yaw=1.2)
+    moved = start.copy()
+    moved[0] += 0.2
+    positions = np.array([start, moved, moved])
+    still = check_trajectory(CELL, FR5, FR5.joint_names, positions[[0, 0, 1]],
+                             np.array([0.0, 0.0, 2.0]), 0.0)  # fmt: skip
+    assert still.ok  # the same point twice at one time: fine
+    jump = check_trajectory(CELL, FR5, FR5.joint_names, positions, np.array([0.0, 0.0, 2.0]), 0.0)
+    assert not jump.ok and "no time" in jump.problem
+
+
 def test_planned_trajectories_are_checked_for_speed_zones_and_posture():
     names = FR5.joint_names
     a, b = joints_for(0.35, -0.2, 0.36), joints_for(0.50, 0.1, 0.20)
@@ -759,6 +774,51 @@ def test_a_failed_move_is_planned_again_once_then_the_fish_is_put_back():
     rig.arm.fail = lambda kind, target: "unreachable" if kind == "ptp" else None
     error = rig.fails()  # before the fish is held: nothing to put back
     assert rig.sequence.step == "pre-grasp" and not error.fish_put_back and not error.still_holding
+
+
+def test_a_carry_planned_again_goes_on_from_the_stop_it_was_heading_for():
+    # Refused straight and point-to-point, the carry is planned again: back to the first
+    # stop, the tool would turn the short way, which the stops keep the wrist from
+    import dataclasses
+
+    base = plan()
+    via = [poses.interpolate(base.lift, base.carry, share) for share in (1 / 3, 2 / 3)]
+    refused = []
+
+    def fail(kind, target):
+        to_stop = kind == "lin" and np.allclose(target, via[1])
+        to_carry = kind == "ptp" and np.allclose(target, base.carry)
+        if (to_stop or to_carry) and len(refused) < 2:
+            refused.append(kind)
+            return "no path"
+        return None
+
+    rig = Rig()
+    rig.arm.fail = fail
+    rig.sequence.run(dataclasses.replace(base, carry_via=via))
+    stops = [pose for kind, pose in rig.arm.moves if any(np.allclose(pose, v) for v in via)]
+    assert refused == ["lin", "ptp"] and len(stops) == 2 and tuple(rig.steps) == STEPS
+    assert np.allclose(stops[0], via[0]) and np.allclose(stops[1], via[1])
+
+
+def test_a_fish_whose_cups_were_past_the_pick_area_s_edge_is_set_down_where_it_lay():
+    # The cups hold a fish ahead of its middle, so with its middle inside the pick area they
+    # can be outside it: a failed lift left such a fish hanging on the cups
+    middle = np.array([0.58, -0.10, CELL.table_z + 0.10])
+    p = plan_grasp(CELL, fish_pose(x=0.66), True, 0.60, 0.10, SLOT, math.radians(90.0), False,
+                   middle=middle)  # fmt: skip
+    assert not CELL.in_pick_area(p.surface[:2, 3])
+
+    def fail(kind, target):
+        lifting = np.allclose(target[:2, 3], p.surface[:2, 3]) and target[2, 3] > 0.3
+        return "no straight path" if kind == "lin" and lifting else None
+
+    rig = Rig()
+    rig.arm.fail = fail
+    with pytest.raises(ArmError) as error:
+        rig.sequence.run(p)
+    assert rig.sequence.step == "lift" and error.value.fish_put_back
+    assert not error.value.still_holding and rig.gripper.events[-1] == "release"
 
 
 def test_the_operator_can_stop_at_any_time():

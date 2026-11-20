@@ -58,6 +58,9 @@ CARRY_WRIST_STEP = math.radians(45.0)
 # wrist past its stop half way even when it turns little from end to end
 CARRY_STEP = 0.15
 TURN_SPOT_STEP = 0.05  # m between the spots tried for turning a held fish where it has room
+# A fish may be set down again within this of where the cups took it (it lay there): the cups
+# hold it ahead of its middle, so that can be outside the pick area
+PUT_BACK_NEAR = 0.03  # m
 
 STEPS = ("pre-grasp", "vacuum on", "approach", "confirm hold", "lift", "carry", "lower",
          "release", "retreat")  # fmt: skip
@@ -370,11 +373,10 @@ def _turning_carry(workcell: Workcell, plan: GraspPlan, wrist) -> list[np.ndarra
         return workcell.pose_problem(pose, plan.fish_length, True, plan.middle_x) is None
 
     for spot in sorted((s for s in spots if detour(s) < 2 * direct + 0.6), key=detour):
-        first = _aimed(spot, yaw_start, wrist(tool_down(spot, yaw_start)) or 0.0, wrist)
-        last = _aimed(spot, yaw_end, wrist(tool_down(spot, yaw_end)) or 0.0, wrist)
-        if first is None or last is None:
-            continue
+        first, last = tool_down(spot, yaw_start), tool_down(spot, yaw_end)
         before, after = wrist(first), wrist(last)
+        if before is None or after is None:
+            continue
         # the wrist stays in range, and goes on from the grasp and to the slot (a leg's
         # base swing moves it less than half a turn)
         if not (low <= before <= high and low <= after <= high):
@@ -504,12 +506,16 @@ class GraspSequence:
         self._controller = controller
         self._not_holding_since: float | None = None
         self._release_z = math.inf  # TCP height at which a held fish rests on the table
+        self._picked_at: np.ndarray | None = None  # x, y where the cups took the fish
+        self._carried = 0  # carry stops reached: a carry planned again goes on from there
 
     def run(self, plan: GraspPlan) -> None:
         """All nine steps. Raises ArmError (the arm stopped at `self.step`) or OperatorStop."""
         m = self.workcell.motion
         vacuum = not plan.dry_run
         self._release_z = plan.lower[2, 3]
+        self._picked_at = plan.surface[:2, 3].copy()
+        self._carried = 0
         self._begin("pre-grasp")
         if plan.reset_first:
             self._move(self._reset_wrist)
@@ -649,10 +655,14 @@ class GraspSequence:
 
     def _carry(self, pose: np.ndarray, via: list | None = None) -> None:
         """Straight to the carry pose (through `via`: the wrist turning evenly the way the
-        plan chose), else point-to-point (carry_ptp_fallback)."""
+        plan chose), else point-to-point (carry_ptp_fallback). Planned again (_move), it goes
+        on from the stop it was heading for: back to the first, the tool would turn the short
+        way, the way `via` keeps the wrist from."""
+        stops = [*(via or []), pose]
         try:
-            for stop in [*(via or []), pose]:
-                self._lin(stop, self.workcell.motion.carry_speed)
+            while self._carried < len(stops):
+                self._lin(stops[self._carried], self.workcell.motion.carry_speed)
+                self._carried += 1
         except ArmError as e:
             if e.code != E_MOTION or not self.workcell.motion.carry_ptp_fallback:
                 raise
@@ -743,12 +753,16 @@ class GraspSequence:
 
     def _put_back(self) -> bool:
         """After a failed move with a fish on the cups: set it down where the arm is, if
-        that is on the table inside the pick area or the placement zone."""
+        that is where it lay, in the pick area (as plan_grasp counts it) or in the placement
+        zone."""
         try:
             here = self.arm.tcp_pose()
             xy = here[:2, 3]
             cell = self.workcell
-            if not (cell.pick_area.contains(xy) or cell.placement_zone.contains(xy)):
+            where_it_lay = self._picked_at is not None and (
+                float(np.linalg.norm(xy - self._picked_at)) <= PUT_BACK_NEAR
+            )
+            if not (where_it_lay or cell.in_pick_area(xy) or cell.placement_zone.contains(xy)):
                 return False
             down = here.copy()
             down[2, 3] = min(here[2, 3], self._release_z)
