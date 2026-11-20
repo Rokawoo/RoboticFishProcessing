@@ -45,10 +45,8 @@ class SimSettings:
     seal_gap: float = 0.002  # m: a cup face this close to the fish touches it
     drop: str = ""  # "lift" or "carry": lose the first fish then, to test drop detection
 
-    # The camera
-    width: int = 1280
-    height: int = 720
-    hfov_deg: float = 87.0  # D405
+    # The camera: its image size and lens are vision's (VisionSettings width, height,
+    # hfov_deg), passed in as `lens`; the D405's depth as it measures it:
     depth_range_m: tuple[float, float] = (0.07, 1.0)  # outside it the D405 gives no depth
     depth_noise_m: float = 0.0005
     depth_edge_holes_px: int = 3  # no depth this close to a depth step (stereo occlusion); 0: off

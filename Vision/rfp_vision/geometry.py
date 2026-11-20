@@ -30,6 +30,10 @@ class Intrinsics:
         f = (width / 2) / math.tan(math.radians(hfov_deg) / 2)
         return cls(f, f, width / 2, height / 2, width, height)
 
+    @property
+    def hfov_deg(self) -> float:
+        return math.degrees(2.0 * math.atan(self.width / 2.0 / self.fx))
+
     def rays(self, pixels: np.ndarray) -> np.ndarray:
         """(n, 3) directions (x, y, 1) in the camera frame through (n, 2) pixels."""
         pixels = np.asarray(pixels, float).reshape(-1, 2)

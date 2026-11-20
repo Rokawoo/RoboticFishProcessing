@@ -15,7 +15,9 @@ import numpy as np
 import pyvista as pv
 from rfp_vision.camera import Frame
 from rfp_vision.detector import Detection
-from rfp_vision.geometry import Intrinsics
+from rfp_vision.fish_list import FishList
+from rfp_vision.geometry import Intrinsics, pixels_on_plane, to_frame
+from rfp_vision.overlay import cup_circles
 
 from rfp_sim.assets import GripperModel, load_gripper
 from rfp_sim.settings import gripper_path
@@ -35,6 +37,9 @@ FLOOR_DROP = 0.75  # m from the table top to the floor
 TUBE_RADIUS = 0.058  # m from the wrist's axis where the vacuum tube winds round it
 WRIST_Z = 0.06  # where it leaves the wrist, in the last link's frame
 FOREARM_CLIPS = [(-0.36, 0.0, 0.085), (-0.12, 0.0, 0.085)]  # tube clips, forearm link frame
+CLOUD_STEP = 6  # depth pixels: one point in this many each way
+VALID = (0.45, 0.85, 0.25)  # what vision found: can be picked
+FAILED = (1.0, 0.55, 0.0)  # and can't
 
 
 def breadboard_texture(size_m: tuple[float, float]) -> pv.Texture:
@@ -176,6 +181,7 @@ class Scene:
     def update(self) -> None:
         for actor, fish in zip(self.fish, self.world.fish):
             actor.user_matrix = fish.pose
+            actor.visibility = fish.taken_from is None
         poses = self.world.chain.link_poses(self.world.joints)
         for actor, pose in zip(self.links, poses):
             actor.user_matrix = pose
@@ -188,8 +194,8 @@ class Scene:
         self.table.visibility = table
         for actor in [*self.links, self.gripper]:
             actor.visibility = arm
-        for actor, shown in zip(self.fish, fish):
-            actor.visibility = shown
+        for actor, shown, lying in zip(self.fish, fish, self.world.fish):
+            actor.visibility = shown and lying.taken_from is None
 
 
 class VirtualCamera:
@@ -198,18 +204,17 @@ class VirtualCamera:
     has_depth = True
 
     def __init__(self, world: World, robot_meshes: dict, labels: bool = False):
-        s = world.settings
         self.world = world
         self.name = "virtual D405"
-        self.intrinsics = Intrinsics.from_fov(s.width, s.height, s.hfov_deg)
+        self.intrinsics = k = world.lens
         self.labels = labels
         self.last_color: np.ndarray | None = None
         self.last_masks: list[np.ndarray] = []  # one per fish in view (labels only)
-        size = max(3, round(OPENING_PX * s.width / 1280) | 1)
+        size = max(3, round(OPENING_PX * k.width / 1280) | 1)
         self._opening = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
         self.reseed(7)
         self._count = 0
-        self.plotter = pv.Plotter(off_screen=True, window_size=(s.width, s.height))
+        self.plotter = pv.Plotter(off_screen=True, window_size=(k.width, k.height))
         self.plotter.set_background("black")
         self.scene = Scene(self.plotter, world, robot_meshes, camera_body=False)
         self.plotter.show(auto_close=False)
@@ -339,6 +344,68 @@ def add_view_pyramid(plotter) -> tuple:
     return edges, sides
 
 
+class VisionLayer:
+    """What one look of vision found, in a 3D window: each fish's outline where vision puts it
+    (green: can be picked, orange: not), the six cups where the grasp would put them, its
+    heading where the head end is known, and the camera's depth as points colored by height.
+    The same in the twin beside a run and in the 3D simulation, where it lies over the true
+    fish: what vision measured, against what is there."""
+
+    def __init__(self, plotter, table_z: float):
+        self.plotter = plotter
+        self.table_z = table_z
+        self.actors: list = []
+        self.cloud = None
+
+    def show(self, fish_list: FishList, frame: Frame) -> None:
+        for actor in self.actors:
+            self.plotter.remove_actor(actor)
+        self.actors = []
+        add = self.plotter.add_mesh
+        camera = fish_list.camera_pose
+        for fish in fish_list.fish:
+            table = fish.table_z if fish.table_z is not None else self.table_z
+            height = table + max(fish.thickness, 0.0) * 0.5
+            outline = pixels_on_plane(frame.intrinsics, camera, fish.mask_polygon, height)
+            if not np.isfinite(outline).all():
+                continue
+            color = VALID if fish.vision_ok else FAILED
+            ring = pv.lines_from_points(np.vstack([outline, outline[:1]]))
+            self.actors.append(add(ring, color=color, line_width=4))
+            if fish.grasp_pose is None:
+                continue
+            for rim in cup_circles(fish.grasp_pose):
+                circle = pv.lines_from_points(np.vstack([rim, rim[:1]]))
+                self.actors.append(add(circle, color=color, line_width=2))
+            if fish.heading is not None and fish.heading_known:
+                start = fish.grasp_pose[:3, 3] + (0.0, 0.0, 0.01)
+                direction = (math.cos(fish.heading), math.sin(fish.heading), 0.0)
+                arrow = pv.Arrow(
+                    start=start, direction=direction, scale=0.15, tip_radius=0.12, shaft_radius=0.04
+                )
+                self.actors.append(add(arrow, color=color))
+        self._show_cloud(frame, camera)
+
+    def _show_cloud(self, frame: Frame, camera: np.ndarray) -> None:
+        if self.cloud is not None:
+            self.plotter.remove_actor(self.cloud)
+            self.cloud = None
+        if frame.depth is None:
+            return
+        depth = frame.depth[::CLOUD_STEP, ::CLOUD_STEP]
+        rows, columns = np.nonzero((depth > 0.05) & (depth < 1.5))
+        if len(rows) == 0:
+            return
+        pixels = np.column_stack([columns * CLOUD_STEP, rows * CLOUD_STEP])
+        points = to_frame(camera, frame.intrinsics.rays(pixels) * depth[rows, columns][:, None])
+        cloud = pv.PolyData(points)
+        cloud["height (m)"] = points[:, 2] - self.table_z
+        self.cloud = self.plotter.add_mesh(
+            cloud, scalars="height (m)", point_size=3, cmap="viridis", clim=(0.0, 0.25),
+            show_scalar_bar=False,
+        )  # fmt: skip
+
+
 class Viewer:
     """The cell in a 3D window (mouse: turn, zoom), with the camera's view cone, the zones
     and an inset of the camera's image; optionally recorded to a video."""
@@ -358,6 +425,7 @@ class Viewer:
         self.scene = Scene(self.plotter, world, robot_meshes, tube=True, room=True)
         self._add_zones()
         self.cone = add_view_pyramid(self.plotter)
+        self.vision = VisionLayer(self.plotter, world.workcell.table_z)
         self.text = self.plotter.add_text("", position="upper_left", font_size=11, color="white")
         cell = world.workcell
         middle = np.array(
@@ -412,6 +480,11 @@ class Viewer:
     def set_status(self, text: str) -> None:
         self.status = text
 
+    def show_fish(self, fish_list: FishList, frame: Frame) -> None:
+        """What vision found in a look, over the cell as it is (VisionLayer)."""
+        if not self.closed:
+            self.vision.show(fish_list, frame)
+
     def update(self) -> None:
         if self.show and not self.closed:
             # Events first: the window's close button destroys the window (WM_CLOSE on
@@ -421,7 +494,7 @@ class Viewer:
             return
         self.scene.update()
         pose = self.world.camera_pose()
-        intrinsics = self.camera.intrinsics if self.camera else Intrinsics.from_fov(1280, 720, 87.0)
+        intrinsics = self.camera.intrinsics if self.camera else self.world.lens
         points = view_pyramid(pose, intrinsics, self.world.workcell.table_z)
         for part in self.cone:
             part.points = points
@@ -447,7 +520,8 @@ class Viewer:
         image = np.ascontiguousarray(self.plotter.screenshot(return_img=True)[:, :, ::-1])
         if self.camera is not None and self.camera.last_color is not None:
             h, w = image.shape[:2]
-            inset = cv2.resize(self.camera.last_color, (w // 3, round(w / 3 * 720 / 1280)))
+            ch, cw = self.camera.last_color.shape[:2]
+            inset = cv2.resize(self.camera.last_color, (w // 3, round(w / 3 * ch / cw)))
             ih, iw = inset.shape[:2]
             image[10 : 10 + ih, w - iw - 10 : w - 10] = inset
             cv2.rectangle(image, (w - iw - 11, 9), (w - 9, 10 + ih), (40, 190, 255), 2)

@@ -1,22 +1,10 @@
 """
-Lay out the cell by hand in a 3D window (pick_place.py --mode setup), around the FR5 and the
-gripper as built. Nothing moves.
-
-- Drag a corner ball to size the table (gray), the pick area (green) or the placement zone
-  (blue). Drag a slot (a big blue ball, its fish drawn head first) to where a placed fish
-  goes. Drag a keep-out zone's ball (red) to move it: one along a whole table edge, like the
-  operator's side, goes along the edge nearest the ball.
-- Buttons: turn the whole cell a quarter turn about the arm (the table on another side of
-  it), add or remove a slot, undo, save.
-
-The rest follows: the camera's views (yellow) follow the pick area, the placement zone grows
-to hold its slots, a keep-out zone along a table edge stays along it as the table is sized,
-and everything turns with the cell. After every change the layout is checked
-(rfp_arm.layout.check_layout): red is what can't work (the arm can't reach it, a placed fish
-off the table), yellow what may not. Save writes the workcell file, and the control panel
-where it overrides the file, changing only the layout's lines (a .bak copy of each is kept).
-The placement heading, the keep-out zones' sizes and the observation poses are set in the
-files.
+Lay out the cell by hand in a 3D window (pick_place.py --mode setup). Nothing moves. Drag the
+corner balls of the table, pick area and placement zone, the slots (blue balls) and the
+keep-out zones (red; one along a whole table edge goes along the edge nearest its ball);
+buttons turn the cell a quarter turn about the arm, add or remove a slot, undo and save. The
+camera's views follow the pick area and the placement zone grows to hold its slots. Every
+change is checked (rfp_arm.layout.check_layout). Save changes only the layout's lines.
 """
 
 import copy
@@ -598,11 +586,12 @@ class LayoutEditor:
         self.rebuild()
 
     def remove_slot(self) -> None:
-        if len(self.layout.slots) > 2:  # the cell needs at least two
+        if len(self.layout.slots) > 1:  # the cell needs one
             self.layout.slots.pop()
-            self.message = f"{len(self.layout.slots)} slots left"
+            left = len(self.layout.slots)
+            self.message = f"{left} slot{'s' if left > 1 else ''} left"
         else:
-            self.message = "two slots at least: drag one instead"
+            self.message = "one slot at least: drag it instead"
         self.rebuild()
 
     def undo(self) -> None:

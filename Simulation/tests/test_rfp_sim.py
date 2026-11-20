@@ -2,6 +2,7 @@
 arm and camera, and a whole cycle in it. Rendering is offscreen and small; skipped without
 pyvista (the `sim` extra)."""
 
+import dataclasses
 import math
 import sys
 import types
@@ -23,17 +24,22 @@ from rfp_sim.devices import VirtualArm, VirtualGripper
 from rfp_sim.render import TruthDetector, VirtualCamera
 from rfp_sim.settings import SimSettings, load_settings
 from rfp_sim.world import Fish, World
+from rfp_vision.settings import VisionSettings
 
 CELL = make_workcell()
 
 
+SMALL = VisionSettings(width=320, height=180)  # the camera as set, rendering small and fast
+LENS = SMALL.lens()
+
+
 def settings(**changes) -> SimSettings:
-    """Small, fast renders and no pacing."""
-    return SimSettings(**{"width": 320, "height": 180, "speed": 0.0, **changes})
+    """No pacing."""
+    return SimSettings(**{"speed": 0.0, **changes})
 
 
-def world_with_fish(**changes) -> World:
-    world = World(CELL, settings(**changes), stand_in_fish(0.65))
+def world_with_fish(lens=LENS, **changes) -> World:
+    world = World(CELL, settings(**changes), stand_in_fish(0.65), lens=lens)
     assert world.place_fish(1, 3) == []
     return world
 
@@ -319,7 +325,7 @@ def test_a_fish_cut_off_by_the_view_is_placed_after_a_look_from_above_it():
     from rfp_vision.vision_system import VisionSystem
 
     def run(cell):
-        world = World(cell, settings(), stand_in_fish(0.79))
+        world = World(cell, settings(), stand_in_fish(0.79), lens=LENS)
         # along X: longer than the 0.50 m the camera sees that way from 450 mm
         world.fish = [Fish("fish 1", world.model, from_parts(rot_z(0.1), (0.36, -0.10, 0)))]
         camera = VirtualCamera(world, {})
@@ -363,7 +369,7 @@ def test_the_camera_s_mount_is_measured_from_a_few_moves_over_a_fish():
     # goes the other way than the fish in the image
     turned = CELL.camera @ from_parts(rot_z(math.pi), (0.0, 0.0, 0.0))
     real = dataclasses.replace(CELL, camera=turned)
-    world = World(real, settings(), stand_in_fish(0.35))
+    world = World(real, settings(), stand_in_fish(0.35), lens=LENS)
     world.fish = [Fish("fish 1", world.model, from_parts(rot_z(0.0), (0.40, -0.10, 0.0)))]
     tcp = real.tcp_of_camera(tool_down((0.40, -0.10, 0.40), 0.0))
     world.set_joints(world.chain.ik(real.tip_of_tcp(tcp), world.joints))
@@ -404,7 +410,7 @@ def test_a_real_run_measures_an_uncalibrated_camera_first(tmp_path):
     cell = load_workcell(path, panel=None)
     assert not cell.calibrated
     real = dataclasses.replace(cell, camera=cell.camera @ from_parts(rot_z(math.pi), (0, 0, 0)))
-    world = World(real, settings(), stand_in_fish(0.35))
+    world = World(real, settings(), stand_in_fish(0.35), lens=LENS)
     look = cell.observation_poses[0].camera[:2, 3]  # wherever the file's first look is
     world.fish = [
         Fish("fish 1", world.model, from_parts(rot_z(0.0), (look[0], look[1] - 0.02, 0.0))),
@@ -440,7 +446,7 @@ def test_the_twin_follows_the_arm_and_shows_what_vision_finds():
     world.set_joints(world.chain.ik(CELL.tip_of_tcp(CELL.observation_tcp(pose)), world.joints))
     camera = VirtualCamera(world, {})
     detector = TruthDetector(camera)
-    twin = Twin(CELL, {}, settings=settings(), show=False)
+    twin = Twin(CELL, {}, settings=settings(), show=False, lens=LENS)
     try:
         arm = VirtualArm(world, CELL)
         twin.follow(arm)
@@ -458,7 +464,7 @@ def test_the_twin_follows_the_arm_and_shows_what_vision_finds():
         assert fish_list.valid
         twin.show_fish(fish_list, frame)
         # the outline, six cups and the heading of the fish; the depth as points
-        assert len(twin._fish_actors) == 8 and twin._cloud_actor is not None
+        assert len(twin.vision.actors) == 8 and twin.vision.cloud is not None
         moved = world.joints.copy()
         moved[0] += 0.2
         world.set_joints(moved)
@@ -466,9 +472,63 @@ def test_the_twin_follows_the_arm_and_shows_what_vision_finds():
         twin.update()
         assert np.allclose(twin.joints, moved)
         twin.show_fish(fish_list, frame)  # the next look replaces the last
-        assert len(twin._fish_actors) == 8
+        assert len(twin.vision.actors) == 8
     finally:
         twin.close()
+        camera.close()
+
+
+def test_the_3d_simulation_shows_what_vision_finds_over_the_true_fish():
+    from rfp_sim.render import Viewer
+    from rfp_vision.fish_list import FishLocator
+
+    world = world_with_fish(window=(320, 200))
+    fish = world.fish[0]
+    pose = min(  # the view that sees all of it
+        CELL.observation_poses, key=lambda p: np.linalg.norm(p.camera[:2, 3] - fish.pose[:2, 3])
+    )
+    world.set_joints(world.chain.ik(CELL.tip_of_tcp(CELL.observation_tcp(pose)), world.joints))
+    camera = VirtualCamera(world, {})
+    detector = TruthDetector(camera)
+    viewer = Viewer(world, {}, camera, show=False)
+    try:
+        frame = camera.read()
+        locator = FishLocator(VisionSettings(check_size=False), CELL.table_z, CELL.pick_area.area)
+        fish_list = locator.locate(frame, detector.detect(frame.color), world.camera_pose())
+        assert fish_list.valid
+        viewer.show_fish(fish_list, frame)
+        viewer.update()
+        # the outline, six cups and the heading, and the depth as points, as in the twin
+        assert len(viewer.vision.actors) == 8 and viewer.vision.cloud is not None
+        outline = viewer.vision.actors[0].GetMapper().GetInput().points
+        middle = tuple(float(v) for v in fish.pose[:2, 3])
+        assert cv2.pointPolygonTest(outline[:, :2].astype(np.float32), middle, False) > 0  # on it
+        heights = pv.wrap(viewer.vision.cloud.GetMapper().GetInput()).points[:, 2] - CELL.table_z
+        assert abs(np.median(heights)) < 0.01 and heights.max() > 0.05  # the table, the fish
+    finally:
+        viewer.close()
+        camera.close()
+
+
+def test_a_placed_fish_is_taken_away_once_the_next_is_on_the_cups():
+    world = World(CELL, settings(), stand_in_fish(0.65), lens=LENS)
+    world.scatter_fish(2, 1)
+    placed, picked = world.fish
+    placed.pose = placed.pose.copy()
+    placed.pose[:2, 3] = CELL.slots[0]  # lying in its slot
+    camera = VirtualCamera(world, {})
+    try:
+        press_onto(world, picked, 0.01)
+        world.set_vacuum(True)
+        assert world.holding is picked
+        assert placed.taken_from is not None and np.allclose(
+            placed.taken_from[:2, 3], CELL.slots[0]
+        )
+        top = placed.taken_from[:3, 3] + (0.0, 0.0, 0.5)
+        assert placed.hit(top, top - (0.0, 0.0, 1.0)) is None  # nothing there to touch
+        camera.scene.update()
+        assert not camera.scene.fish[0].visibility and camera.scene.fish[1].visibility
+    finally:
         camera.close()
 
 
@@ -483,7 +543,7 @@ def test_back_from_a_place_at_the_end_of_its_range_the_wrist_turns_back_first():
         def frame(self):
             return types.SimpleNamespace(color=np.zeros((4, 4, 3), np.uint8))
 
-    world = World(CELL, settings(), stand_in_fish(0.79))
+    world = World(CELL, settings(), stand_in_fish(0.79), lens=LENS)
     arm = VirtualArm(world, CELL)
     cycle = PickPlaceCycle(
         arm, VirtualGripper(world), Still(), RuleSelector(), CELL, ControlSettings(settle_s=0.0),
@@ -504,7 +564,7 @@ def test_back_from_a_place_at_the_end_of_its_range_the_wrist_turns_back_first():
 
 
 def test_fish_can_lie_anywhere_in_the_pick_area_as_real_fish_do():
-    world = World(CELL, settings(), stand_in_fish(0.79))
+    world = World(CELL, settings(), stand_in_fish(0.79), lens=LENS)
     assert world.scatter_fish(3, seed=4) == []
     zone, base_clear = CELL.work_zone, 0.15
     for fish in world.fish:
@@ -516,7 +576,7 @@ def test_fish_can_lie_anywhere_in_the_pick_area_as_real_fish_do():
     a, b, c = (f.outline() for f in world.fish)
     for one, other in ((a, b), (a, c), (b, c)):
         assert np.linalg.norm(one[:, None] - other[None], axis=2).min() >= 0.03
-    again = World(CELL, settings(), stand_in_fish(0.79))
+    again = World(CELL, settings(), stand_in_fish(0.79), lens=LENS)
     again.scatter_fish(3, seed=4)
     assert all(np.allclose(x.pose, y.pose) for x, y in zip(world.fish, again.fish))
 
@@ -534,11 +594,11 @@ def test_a_fish_model_knows_where_it_balances():
 def test_the_benchmark_scores_each_fish_against_the_truth():
     from rfp_controlsys.settings import ControlSettings
     from rfp_sim.benchmark import build_bench, report_lines, run_scene, summarize
-    from rfp_vision.settings import StandIn, VisionSettings
+    from rfp_vision.settings import StandIn
 
     sim = settings(fish_model="none.stl", fish_length=0.65, placement="view", seed=3,
                    download_robot_meshes=False)  # fmt: skip  # the plain stand-in shape
-    vision = VisionSettings(check_size=False, stand_in=StandIn(balance_ahead_share=0.0))
+    vision = dataclasses.replace(SMALL, check_size=False, stand_in=StandIn(balance_ahead_share=0.0))
     bench = build_bench(CELL, vision, ControlSettings(settle_s=0.0), sim, None, False)
     try:
         rows = run_scene(bench, seed=1) + run_scene(bench, seed=2)  # the same cell, reused
@@ -644,7 +704,7 @@ def test_fr5_meshes_are_downloaded_once_and_checked(tmp_path, monkeypatch):
 
 
 def test_the_camera_has_no_depth_at_the_fish_edges_like_the_d405():
-    world = world_with_fish(width=640, height=360)
+    world = world_with_fish(lens=VisionSettings(width=640, height=360).lens())
     holes = VirtualCamera(world, {}, labels=True)
     whole = VirtualCamera(world, {}, labels=True)
     whole.world = world
@@ -699,8 +759,8 @@ def test_the_drawn_gripper_matches_the_settings():
     seen = without_camera_body(gripper.mesh, CELL.camera)
     local = (seen.points - lens) @ CELL.camera[:3, :3]
     ahead = local[local[:, 2] > 0.0]
-    half_width = math.tan(math.radians(settings.hfov_deg / 2))
-    half_height = half_width * settings.height / settings.width
+    half_width = math.tan(math.radians(vision.hfov_deg / 2))
+    half_height = half_width * vision.height / vision.width
     in_view = (np.abs(ahead[:, 0]) < half_width * ahead[:, 2]) & (
         np.abs(ahead[:, 1]) < half_height * ahead[:, 2]
     )
@@ -895,8 +955,9 @@ def test_the_layout_editor_turns_drags_checks_and_saves(tmp_path):
         assert len(editor.layout.slots) == 3
         assert ("slot", 2) in [handle for _, handle in editor.handles]  # a ball for it
         editor.remove_slot()
-        editor.remove_slot()  # two at least
-        assert len(editor.layout.slots) == 2
+        editor.remove_slot()
+        editor.remove_slot()  # one at least
+        assert len(editor.layout.slots) == 1 and editor.message.startswith("one slot at least")
         # a table dragged too small for any grid line still draws (it is all problems)
         editor.drag(("work", 0, 0), (-0.39, -0.84))
         editor.drag(("work", 1, 1), (-0.34, -0.79))

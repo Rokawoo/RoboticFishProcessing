@@ -1,12 +1,8 @@
 """
-The benchmark: the real pick-and-place cycle in the virtual cell over many seeded scenes,
-scored against the simulator's truth, so a change to vision, planning or the cycle can be
-shown to do better (or not) before it reaches the arm.
-
-Per fish: where it ended up (placed in the placement zone, left in the pick area, or
-elsewhere), how far its middle lies from its slot and how far its head points from the
-placement heading, and where the cups took it relative to its true center of mass. Per
-scene: how the run ended, failures by code, looks, wrist travel and simulated time.
+The benchmark: the real cycle in the virtual cell over seeded scenes, scored against the
+simulator's truth. Per fish: where it ended up, its distance from its slot, its heading
+error, where the cups took it against its true center of mass. Per scene: how the run ended,
+failures, looks, wrist travel, simulated time.
 """
 
 import math
@@ -99,7 +95,9 @@ def build_bench(
 ) -> Bench:
     """`detector`: a FishDetector (the trained model), or None for the renderer's truth."""
     sim = sim_settings
-    session = build_session(cell, sim, show=False, viewer=False, log=lambda _: None)
+    session = build_session(
+        cell, sim, show=False, viewer=False, log=lambda _: None, lens=vision_settings.lens()
+    )
     if len(session.world.fish) != sim.fish_count:
         raise ValueError(f"no room for {sim.fish_count} fish of {sim.fish_length} m")
     detector = detector or TruthDetector(session.camera)
@@ -196,7 +194,8 @@ def _first_grasps(rows: list[dict], start: dict[str, np.ndarray]) -> dict[str, n
 
 
 def _score_fish(fish, start: np.ndarray, grasp: np.ndarray | None, cell: Workcell) -> dict:
-    middle = fish.pose[:2, 3]
+    lay = fish.pose if fish.taken_from is None else fish.taken_from  # where it was placed
+    middle = lay[:2, 3]
     if cell.placement_zone.contains(middle):
         outcome = "placed"
     elif cell.pick_area.contains(middle):
@@ -206,7 +205,7 @@ def _score_fish(fish, start: np.ndarray, grasp: np.ndarray | None, cell: Workcel
     row = {"fish": fish.name, "outcome": outcome}
     if outcome == "placed":
         slot = min(cell.slots, key=lambda s: np.hypot(*(middle - s)))
-        heading = wrap(yaw_of(fish.pose) - cell.placement_heading)
+        heading = wrap(yaw_of(lay) - cell.placement_heading)
         row.update(
             slot_error_mm=round(float(np.hypot(*(middle - slot))) * 1000, 1),
             heading_error_deg=round(math.degrees(heading), 1),

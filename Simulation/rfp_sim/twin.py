@@ -1,11 +1,8 @@
 """
-The arm's twin in a 3D window, beside a run on the real arm (or MoveIt's mock hardware): the
-FR5 and the gripper as built, moving with the arm's joint states; the cell's table, zones,
-slots and keep-out zones; and what vision makes of each look: the fish's outlines where they
-lie (green: can be picked, orange: not), the six cups where the grasp would put them along
-the fish's heading, and the camera's depth as a point cloud (colored by height). Nothing here
-moves the arm: it only reads. VTK runs in the calling thread (the cycle's), so `update()` is
-called from its loop (the console's show hook) and draws at most every DRAW_S.
+The arm's twin in a 3D window beside a run on the robot PC: the FR5 and gripper following
+the arm's joint states, the cell, and what vision finds (render.VisionLayer). It only reads.
+VTK runs in the cycle's thread: `update()` is called from its loop and draws at most every
+DRAW_S.
 """
 
 import math
@@ -18,16 +15,20 @@ from rfp_arm.kinematics import FR5, Chain
 from rfp_arm.workcell import Workcell
 from rfp_vision.camera import Frame
 from rfp_vision.fish_list import FishList
-from rfp_vision.geometry import Intrinsics, pixels_on_plane, to_frame
-from rfp_vision.overlay import cup_circles
+from rfp_vision.geometry import Intrinsics
+from rfp_vision.settings import VisionSettings
 
-from rfp_sim.render import GRIPPER_COLOR, add_arm, add_view_pyramid, cached_gripper, view_pyramid
+from rfp_sim.render import (
+    GRIPPER_COLOR,
+    VisionLayer,
+    add_arm,
+    add_view_pyramid,
+    cached_gripper,
+    view_pyramid,
+)
 from rfp_sim.settings import SimSettings, gripper_path
 
 DRAW_S = 1 / 15  # at most this often, s
-CLOUD_STEP = 6  # depth pixels: one point in this many each way
-VALID = (0.45, 0.85, 0.25)
-FAILED = (1.0, 0.55, 0.0)
 
 
 class Twin:
@@ -39,6 +40,7 @@ class Twin:
         settings: SimSettings | None = None,
         show: bool = True,
         title: str = "FR5 twin",
+        lens: Intrinsics | None = None,
     ):
         self.workcell = workcell
         self.chain = chain
@@ -48,17 +50,16 @@ class Twin:
         self.status = ""
         self._drawn = 0.0
         self._exited = False
-        self._fish_actors: list = []
-        self._cloud_actor = None
         self.plotter = pv.Plotter(off_screen=not show, window_size=(1100, 750), title=title)
         self.plotter.set_background((0.16, 0.17, 0.2), top=(0.32, 0.34, 0.4))
         self._add_cell()
         self.links = add_arm(self.plotter, chain, robot_meshes)
         gripper = cached_gripper(gripper_path(settings or SimSettings())).mesh
         self.gripper = self.plotter.add_mesh(gripper, color=GRIPPER_COLOR, smooth_shading=True)
-        s = settings or SimSettings()
-        self.intrinsics = Intrinsics.from_fov(s.width, s.height, s.hfov_deg)  # the D405's
+        # The camera's view: as the settings describe it until a frame says what it is
+        self.intrinsics = lens if lens is not None else VisionSettings().lens()
         self.cone = add_view_pyramid(self.plotter)  # what the camera sees, down to the table
+        self.vision = VisionLayer(self.plotter, workcell.table_z)
         self.text = self.plotter.add_text("", position="upper_left", font_size=11, color="white")
         pick = workcell.pick_area
         middle = np.array([np.mean(pick.x), np.mean(pick.y), workcell.table_z])
@@ -113,53 +114,9 @@ class Twin:
         self.status = text
 
     def show_fish(self, fish_list: FishList, frame: Frame) -> None:
-        """What one look of vision found: outlines, cups, headings, and the depth as points."""
-        for actor in self._fish_actors:
-            self.plotter.remove_actor(actor)
-        self._fish_actors = []
-        add = self.plotter.add_mesh
-        camera = fish_list.camera_pose
-        for fish in fish_list.fish:
-            table = fish.table_z if fish.table_z is not None else self.workcell.table_z
-            height = table + max(fish.thickness, 0.0) * 0.5
-            outline = pixels_on_plane(frame.intrinsics, camera, fish.mask_polygon, height)
-            if not np.isfinite(outline).all():
-                continue
-            color = VALID if fish.vision_ok else FAILED
-            ring = pv.lines_from_points(np.vstack([outline, outline[:1]]))
-            self._fish_actors.append(add(ring, color=color, line_width=4))
-            if fish.grasp_pose is None:
-                continue
-            for rim in cup_circles(fish.grasp_pose):
-                circle = pv.lines_from_points(np.vstack([rim, rim[:1]]))
-                self._fish_actors.append(add(circle, color=color, line_width=2))
-            if fish.heading is not None and fish.heading_known:
-                start = fish.grasp_pose[:3, 3] + (0.0, 0.0, 0.01)
-                direction = (math.cos(fish.heading), math.sin(fish.heading), 0.0)
-                arrow = pv.Arrow(
-                    start=start, direction=direction, scale=0.15, tip_radius=0.12, shaft_radius=0.04
-                )
-                self._fish_actors.append(add(arrow, color=color))
-        self._show_cloud(frame, camera)
-
-    def _show_cloud(self, frame: Frame, camera: np.ndarray) -> None:
-        if self._cloud_actor is not None:
-            self.plotter.remove_actor(self._cloud_actor)
-            self._cloud_actor = None
-        if frame.depth is None:
-            return
-        depth = frame.depth[::CLOUD_STEP, ::CLOUD_STEP]
-        rows, columns = np.nonzero((depth > 0.05) & (depth < 1.5))
-        if len(rows) == 0:
-            return
-        pixels = np.column_stack([columns * CLOUD_STEP, rows * CLOUD_STEP])
-        points = to_frame(camera, frame.intrinsics.rays(pixels) * depth[rows, columns][:, None])
-        cloud = pv.PolyData(points)
-        cloud["height (m)"] = points[:, 2] - self.workcell.table_z
-        self._cloud_actor = self.plotter.add_mesh(
-            cloud, scalars="height (m)", point_size=3, cmap="viridis", clim=(0.0, 0.25),
-            show_scalar_bar=False,
-        )  # fmt: skip
+        """What one look of vision found (VisionLayer); the view from now on the camera's own."""
+        self.intrinsics = frame.intrinsics
+        self.vision.show(fish_list, frame)
 
     def update(self) -> None:
         """Follow the arm and draw, at most every DRAW_S."""
@@ -200,7 +157,9 @@ class Twin:
             self.plotter.close()
 
 
-def open_twin(workcell: Workcell, settings: SimSettings, show: bool = True) -> Twin:
+def open_twin(
+    workcell: Workcell, settings: SimSettings, lens: Intrinsics | None = None, show: bool = True
+) -> Twin:
     """A twin with the FR5's meshes (FAIRINO's, as the simulation finds them)."""
     from rfp_sim.assets import find_robot_meshes, robot_link_meshes
     from rfp_sim.settings import MESH_CACHE, SIM_DIR
@@ -209,4 +168,4 @@ def open_twin(workcell: Workcell, settings: SimSettings, show: bool = True) -> T
         settings.robot_meshes, SIM_DIR, MESH_CACHE, settings.download_robot_meshes
     )
     meshes = robot_link_meshes(folder, ["base_link", *FR5.links])
-    return Twin(workcell, meshes, settings=settings, show=show)
+    return Twin(workcell, meshes, settings=settings, lens=lens, show=show)

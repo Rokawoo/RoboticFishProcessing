@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 from rfp_vision.geometry import Intrinsics
+from rfp_vision.settings import VisionSettings
 
 REALSENSE_EXTS = frozenset({".bag", ".db3"})
 
@@ -193,7 +194,10 @@ def list_realsense() -> list[tuple[str, str]]:
 
 
 def open_camera(
-    device: str | None, hfov_deg: float = 87.0, size: tuple[int, int] = (1280, 720), fps: int = 30
+    device: str | None,
+    hfov_deg: float = VisionSettings.hfov_deg,
+    size: tuple[int, int] = (1280, 720),
+    fps: int = 30,
 ) -> Camera:
     """
     Open a video input device:

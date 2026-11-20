@@ -1,10 +1,8 @@
 """
-The virtual workcell's state: the arm's joints, the fish on the table and on the cups, and
-the little physics the cycle needs. Each suction cup is a ray along the tool axis: a cup
-touches when the fish's surface is within its stroke, the fish pushes back like a spring as
-the cups compress, and the vacuum holds the fish only once enough cups touch (a firm,
-square contact). A held fish moves with the cups once they lift (pressing on, the table
-holds it up); let go, it lies down where it is.
+The virtual cell's state: the arm's joints, the fish on the table and on the cups, and the
+little physics the cycle needs. Each cup is a ray along the tool's axis that touches within
+its stroke and pushes back like a spring; the vacuum holds a fish once enough cups touch. A
+held fish moves with the cups once they lift; let go, it lies flat where it is.
 """
 
 from collections.abc import Callable
@@ -15,6 +13,7 @@ from rfp_arm.kinematics import FR5, Chain
 from rfp_arm.poses import from_parts, invert, rot_z, yaw_of
 from rfp_arm.workcell import Workcell
 from rfp_vision.geometry import Intrinsics, to_frame
+from rfp_vision.settings import VisionSettings
 
 from rfp_sim.assets import FishModel
 from rfp_sim.settings import SimSettings
@@ -34,10 +33,13 @@ class Fish:
         self.model = model
         self.pose = pose  # 4x4 in {B}
         self.held: np.ndarray | None = None  # T_tcp_fish while on the cups
+        self.taken_from: np.ndarray | None = None  # placed, then taken away: where it lay
         self._locator = _locator(model)
 
     def hit(self, start: np.ndarray, end: np.ndarray) -> float | None:
         """Distance from `start` (in {B}) to where the segment first meets the fish."""
+        if self.taken_from is not None:
+            return None
         to_fish = invert(self.pose)
         a, b = (to_frame(to_fish, p)[0] for p in (start, end))
         points = vtk.vtkPoints()
@@ -57,10 +59,17 @@ class Fish:
 
 class World:
     def __init__(
-        self, workcell: Workcell, settings: SimSettings, model: FishModel, chain: Chain = FR5
+        self,
+        workcell: Workcell,
+        settings: SimSettings,
+        model: FishModel,
+        chain: Chain = FR5,
+        lens: Intrinsics | None = None,
     ):
+        """`lens`: the camera's image size and field of view (VisionSettings.lens())."""
         self.workcell = workcell
         self.settings = settings
+        self.lens = lens if lens is not None else VisionSettings().lens()
         self.model = model
         self.chain = chain
         self.fish: list[Fish] = []
@@ -180,8 +189,18 @@ class World:
                 tcp = self.tcp()
                 fish.held = invert(tcp) @ fish.pose
                 self._grabbed_at = tcp[:3, 3].copy()
+                self.take_away_placed()
                 return fish
         return None
+
+    def take_away_placed(self) -> None:
+        """Placed fish are taken away (by hand, or a conveyor) before their slot is used
+        again: by the time the next fish is on the cups, those lying in the placement zone
+        are gone, remembered where they lay."""
+        for fish in self.fish:
+            lying = fish.held is None and fish.taken_from is None
+            if lying and self.workcell.placement_zone.contains(fish.pose[:2, 3]):
+                fish.taken_from = fish.pose.copy()
 
     def let_go(self) -> None:
         fish = self.holding
@@ -208,7 +227,7 @@ class World:
         Returns a warning for each fish that found no place."""
         s = self.settings
         rng = np.random.default_rng(seed)
-        intrinsics = Intrinsics.from_fov(s.width, s.height, s.hfov_deg)
+        intrinsics = self.lens
         cameras = [self._observation_camera(p) for p in self.workcell.observation_poses]
         warnings = []
         for i in range(count):

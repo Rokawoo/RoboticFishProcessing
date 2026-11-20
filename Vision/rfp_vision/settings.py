@@ -50,8 +50,9 @@ class HoldSettings:
 
 @dataclass
 class FishType:
-    """The fish being picked, as vision measures it: outside these sizes it isn't picked
-    (VS-65, VS-33), and the cups go where it balances."""
+    """The fish being picked, as vision measures it: larger than these it isn't picked (two
+    fish seen as one; VS-65, VS-33), and the cups go where it balances. The cycle expects
+    the length range's middle; the layout check plans for its top."""
 
     length_range_m: tuple[float, float] = (0.54, 0.825)
     width_range_m: tuple[float, float] = (0.0945, 0.154)  # across the body at its middle
@@ -63,21 +64,18 @@ class FishType:
 
 @dataclass
 class Catfish(FishType):
-    """Real catfish: Table SY-1 +- 10%. A catfish balances ~0.11 of its length ahead of its
-    middle, but the cup array must still seal behind the pectoral fins: on the catfish
-    model all six (a 140 mm array then) did up to 0.062 of the length ahead at 0.55 m, 0.094
-    at 0.79 m. Tune on real fish: one that tips head-down when lifted wants more."""
+    """Real catfish, Table SY-1 +- 10%. One balances ~0.11 of its length ahead of its middle,
+    but the cups must seal behind the pectoral fins. Tune on real fish: one that tips
+    head-down when lifted wants more."""
 
     balance_ahead_share: float = 0.065
 
 
 @dataclass
 class StandIn(FishType):
-    """Printed stand-ins (Simulation/models/catfish.3mf, printed 0.5-0.8 m) as vision
-    measures them: about 14% long (their raised ends) and taller than real catfish; the true
-    center of mass lies 0.126 x the measured length ahead of the measured middle. The limits
-    only check that it is a fish of about that kind: tight ones (made for the 0.79 m print)
-    refused the real, smaller fish the cups fit."""
+    """The printed stand-ins (Simulation/models/catfish.3mf) as vision measures them: about
+    14% long (their raised ends), taller than real catfish, balancing 0.126 of the measured
+    length ahead of the middle."""
 
     length_range_m: tuple[float, float] = (0.35, 1.00)
     width_range_m: tuple[float, float] = (0.07, 0.26)
@@ -90,7 +88,8 @@ FISH_TYPES = ("stand_in", "catfish")
 
 @dataclass
 class VisionSettings:
-    # Camera (VS-11); hfov only for sources without intrinsics (D405: 87 deg)
+    # Camera (VS-11): the stream asked for, and the lens where the camera isn't asked (layout
+    # check, simulator, plain videos; the D405 reports its own). 87: the D405's data sheet
     width: int = 1280
     height: int = 720
     fps: int = 30
@@ -129,13 +128,13 @@ class VisionSettings:
     min_heading_confidence: float = 0.6
 
     # Geometry checks (VS-65: Table SY-1 +- 10%, VS-33)
-    check_size: bool = True  # False: sizes aren't checked (videos not taken by the cell's camera)
+    check_size: bool = True  # False: nothing refused for its size (videos from other cameras)
     fish_type: str = "stand_in"  # the fish being picked (FISH_TYPES)
     stand_in: StandIn = field(default_factory=StandIn)
     catfish: Catfish = field(default_factory=Catfish)
     cup_footprint_m: tuple[float, float] = (0.20, 0.10)  # along and across the body
-    # Where all six cups don't seal at the balance point (the fins), they move back toward
-    # the middle in steps this long until they do, and at most grasp_behind_m past it
+    # Where the six cups don't seal at the balance point (the fins), they move back in these
+    # steps, at most grasp_behind_m past the middle
     grasp_step_m: float = 0.01
     grasp_behind_m: float = 0.03
     cup_diameter_m: float = 0.04  # six of them, 3 x 2, filling the footprint
@@ -143,15 +142,12 @@ class VisionSettings:
     cup_overhang_m: float = 0.005
     # Cups with depth under them, at least, for the depth to judge the seal (holes: shiny skin)
     min_cups_measured: int = 4
-    # The unevenness under the cups the bellows take up and still all seal: they compress
-    # from 40 mm to about 10 mm, less 5 mm the last cup to touch is still pressed by
+    # The unevenness under the cups the bellows take up and all still seal (40 mm bellows)
     cup_stroke_m: float = 0.025
     # What a cup's lip takes up of a bump under it (a fin): more and that cup stays off the fish
     cup_lip_conform_m: float = 0.010
-    # True: a spot where a bump under one cup's lip (cup_lip_conform_m: a fin, or the D405's
-    # noise on a round body) may keep it off the fish isn't used; False: only one past the
-    # bellows' stroke keeps it off, and the hold check (or the vacuum switch) tells whether
-    # the cups sealed. Real fish differ from the printed models this was tuned on
+    # True: a spot with a bump under a cup's lip over cup_lip_conform_m is avoided; False:
+    # only one over the bellows' stroke (the hold check tells whether the cups sealed)
     strict_seal_check: bool = False
     overlap_margin_px: float = 6.0  # outlines this close touch (Table VS-1)
 
@@ -166,6 +162,12 @@ class VisionSettings:
     def __post_init__(self) -> None:
         if self.fish_type not in FISH_TYPES:
             raise ValueError(f"fish_type must be one of {', '.join(FISH_TYPES)}")
+
+    def lens(self):
+        """The camera's intrinsics as these settings describe it (no camera to ask)."""
+        from rfp_vision.geometry import Intrinsics
+
+        return Intrinsics.from_fov(self.width, self.height, self.hfov_deg)
 
     @property
     def fish(self) -> FishType:

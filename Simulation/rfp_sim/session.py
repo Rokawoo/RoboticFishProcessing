@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from rfp_arm.kinematics import FR5
 from rfp_arm.workcell import Workcell
+from rfp_vision.geometry import Intrinsics
 
 from rfp_sim.assets import find_robot_meshes, load_fish, robot_link_meshes
 from rfp_sim.devices import VirtualArm, VirtualGripper
@@ -41,7 +42,9 @@ def build_session(
     video: str | None = None,
     viewer: bool = True,
     log: Callable[[str], None] = print,
+    lens: Intrinsics | None = None,
 ) -> SimSession:
+    """`lens`: the camera's image size and field of view (VisionSettings.lens())."""
     path = model_path(settings)
     model = load_fish(path if path.is_file() else None, settings.fish_length, settings.fish_head,
                       settings.fish_up)  # fmt: skip
@@ -53,7 +56,7 @@ def build_session(
     )
     meshes = robot_link_meshes(folder, ["base_link", *FR5.links])
     notes.append(f"arm: {source}" if meshes else f"arm: plain shapes ({source})")
-    world = World(workcell, settings, model)
+    world = World(workcell, settings, model, lens=lens)
     if settings.placement not in ("view", "anywhere"):
         raise ValueError(f"placement must be 'view' or 'anywhere', not '{settings.placement}'")
     place = world.scatter_fish if settings.placement == "anywhere" else world.place_fish
