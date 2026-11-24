@@ -285,16 +285,12 @@ class World:
         warnings = []
         for i in range(count):
             for _ in range(2000):
-                xy = (rng.uniform(*cell.pick_area.x), rng.uniform(*cell.pick_area.y))
+                pick = cell.pick_area
+                xy = pick.base(np.array([rng.uniform(*pick.x), rng.uniform(*pick.y)]))
                 pose = from_parts(rot_z(rng.uniform(-np.pi, np.pi)), (*xy, cell.table_z))
                 fish = Fish(f"fish {i + 1}", self.model, pose)
                 outline = fish.outline()
-                on_table = (
-                    (outline[:, 0] >= zone.x[0]).all()
-                    and (outline[:, 0] <= zone.x[1]).all()
-                    and (outline[:, 1] >= zone.y[0]).all()
-                    and (outline[:, 1] <= zone.y[1]).all()
-                )
+                on_table = bool(zone.footprint.inside(outline).all())
                 clear = np.hypot(outline[:, 0], outline[:, 1]).min() >= BASE_CLEARANCE
                 if on_table and clear and self._apart(outline):
                     self.fish.append(fish)

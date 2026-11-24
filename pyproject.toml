@@ -63,6 +63,8 @@ include = ["rfp_*"]
 
 [tool.pytest.ini_options]
 testpaths = ["Vision/tests", "Arm/tests", "ControlSys/tests", "Simulation/tests", "tools/tests"]
+# ROS's own pytest plugins, loaded when ROS is sourced, need packages this environment lacks
+addopts = "-p no:launch_testing -p no:launch_ros -p no:ament_copyright -p no:ament_flake8 -p no:ament_pep257"
 
 [tool.ruff]
 line-length = 100

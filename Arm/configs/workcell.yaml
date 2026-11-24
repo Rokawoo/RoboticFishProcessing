@@ -25,33 +25,38 @@ camera:
   # The lens frame (z out of the lens, x right and y down in the image) in the tip link frame.
   # Mounted upside down (the arm went the opposite way to the fish): rpy_deg [0, 0, 180].
   # Until calibrated, a dry run or run measures it first and saves it here (--calibrate: again).
-  mount: {xyz: [0.0, -0.104, 0.163], rpy_deg: [0, 0, 0]}
-  calibrated: false
-  calibration_version: nominal-0  # in the run log
+  mount: {xyz: [0.0040, -0.1294, 0.1630], rpy_deg: [4.00, -0.27, -179.34]}
+  calibrated: true
+  calibration_version: measured-2026-11-23-13mm  # in the run log
 
 table:
   z: 0.0
   clearance: 0.005  # the cups and camera stay this far above it
 
+# The layout below (zones, slots, observation poses' camera_xy, the placement heading) turned
+# this far about the arm's base, from +X toward +Y (negative: clockwise seen from above);
+# --mode setup sets it from where the real arm points ("Face the arm")
+cell_yaw_deg: -75
+
 zones:
   # The table: a fish reaches half its length past the cups, so it has to be that much
   # larger than the pick area all round
   work: {x: [-0.79, 0.85], y: [-0.97, 0.90], height: 1.00}
-  pick_area: {x: [-0.225, 0.28], y: [-0.62, -0.18]}
-  placement: {x: [-0.69, -0.30], y: [-0.60, -0.11]}
+  pick_area: {x: [-0.37, 0.16], y: [-0.57, -0.18]}
+  placement: {x: [-0.69, -0.40], y: [-0.50, -0.11]}
   exclusion:                      # keep-out boxes
     - {name: operator side, x: [-0.79, 0.85], y: [0.60, 0.90], z: [0.00, 1.50]}
 
 observation:
-  height: 0.45      # camera above the table
+  height: 0.65      # camera above the table
   # Where the search looks from: camera_xy, straight down (yaw_deg turns the image's x axis
   # from +X toward +Y), or taught joints_deg [j1, ..., j6] (--mode check prints them). j6 near 0.
   poses:
-    - {name: over the pick area, camera_xy: [0.028, -0.40], yaw_deg: 180}
+    - {name: over the pick area, camera_xy: [-0.105, -0.375], yaw_deg: 0}
   close_height: 0.62  # highest look over one fish (camera above the table); leave out: none
 
 placement:
   # Where placed fish's middles go, used in turn. One is enough: each placed fish is taken
   # away. More are optional.
   slots:
-    - [-0.46, -0.365]
+    - [-0.55, -0.175]

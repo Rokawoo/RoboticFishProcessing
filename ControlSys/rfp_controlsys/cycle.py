@@ -35,7 +35,7 @@ from rfp_arm.kinematics import FR5
 from rfp_arm.poses import tool_down, wrap, yaw_of
 from rfp_arm.workcell import ObservationPose, Workcell
 from rfp_vision.camera import CameraError, Frame
-from rfp_vision.fish_list import Fish, FishList, heading_difference, match_fish
+from rfp_vision.fish_list import TABLE_PERCENTILE, Fish, FishList, heading_difference, match_fish
 from rfp_vision.geometry import to_frame
 from rfp_vision.overlay import draw_fish_list
 from rfp_vision.settings import VisionSettings
@@ -76,6 +76,9 @@ CAMERA_MOVED = 0.03  # m the camera moves between two looks for the mount check 
 # close together, one taken for the other, stopped a run in the simulator
 MOUNT_JUMP_SHARE = 1.0
 DEFAULT_LENGTH = 0.6  # m: a fish's expected length when vision's settings don't say
+# m: the highest look over one fish (camera above the table) where the workcell has no
+# close_height and every observation pose is taught joints
+LOOK_HEIGHT = 0.45
 LENS_WARNING_DEG = 2.0  # the camera's view this much wider or narrower than the setting: say so
 STILL_AIMED = 0.02  # m: a fish's estimated middle moved less, the next look aims the same
 
@@ -222,6 +225,7 @@ class PickPlaceCycle:
         self._last_failed: np.ndarray | None = None  # where the fish that just failed lies
         self._tool_yaw = 0.0
         self._frame = None  # the newest camera frame seen by the tick
+        self._frame_camera: np.ndarray | None = None  # the camera's pose in {B} when it was taken
         self._hold_text = ""
         self._live_at = -math.inf  # when the tick last ran the detector
         self._table_said = False
@@ -364,7 +368,7 @@ class PickPlaceCycle:
             found = (pose, observation, target)
             if "out_of_frame" not in fish.failures:
                 break
-            highest = pose.camera[2, 3] - self.workcell.table_z >= self._look_heights()[1] - 1e-3
+            highest = pose.camera[2, 3] - self.workcell.table_z >= self._look_ceiling() - 1e-3
             if highest and float(np.linalg.norm(target.xy - before[0])) < STILL_AIMED:
                 break  # as high as a look goes, aimed where it was: the next would see the same
             # It didn't fit: it is at least as long as the view along it, so look from higher
@@ -430,10 +434,13 @@ class PickPlaceCycle:
 
     def _look_poses(self, target: Sighting) -> list[ObservationPose]:
         """Where to look at a fish from, best first: straight above its middle, the image's
-        long side along it, high enough to see its expected length (and lower ones, in case
-        the arm can't reach that high there), each the way round nearest the wrist's middle."""
+        long side along it, just high enough to see its expected length (the grasp goes by
+        this look's depth, which is better the closer it is: not from the search's height),
+        and lower ones, in case the arm can't reach that high there; none below
+        `_look_floor`. Each the way round nearest the wrist's middle."""
         s, cell = self.settings, self.workcell
-        low, high = self._look_heights()
+        high = self._look_ceiling()
+        low = min(self._look_floor(target), high)
         hfov = self._hfov()
         length = max(target.length, self._expected_length() if not target.whole else 0.0)
         reach = s.look_margin * length / (2.0 * math.tan(hfov / 2.0))
@@ -468,17 +475,30 @@ class PickPlaceCycle:
             return math.inf
         return abs(wrist - middle)
 
-    def _look_heights(self) -> tuple[float, float]:
-        """(lowest, highest) camera height above the table for a look at one fish."""
+    def _look_ceiling(self) -> float:
+        """The highest look over one fish (camera above the table): close_height, else the
+        search's (the lowest observation pose)."""
         cell = self.workcell
+        if cell.close_look_height is not None:
+            return cell.close_look_height
         heights = [
             pose.camera[2, 3] - cell.table_z
             for pose in cell.observation_poses
             if pose.camera is not None
         ]
-        low = min(heights) if heights else 0.45
-        high = cell.close_look_height if cell.close_look_height is not None else low
-        return low, max(low, high)
+        return min(heights) if heights else LOOK_HEIGHT
+
+    def _look_floor(self, target: Sighting) -> float:
+        """The lowest look over a fish (camera above the table): the cups pregrasp_distance
+        over its top, at the tallest of its type if it measured less (a bad measurement
+        doesn't bring them down onto it)."""
+        cell = self.workcell
+        settings = getattr(self.vision, "settings", None)
+        tallest = settings.fish.thickness_range_m[1] if settings is not None else 0.0
+        # how far the TCP is under the camera when the camera looks straight down (the tool
+        # tilted by the mount's own tilt)
+        under = -cell.tcp_of_camera(tool_down((0.0, 0.0, 0.0), 0.0))[2, 3]
+        return max(target.thickness, tallest) + cell.grasp.pregrasp_distance + under
 
     def _hfov(self) -> float:
         frame = self._frame
@@ -528,6 +548,7 @@ class PickPlaceCycle:
         except CameraError as e:
             raise RunStopped(f"camera failure: {e}") from None
         self._frame = observation.frame
+        self._frame_camera = self.workcell.camera_of_tcp(tcp)
         self._say_lens(observation.frame)
         self.vision.hold.set_background(observation.frame)  # nothing is held here
         self._remember(observation)
@@ -643,17 +664,26 @@ class PickPlaceCycle:
                 "(the layout check and the simulator go by it)"
             )
 
+    def _table_below(self) -> float | None:
+        """z in {B} of the table the camera sees in its newest frame, placed by where the
+        camera was when it took it (None: no depth)."""
+        frame, camera = self._frame, self._frame_camera
+        if frame is None or frame.depth is None or camera is None:
+            return None
+        settings = getattr(self.vision, "settings", None)
+        return table_seen(frame, camera, settings.depth_range_m if settings else (0.07, 1.0))
+
     def _say_table(self, fish: Fish) -> None:
         """Once a run: the table measured around a fish, if the workcell has it elsewhere."""
         if self._table_said or not fish.table_measured or fish.table_z is None:
             return
         off = fish.table_z - self.workcell.table_z
-        if abs(off) > self.settings.table_warning_m:
+        if abs(off) > self.settings.table_tolerance_m:
             self._table_said = True
             self.console.info(
                 f"⚠️  the camera measures the table at z = {fish.table_z * 1000:.0f} mm, "
                 f"{abs(off) * 1000:.0f} mm {'below' if off < 0 else 'above'} the workcell's "
-                "table.z: set it (vision measures fish from the table it sees)"
+                "table.z: set it (no fish is picked like this)"
             )
 
     def _go_to(self, pose: ObservationPose) -> None:
@@ -784,6 +814,16 @@ class PickPlaceCycle:
     ) -> None:
         cell = self.workcell
         started = self._clock()
+        if fish.table_measured and fish.table_z is not None:
+            off = fish.table_z - cell.table_z
+            if abs(off) > self.settings.table_tolerance_m:
+                raise RunStopped(
+                    f"the camera sees the table {abs(off) * 1000:.0f} mm "
+                    f"{'below' if off < 0 else 'above'} table.z next to the fish it was to pick: "
+                    "table.z or the camera's mount (its height on the gripper) is wrong, so the "
+                    "cups' depth would be too. Measure them (--mode check shows both), then "
+                    "start again"
+                )
         point = fish.grasp_point
         slot = cell.slots[self._slot]
         # the fish placed there last has been taken away: nothing lies there now
@@ -821,6 +861,8 @@ class PickPlaceCycle:
             clock=self._clock,
             sleep=self._sleep,
             controller=self._controller,
+            cup_rims=cup_rims(getattr(self.vision, "settings", None)),
+            table_below=self._table_below,
         )
         try:
 
@@ -847,7 +889,7 @@ class PickPlaceCycle:
                     f"sweeps {math.degrees(plan.wrist_sweep):.0f} deg; carried "
                     f"{(plan.carry[2, 3] - cell.table_z) * 1000:.0f} mm up"
                 )
-            self.sequence.run(plan)
+            self.sequence.run(plan, fish.table_z if fish.table_measured else None)
         except ArmError as error:
             row.update(result="failed", failure_code=error.code, detail=error.message,
                        failed_step=self.sequence.step or "plan")  # fmt: skip
@@ -993,6 +1035,10 @@ class PickPlaceCycle:
             self._frame = self.vision.frame()
         except CameraError as e:
             return f"camera failure: {e}"
+        try:  # where it was taken: read now, not when the frame is used
+            self._frame_camera = self.workcell.camera_of_tcp(self.arm.tcp_pose())
+        except ArmError:
+            self._frame_camera = None
         image = self._live(self._frame)
         self.console.show(image, [self._hold_text] if self._hold_text else None)
         return "operator stop" if self.console.stop_requested() else None
@@ -1073,6 +1119,44 @@ def _in_view(xy, cell: Workcell, frame: Frame, camera: np.ndarray, margin: float
     return margin * k.width <= u <= (1 - margin) * k.width and (
         margin * k.height <= v <= (1 - margin) * k.height
     )
+
+
+def cup_rims(settings) -> np.ndarray | None:
+    """(n, 3) points around the six cups' lips in the TCP frame, from vision's settings (the
+    footprint along the tool's x); None without them."""
+    if settings is None:
+        return None
+    long, wide = settings.cup_footprint_m
+    r = settings.cup_diameter_m / 2
+    angles = np.linspace(0.0, 2 * np.pi, 8, endpoint=False)
+    return np.array(
+        [
+            (a + r * np.cos(t), b + r * np.sin(t), 0.0)
+            for a in (r - long / 2, 0.0, long / 2 - r)
+            for b in (r - wide / 2, wide / 2 - r)
+            for t in angles
+        ]
+    )
+
+
+def lowest_lip(t_base_tcp: np.ndarray, rims: np.ndarray | None) -> float:
+    """z in {B} of the cups' lowest lip at a TCP pose (the TCP's without `rims`)."""
+    if rims is None:
+        return float(t_base_tcp[2, 3])
+    return float((rims @ t_base_tcp[:3, :3].T)[:, 2].min() + t_base_tcp[2, 3])
+
+
+def table_seen(frame: Frame, t_base_camera: np.ndarray, depth_range) -> float | None:
+    """z in {B} of the table in a frame: the lowest surface in view (vision's percentile of
+    the heights, above the breadboard's holes); None with too little depth."""
+    step = 8
+    depth = frame.depth[::step, ::step]
+    rows, columns = np.nonzero((depth >= depth_range[0]) & (depth <= depth_range[1]))
+    if len(rows) < 50:
+        return None
+    pixels = np.column_stack([columns * step, rows * step])
+    points = to_frame(t_base_camera, frame.intrinsics.rays(pixels) * depth[rows, columns][:, None])
+    return float(np.percentile(points[:, 2], TABLE_PERCENTILE))
 
 
 def _segment_distance(point, start, end) -> float:

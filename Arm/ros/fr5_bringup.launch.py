@@ -12,20 +12,23 @@ starts it by itself when a mode needs MoveIt and none is running (control_panel.
 run.bringup).
 
 What it does that FAIRINO's demo.launch.py doesn't:
-- hardware:=real gives ros2_control_node fairino_hardware/FairinoHardwareInterface instead of
-  mock_components/GenericSystem (in the robot description it is given; the xacro file stays);
+- the hardware plugin asked for in the robot description ros2_control_node gets (FAIRINO's
+  xacro names the mock or the real one; the file stays as it is); the launch stops if
+  ros2_control_node dies;
 - joint_limits.yaml next to this file: FAIRINO's limits with real accelerations (theirs are
   0.7 rad/s2: a 30 degree point-to-point move took over 5 s at the pipeline's scaling);
 - Pilz's sequence capability in move_group (blended moves: MoveGroupSequenceService);
-- FAIRINO's command server (I/O, controller state) with the real arm: cmd_server:=false to
-  leave it out, e.g. when it runs in another terminal.
+- FAIRINO's command server (I/O, controller state) with the real arm, started once the
+  controllers are up: a 3.7 controller takes one SDK connection, which the driver needs
+  first. cmd_server:=false leaves it out, e.g. when it runs in another terminal.
 Needs ROS 2 Humble with MoveIt 2 and the workspace with frcobot_ros2 built (./setup.sh --robot).
 """
 
 from pathlib import Path
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler, Shutdown
+from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
 
 HERE = Path(__file__).resolve().parent
@@ -39,16 +42,22 @@ CAPABILITIES = (
 )
 
 
+def swap_plugin(urdf: str, hardware: str) -> str:
+    """The robot description with the hardware plugin asked for ("real" or "mock"), whichever
+    of the two it names."""
+    want, other = (REAL, MOCK) if hardware == "real" else (MOCK, REAL)
+    if other in urdf:
+        return urdf.replace(other, want)
+    if want in urdf:
+        return urdf
+    raise RuntimeError(f"the robot description names neither {MOCK} nor {REAL}")
+
+
 def robot_description(xacro_file: Path, hardware: str) -> str:
     """The robot description of FAIRINO's xacro file, with the hardware plugin asked for."""
     import xacro
 
-    urdf = xacro.process_file(str(xacro_file)).toxml()
-    if hardware == "real":
-        if MOCK not in urdf:
-            raise RuntimeError(f"{xacro_file.name} has no {MOCK} to replace with {REAL}")
-        urdf = urdf.replace(MOCK, REAL)
-    return urdf
+    return swap_plugin(xacro.process_file(str(xacro_file)).toxml(), hardware)
 
 
 def _actions(context):
@@ -78,34 +87,58 @@ def _actions(context):
     )
     description = robot_description(share / "config" / f"{ROBOT}.urdf.xacro", hardware)
     config.robot_description = {"robot_description": description}
-    config.move_group_capabilities = {"capabilities": CAPABILITIES}
+    # the key alone: replacing the whole setting dropped disable_capabilities, and move_group
+    # stopped for it
+    capabilities = getattr(config, "move_group_capabilities", None) or {}
+    capabilities["capabilities"] = CAPABILITIES
+    config.move_group_capabilities = capabilities
 
     parts = [
         generate_static_virtual_joint_tfs_launch,
         generate_rsp_launch,
         generate_move_group_launch,
-        generate_spawn_controllers_launch,
     ]
     if rviz:
         parts.append(generate_moveit_rviz_launch)
     actions = [entity for make in parts for entity in make(config).entities]
+    spawners = list(generate_spawn_controllers_launch(config).entities)
+    actions += spawners
     actions.append(
         Node(
             package="controller_manager",
             executable="ros2_control_node",
             parameters=[config.robot_description, str(share / "config" / "ros2_controllers.yaml")],
             output="screen",
+            on_exit=Shutdown(reason="ros2_control_node stopped: the arm's driver is gone"),
         )
     )
     if server:
-        actions.append(
-            Node(package="fairino_hardware", executable="ros2_cmd_server", output="screen")
+        actions += after_all(
+            spawners,
+            Node(package="fairino_hardware", executable="ros2_cmd_server", output="screen"),
         )
     print(
         f"[fr5_bringup] hardware: {REAL if hardware == 'real' else MOCK}; command server: "
         f"{'yes' if server else 'no'}; RViz: {'yes' if rviz else 'no'}"
     )
     return actions
+
+
+def after_all(processes: list, action) -> list:
+    """`action` once every one of `processes` has exited (the controller spawners: the driver
+    is connected by then); at once without any."""
+    if not processes:
+        return [action]
+    left = {"count": len(processes)}
+
+    def one_exited(event, context):
+        left["count"] -= 1
+        return [action] if left["count"] == 0 else None
+
+    return [
+        RegisterEventHandler(OnProcessExit(target_action=process, on_exit=one_exited))
+        for process in processes
+    ]
 
 
 def generate_launch_description():

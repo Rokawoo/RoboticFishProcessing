@@ -122,20 +122,22 @@ class CollisionModel:
 
     def in_box(self, chain: Chain, joints: Sequence[float], box) -> tuple[str, np.ndarray] | None:
         """(a body's name, a point of the box it reaches) where the arm at `joints` would be
-        inside `box` (x, y and z ranges in the base frame: a workcell.Box), within the
-        margins; None if it stays out."""
+        inside `box` (a workcell.Box: x and y ranges in its frame, turned `yaw` about the
+        base, and z), within the margins; None if it stays out."""
         frames = chain.link_poses(np.asarray(joints, float))
         links = [chain.base_link, *chain.links]
         low = np.array([box.x[0], box.y[0], box.z[0]], float)
         high = np.array([box.x[1], box.y[1], box.z[1]], float)
+        c, s = np.cos(getattr(box, "yaw", 0.0)), np.sin(getattr(box, "yaw", 0.0))
+        to_box = np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]])  # rows: its axes in {B}
         for body in self.bodies:
             t = frames[links.index(body.link)]
-            centers = body.spheres[:, :3] @ t[:3, :3].T + t[:3, 3]
+            centers = (body.spheres[:, :3] @ t[:3, :3].T + t[:3, 3]) @ to_box.T  # box frame
             nearest = np.clip(centers, low, high)  # the box's point nearest each sphere
             gap = nearest - centers
             inside = np.einsum("ij,ij->i", gap, gap) < body.spheres[:, 3] ** 2
             if inside.any():
-                return body.name, nearest[int(np.argmax(inside))]
+                return body.name, nearest[int(np.argmax(inside))] @ to_box
         return None
 
     def over(self, chain: Chain, joints: Sequence[float], xy, below: float) -> str | None:

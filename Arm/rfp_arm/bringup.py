@@ -59,6 +59,20 @@ class Bringup:
     def running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
+    def first_error(self) -> str | None:
+        """The first line of the launch's log that starts with [ERROR], or None."""
+        if self.log_file is None or not self.log_file.is_file():
+            return None
+        for line in self.log_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.lstrip().startswith("[ERROR]"):
+                return line.strip()
+        return None
+
+    def log_text(self) -> str:
+        if self.log_file is None or not self.log_file.is_file():
+            return ""
+        return self.log_file.read_text(encoding="utf-8", errors="replace")
+
     def stop(self, timeout: float = STOP_TIMEOUT) -> None:
         """Ctrl+C to the launch and its nodes, as in a terminal; killed if they hang."""
         process = self.process

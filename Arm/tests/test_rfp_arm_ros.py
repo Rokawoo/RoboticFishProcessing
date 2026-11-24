@@ -2,6 +2,7 @@
 fake_ros.py: a fake move_group, FR5 and FAIRINO command server with the real packages'
 message fields. No ROS needed; what it can and can't show is in fake_ros.py."""
 
+import math
 import time
 
 import pytest
@@ -120,6 +121,31 @@ def test_connect_reads_the_model_and_limits_and_loads_the_scene(ros):
     assert tool.touch_links == ["wrist2_link", "wrist3_link"] and robot.scene.robot_state.is_diff
     body = CELL.tool_box
     assert tool.object.primitives[0].dimensions == pytest.approx(body.size)
+
+
+def test_a_turned_cell_s_boxes_are_turned_in_moveit_s_scene(ros):
+    cell = make_workcell(lambda data: data.update(cell_yaw_deg=90.0))
+    robot, link = ros()
+    MoveItArm(link, cell, log=lambda text: None).connect(timeout=5.0)
+    objects = {item.id: item for item in robot.scene.world.collision_objects}
+    half = math.radians(90.0) / 2
+    for name, box in (("table", cell.work_zone), ("zone operator side", cell.exclusion_zones[0])):
+        pose = objects[name].primitive_poses[0]
+        assert (pose.position.x, pose.position.y) == pytest.approx(tuple(box.footprint.center))
+        assert (pose.orientation.z, pose.orientation.w) == pytest.approx(
+            (math.sin(half), math.cos(half))
+        )
+        size = objects[name].primitives[0].dimensions  # along the box's own axes
+        assert size[:2] == pytest.approx(box.size[:2])
+
+
+def test_the_arm_s_joints_are_read_fresh_from_joint_states(ros):
+    robot, link = ros()
+    read = link.joint_reader(FR5.joint_names)
+    assert read() == pytest.approx(list(HOME))  # in j1..j6 order, though published shuffled
+    robot.publish_joints = False
+    time.sleep(0.05)
+    assert read(timeout=0.1) is None  # an old message isn't taken for where the arm is now
 
 
 def test_connect_says_what_is_missing(ros):
@@ -332,6 +358,26 @@ def test_fairino_io_switches_outputs_and_reads_the_vacuum_switch(ros):
     with pytest.raises(ArmError, match="answered '-1'") as error:
         io.set_output(99, True)  # the fake knows SetDO(0-15) only as far as its pattern goes
     assert error.value.code == E_COMM
+
+
+@pytest.mark.parametrize("firmware", ["3.7.5", "3.7.8"])
+def test_manual_mode_is_a_fault_and_the_controller_can_be_made_ready(ros, firmware):
+    # In manual mode the driver doesn't move the arm: nothing is planned or started then
+    robot, link = ros(fairino=True, firmware=firmware)
+    io = FairinoIO(link)
+    io.connect(timeout=2.0)
+    robot.manual_mode, robot.error = True, (5, 2)
+    time.sleep(0.05)
+    assert io.fault() == "controller error 5-0"  # the error first
+    robot.error = (0, 0)
+    time.sleep(0.05)
+    assert "manual mode" in io.fault()
+    robot.error = (5, 2)
+    assert io.make_ready() is None  # cleared, automatic, enabled: nothing moves
+    assert robot.commands[-3:] == ["ResetAllError()", "Mode(0)", "RobotEnable(1)"]
+    assert not robot.manual_mode and robot.error == (0, 0) and io.fault() is None
+    robot.emergency_stop = True  # that one stays: released by hand
+    assert io.make_ready(timeout=0.2) == "emergency stop pressed"
 
 
 @pytest.mark.parametrize("firmware", ["3.7.5", "3.7.8", "3.9.5"])
@@ -569,8 +615,13 @@ def test_grasp_feels_for_the_fish_on_the_fake_arm(ros):
     robot, sequence, plan, steps, _ = grasp_rig(ros, speedup=4.0)
     robot.tcp = CELL.tcp
     robot.contact_z = 0.095  # 5 mm lower than the camera said
+    robot.contact_stiffness = 10000.0  # 10 N/mm: 40 N reached 9 mm past the expected surface
     sequence.arm._torques = sequence.arm._fault.__self__.joint_torques  # the same FairinoIO
     sequence.run(plan)
     assert tuple(steps) == STEPS
-    assert sequence.contact_depth == pytest.approx(0.010, abs=0.003)  # felt 5 mm into it
+    # 15 N: 1.5 mm into it, so 6.5 mm past the expected surface; felt there or a poll or two
+    # later (1.6 mm apart here, and Windows' timer can stretch one)
+    assert 0.0055 <= sequence.contact_depth <= 0.0065 + 0.006
     assert robot.cancels == 1  # one move down, stopped once the cups had pressed on
+    lowest = min(CELL.tcp_of_tip(FR5.fk(q))[2, 3] for q in robot.path)
+    assert lowest >= 0.100 - CELL.grasp.max_press - 1e-6  # never past max_press

@@ -300,6 +300,7 @@ def install(monkeypatch, robot: "FakeRobot") -> None:
     action.ActionClient = ActionClient
     executors = types.ModuleType("rclpy.executors")
     executors.SingleThreadedExecutor = Executor
+    executors.ExternalShutdownException = type("ExternalShutdownException", (Exception,), {})
     qos = types.ModuleType("rclpy.qos")
     qos.DurabilityPolicy = types.SimpleNamespace(TRANSIENT_LOCAL="transient_local")
     qos.QoSProfile = lambda depth=10, durability=None: types.SimpleNamespace(
@@ -342,6 +343,8 @@ class FakeRobot:
         self.outputs = [False] * 16
         self.inputs = [False] * 16
         self.emergency_stop = False
+        self.manual_mode = False  # the controller's mode: manual (1) or automatic (0)
+        self.enabled = True
         self.sealed = lambda: True  # whether the cups seal when the vacuum is on
         self.tcp = np.eye(4)  # the tool, in the tip link: where a surface is felt
         self.contact_z: float | None = None
@@ -625,6 +628,15 @@ class FakeRobot:
         ok, failed = ("1", "0") if self.legacy else ("0", "-1")
         if request.cmd_str == "GetRobotVersion()" and not self.legacy:
             return response(cmd_res=f"0,robot:V{self.firmware}")
+        if request.cmd_str == "ResetAllError()":  # an emergency stop stays
+            self.error = (0, 0)
+            return response(cmd_res=ok)
+        if mode := re.fullmatch(r"(Mode|RobotEnable)\(([01])\)", request.cmd_str):
+            if mode[1] == "Mode":
+                self.manual_mode = mode[2] == "1"
+            else:
+                self.enabled = mode[2] == "1"
+            return response(cmd_res=ok)
         match = re.fullmatch(r"SetDO\((\d+),([01])\)", request.cmd_str)
         if match is None or int(match[1]) > 15:
             return response(cmd_res=failed)
@@ -651,7 +663,7 @@ class FakeRobot:
         state = kind(
             dgt_output_l=word(self.outputs) & 0xFF, dgt_output_h=word(self.outputs) >> 8,
             dgt_input_l=word(self.inputs) & 0xFF, dgt_input_h=word(self.inputs) >> 8,
-            emg=int(self.emergency_stop),
+            emg=int(self.emergency_stop), robot_mode=int(self.manual_mode),
             flange_x_cur_pos=float(flange[0]), flange_y_cur_pos=float(flange[1]),
             flange_z_cur_pos=float(flange[2]),
             **{f"j{i + 1}_cur_tor": float(torques[i]) for i in range(6)},

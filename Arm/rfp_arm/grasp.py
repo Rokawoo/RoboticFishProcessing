@@ -267,7 +267,8 @@ def plan_grasp(
         reset_first=way["reset_first"],
     )
     plan.pregrasp = plan.at_depth(-g.pregrasp_distance)
-    plan.approach_end = plan.at_depth(-g.dry_run_standoff if dry_run else g.press_distance)
+    press = min(g.press_distance, g.max_press)
+    plan.approach_end = plan.at_depth(-g.dry_run_standoff if dry_run else press)
     end = plan.approach_end[:3, 3]
     plan.lift = tool_down((end[0], end[1], max(lift_z, end[2] + g.lift_margin)), grasp_yaw)
     for name, pose in plan.poses().items():
@@ -342,10 +343,11 @@ def _turning_carry(workcell: Workcell, plan: GraspPlan, wrist) -> list[np.ndarra
     _, at_grasp, at_slot = plan.wrist
     start, end = plan.lift[:3, 3], plan.carry[:3, 3]
     yaw_start, yaw_end = yaw_of(plan.lift), yaw_of(plan.carry)
-    zone = workcell.work_zone
-    xs = np.arange(zone.x[0], zone.x[1] + 1e-9, TURN_SPOT_STEP)
-    ys = np.arange(zone.y[0], zone.y[1] + 1e-9, TURN_SPOT_STEP)
-    spots = [np.array([x, y, start[2]]) for x in xs for y in ys]
+    table = workcell.work_zone.footprint
+    xs = np.arange(table.x[0], table.x[1] + 1e-9, TURN_SPOT_STEP)
+    ys = np.arange(table.y[0], table.y[1] + 1e-9, TURN_SPOT_STEP)
+    grid = table.base(np.array([(x, y) for x in xs for y in ys]))
+    spots = [np.array([x, y, start[2]]) for x, y in grid]
     direct = float(np.linalg.norm(end - start))
 
     def detour(spot) -> float:
@@ -469,10 +471,15 @@ class GraspSequence:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         controller: Callable[[str], str] | None = None,
+        cup_rims: np.ndarray | None = None,
+        table_below: Callable[[], float | None] | None = None,
     ):
         """`controller`: runs a command line on the arm's controller (FairinoIO.execute),
         for the grasp settings' press_*_commands; raises ArmError if the controller refuses
-        it (what its answer means depends on the driver)."""
+        it (what its answer means depends on the driver). `cup_rims`: (n, 3) points of the
+        cups' lips in the TCP frame (None: the TCP alone), kept table_clearance above the
+        table. `table_below`: z in {B} of the table the camera sees now (None: can't tell),
+        watched on the way down onto the fish."""
         self.arm = arm
         self.gripper = gripper
         self.workcell = workcell
@@ -489,11 +496,19 @@ class GraspSequence:
         self._not_holding_since: float | None = None
         self._release_z = math.inf  # TCP height at which a held fish rests on the table
         self._picked_at: np.ndarray | None = None  # x, y where the cups took the fish
+        self.cup_rims = None if cup_rims is None else np.asarray(cup_rims, float).reshape(-1, 3)
+        self._table_below = table_below
+        self._floor = -math.inf  # z in {B} the cups' lips stay above on the way down
+        self._seen_floor: float | None = None  # the camera's table where it stopped them
         self._carried = 0  # carry stops reached: a carry planned again goes on from there
 
-    def run(self, plan: GraspPlan) -> None:
-        """All nine steps. Raises ArmError (the arm stopped at `self.step`) or OperatorStop."""
+    def run(self, plan: GraspPlan, table_z: float | None = None) -> None:
+        """All nine steps. Raises ArmError (the arm stopped at `self.step`) or OperatorStop.
+        `table_z`: the table vision measured around the fish; the cups' lips stay
+        table_clearance above it and above table.z, whichever is higher."""
         m = self.workcell.motion
+        table = self.workcell.table_z if table_z is None else max(self.workcell.table_z, table_z)
+        self._floor = table + self.workcell.table_clearance
         vacuum = not plan.dry_run
         self._release_z = plan.lower[2, 3]
         self._picked_at = plan.surface[:2, 3].copy()
@@ -611,18 +626,28 @@ class GraspSequence:
         pressed on; otherwise to the planned depth."""
         g, m = self.workcell.grasp, self.workcell.motion
         self.contact_depth = None
+        self._seen_floor = None
+        guard = None if self._table_below is None else self._too_low  # the camera watching
         feel = g.feel_contact and not plan.dry_run and self.arm.contact_force() is not None
         if not feel:
-            self._lin(plan.approach_end, m.approach_speed)
+            press = -g.dry_run_standoff if plan.dry_run else min(g.press_distance, g.max_press)
+            depth = self._deepest(plan, press, -g.pregrasp_distance)
+            self._lin(plan.at_depth(depth), m.approach_speed, until=guard)
+            self._check_floor()
             return
         start = -g.feel_start
-        self._lin(plan.at_depth(start), m.approach_speed)
-        deepest = self._deepest(plan, g.feel_max_depth + g.press_distance, start + ZERO_AFTER)
+        self._lin(plan.at_depth(start), m.approach_speed, until=guard)
+        self._check_floor()
+        limit = min(g.feel_max_depth + g.press_distance, g.max_press)
+        deepest = self._deepest(plan, limit, start + ZERO_AFTER)
+        felt_by = min(g.feel_max_depth, deepest)  # nothing felt by here: no fish
         surface, axis = plan.surface[:3, 3], plan.surface[:3, 2]
         zeroed = False
 
         def pressed() -> bool:  # polled as the arm moves down
             nonlocal zeroed
+            if self._too_low():
+                return True
             depth = float((self.arm.tcp_pose()[:3, 3] - surface) @ axis)
             if not zeroed:
                 if depth < start + ZERO_AFTER:
@@ -636,25 +661,56 @@ class GraspSequence:
             if self.contact_depth is None and force >= g.contact_force:
                 self.contact_depth = depth
             if self.contact_depth is None:
-                return depth >= g.feel_max_depth - 1e-9
+                return depth >= felt_by - 1e-9
             pressed_on = depth >= self.contact_depth + g.press_distance - 1e-9
             return pressed_on or force >= g.press_force_max
 
         self._lin(plan.at_depth(deepest), g.feel_speed, until=pressed)
+        self._check_floor()
         if self.contact_depth is None:
-            reached = min(deepest, g.feel_max_depth)
             raise self._error(
-                E_NO_SEAL, f"nothing felt {reached * 1000:.0f} mm past where the fish should be"
+                E_NO_SEAL, f"nothing felt {felt_by * 1000:.0f} mm past where the fish should be"
             )
 
     def _deepest(self, plan: GraspPlan, depth: float, shallowest: float) -> float:
-        """`depth` past the fish's expected surface, or as far as the cups may go short of it
-        (the table's clearance under a thin fish, a zone)."""
-        while self.workcell.pose_problem(plan.at_depth(depth)):
+        """`depth` past the fish's expected surface, or as far as the cups may go short of it:
+        the pose allowed (zones, the table's clearance) and the cups' lips over the floor."""
+        while self.workcell.pose_problem(plan.at_depth(depth)) or (
+            self._lowest(plan.at_depth(depth)) < self._floor - 1e-9
+        ):
             depth -= 0.001
             if depth <= shallowest:
-                raise self._error(E_MOTION, "no room to feel for the fish above the table")
+                raise self._error(E_MOTION, "no room to go down onto the fish above the table")
         return depth
+
+    def _lowest(self, t_base_tcp: np.ndarray) -> float:
+        """z in {B} of the cups' lowest lip (the TCP's, without the cups' shape)."""
+        if self.cup_rims is None:
+            return float(t_base_tcp[2, 3])
+        return float((self.cup_rims @ t_base_tcp[:3, :3].T)[:, 2].min() + t_base_tcp[2, 3])
+
+    def _too_low(self) -> bool:
+        """Polled on the way down: whether the cups' lowest lip has come table_clearance
+        close to the table the camera sees now (kept, to say so)."""
+        if self._table_below is None:
+            return False
+        table = self._table_below()
+        if table is None:
+            return False
+        if self._lowest(self.arm.tcp_pose()) < table + self.workcell.table_clearance:
+            self._seen_floor = table
+            return True
+        return False
+
+    def _check_floor(self) -> None:
+        """After a move down: E_NO_SEAL if it was stopped for coming too near the table."""
+        if self._seen_floor is not None:
+            gap = self._lowest(self.arm.tcp_pose()) - self._seen_floor
+            raise self._error(
+                E_NO_SEAL,
+                f"stopped with the cups {gap * 1000:.0f} mm over the table the camera sees: they "
+                "would have gone into it (check table.z, tool.tcp and camera.mount)",
+            )
 
     def _carry(self, pose: np.ndarray, via: list | None = None) -> None:
         """Straight to the carry pose (through `via`: the wrist turning evenly the way the

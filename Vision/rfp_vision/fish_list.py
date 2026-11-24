@@ -48,6 +48,9 @@ TABLE_GRID = 200  # the same, for the table around it
 TABLE_PERCENTILE = 30
 MIN_TABLE_POINTS = 50
 MIN_BODY_POINTS = 30  # depth points on a fish for its height when there are none at its middle
+# m: a fish's top measured lower than this above the table where the cups go is no fish's top
+# (bad depth there): not picked, as the cups would be sent down to it
+MIN_FISH_HEIGHT = 0.03
 
 
 @dataclass
@@ -339,7 +342,7 @@ class FishLocator:
             fish.surface_tilt = float(math.acos(min(1.0, normal[2])))
             if s.align_to_surface and fish.surface_tilt <= math.radians(s.max_surface_tilt_deg):
                 approach = -normal
-        surface = np.array([grasp_xy[0], grasp_xy[1], table_z + fish.thickness])
+        surface = np.array([grasp_xy[0], grasp_xy[1], self._top(table_z, fish, fish.thickness)])
 
         offset = float((grasp_xy - center) @ axis)
         fish.width_at_grasp = float(
@@ -349,9 +352,15 @@ class FishLocator:
         fish.bbox = (
             float(outline_xy[:, 0].min()), float(outline_xy[:, 0].max()),
             float(outline_xy[:, 1].min()), float(outline_xy[:, 1].max()),
-            float(table_z), float(table_z + max(fish.thickness, middle_height)),
+            float(table_z), self._top(table_z, fish, max(fish.thickness, middle_height)),
         )  # fmt: skip
 
+        if fish.depth_measured and fish.thickness < MIN_FISH_HEIGHT:
+            failed.add("invalid_depth")
+            details["invalid_depth"] = (
+                f"its top {fish.thickness * 1000:.0f} mm above the table where the cups go: "
+                "no fish's top (bad depth there)"
+            )
         # Too big for one fish of its type: two seen as one. Smaller isn't refused: the fish
         # given to the arm are big enough
         sizes = (
@@ -372,9 +381,17 @@ class FishLocator:
 
         fish.heading = heading
         fish.grasp_pose = pose_along(surface, heading, approach)
-        middle = np.array([center[0], center[1], table_z + middle_height])
+        middle = np.array([center[0], center[1], self._top(table_z, fish, middle_height)])
         fish.target_pose = pose_along(middle, heading, approach)
         return _finish(fish, failed, details)
+
+    def _top(self, table_z: float, fish: Fish, height: float) -> float:
+        """z in {B} of a fish's top `height` above the table under it. Measured against the
+        table seen around it, it is also the workcell's table plus that height, where errors
+        of the camera's height and of the depth's scale cancel; the cups are sent to the
+        higher of the two, so a wrong reading makes them stop short, never go deeper."""
+        top = table_z + height
+        return max(top, self.table_z + height) if fish.table_measured else top
 
     def _grasp_offsets(self, length: float, heading_known: bool) -> list[float]:
         """Where along the body (m from the outline's middle, + toward the head) the cups are
@@ -564,9 +581,13 @@ def _lip_bump(heights, along, across, fit) -> float:
     return float(np.percentile(rest, 90) - np.median(rest))
 
 
-def _in_area(xy, area: Area | None) -> bool:
+def _in_area(xy, area) -> bool:
+    """`area`: x and y ranges in {B} (an Area), or anything with contains(xy) (a turned
+    workcell.Rect); None: everywhere."""
     if area is None:
         return True
+    if hasattr(area, "contains"):
+        return bool(area.contains(xy))
     (x0, x1), (y0, y1) = area
     return x0 <= xy[0] <= x1 and y0 <= xy[1] <= y1
 

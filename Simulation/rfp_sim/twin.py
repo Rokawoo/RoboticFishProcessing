@@ -12,7 +12,7 @@ import numpy as np
 import pyvista as pv
 from rfp_arm.interfaces import ArmError
 from rfp_arm.kinematics import FR5, Chain
-from rfp_arm.workcell import Workcell
+from rfp_arm.workcell import Box, Workcell
 from rfp_vision.camera import Frame
 from rfp_vision.fish_list import FishList
 from rfp_vision.geometry import Intrinsics
@@ -23,7 +23,9 @@ from rfp_sim.render import (
     VisionLayer,
     add_arm,
     add_view_pyramid,
+    box_mesh,
     cached_gripper,
+    outline_mesh,
     view_pyramid,
 )
 from rfp_sim.settings import SimSettings, gripper_path
@@ -61,8 +63,7 @@ class Twin:
         self.cone = add_view_pyramid(self.plotter)  # what the camera sees, down to the table
         self.vision = VisionLayer(self.plotter, workcell.table_z)
         self.text = self.plotter.add_text("", position="upper_left", font_size=11, color="white")
-        pick = workcell.pick_area
-        middle = np.array([np.mean(pick.x), np.mean(pick.y), workcell.table_z])
+        middle = np.array([*workcell.pick_area.center, workcell.table_z])
         self.plotter.camera_position = [
             tuple(middle + (1.3, -1.3, 1.1)),
             tuple(middle + (0, 0, 0.15)),
@@ -79,20 +80,17 @@ class Twin:
         cell, add = self.workcell, self.plotter.add_mesh
         zone = cell.work_zone
         z = cell.table_z
-        table = pv.Box((zone.x[0], zone.x[1], zone.y[0], zone.y[1], z - 0.04, z - 0.0005))
-        add(table, color=(0.5, 0.5, 0.52))
+        table = Box("table", zone.x, zone.y, (z - 0.04, z - 0.0005), zone.yaw)
+        add(box_mesh(table), color=(0.5, 0.5, 0.52))
         for rect, color in (
             (cell.pick_area, (0.3, 0.9, 0.4)),
             (cell.placement_zone, (0.3, 0.6, 1.0)),
         ):
-            (x0, x1), (y0, y1) = rect.x, rect.y
-            corners = np.array([[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z], [x0, y0, z]])
-            add(pv.lines_from_points(corners + (0, 0, 0.002)), color=color, line_width=3)
+            add(outline_mesh(rect, z + 0.002), color=color, line_width=3)
         for x, y in cell.slots:
             add(pv.Disc(center=(x, y, z + 0.002), inner=0.0, outer=0.015), color=(0.3, 0.6, 1.0))
         for box in cell.exclusion_zones:
-            bounds = (*box.x, *box.y, *box.z)
-            add(pv.Box(bounds), color=(0.9, 0.2, 0.2), opacity=0.15)
+            add(box_mesh(box), color=(0.9, 0.2, 0.2), opacity=0.15)
 
     @property
     def closed(self) -> bool:

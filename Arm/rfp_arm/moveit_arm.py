@@ -212,7 +212,7 @@ class MoveItArm:
         cell = self.workcell
         zone = cell.work_zone
         top = cell.table_z - TABLE_GAP
-        table = Box("table", zone.x, zone.y, (top - TABLE_THICKNESS, top))
+        table = Box("table", zone.x, zone.y, (top - TABLE_THICKNESS, top), zone.yaw)
         scene = PlanningScene()
         scene.is_diff = True
         scene.robot_state.is_diff = True
@@ -247,7 +247,8 @@ class MoveItArm:
         shape.dimensions = [float(v) for v in box.size]
         pose = Pose()
         pose.position.x, pose.position.y, pose.position.z = (float(v) for v in box.center)
-        pose.orientation.w = 1.0
+        pose.orientation.z = math.sin(box.yaw / 2)  # turned about z
+        pose.orientation.w = math.cos(box.yaw / 2)
         item.primitives.append(shape)
         item.primitive_poses.append(pose)
         item.operation = CollisionObject.ADD

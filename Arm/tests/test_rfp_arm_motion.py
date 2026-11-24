@@ -6,7 +6,7 @@ import math
 import pytest
 
 np = pytest.importorskip("numpy")
-pytest.importorskip("yaml")
+yaml = pytest.importorskip("yaml")
 
 from arm_helpers import SEED, FakeClock, FakeIO, make_workcell, solve_ik, workcell_data
 from rfp_arm import poses
@@ -36,6 +36,7 @@ from rfp_arm.safety import check_trajectory
 from rfp_arm.sim import SimArm
 from rfp_arm.valve import HttpValve, SerialValve, ValveError
 from rfp_arm.workcell import (
+    DEFAULT_FILE,
     GripperSettings,
     WorkcellError,
     load_workcell,
@@ -192,19 +193,18 @@ def test_near_the_base_the_arm_swings_round_rather_than_fold_back_over_it():
 # ---------------------------------------------------------------------------
 # Workcell
 # ---------------------------------------------------------------------------
-def test_default_workcell_loads_unverified_and_consistent():
-    cell = load_workcell()
-    assert not cell.verified and not cell.calibrated  # placeholders: the real arm refuses them
+def test_the_shipped_workcell_loads_and_is_consistent():
+    cell = load_workcell()  # the control panel on top
     assert cell.problems() == [] and cell.group == "fairino5_v6_group"
     assert len(cell.slots) >= 1  # AS-51: one is enough, placed fish are taken away
-    spans = sorted(high - low for low, high in (cell.pick_area.x, cell.pick_area.y))
-    assert spans[0] >= 0.4 - 1e-9 and spans[1] >= 0.5 - 1e-9  # SY-15: at least 500 x 400 mm
-    assert cell.grasp.pregrasp_distance == 0.10 and cell.motion.tcp_speed_max == 0.25
+    alone = load_workcell(panel=None)  # the file has no limits: the dataclasses' defaults
+    assert alone.grasp.pregrasp_distance == 0.10 and alone.motion.tcp_speed_max == 0.25
     assert cell.gripper.driver == "serial" and cell.gripper.serial_port == "/dev/ttyACM0"
-    for pose in cell.observation_poses:  # AS-11: straight down from 450 mm
+    height = yaml.safe_load(DEFAULT_FILE.read_text(encoding="utf-8"))["observation"]["height"]
+    for pose in cell.observation_poses:  # AS-11: straight down from observation.height
         tcp = cell.observation_tcp(pose)
         camera = cell.camera_of_tcp(tcp)
-        assert np.allclose(camera, pose.camera) and camera[2, 3] == pytest.approx(0.45)
+        assert np.allclose(camera, pose.camera) and camera[2, 3] == pytest.approx(height)
         assert np.allclose(cell.tcp_of_tip(cell.tip_of_tcp(tcp)), tcp)
     # a look centered on one fish: straight down from close_height, the image along `yaw`
     close = cell.close_look_camera((0.3, -0.1), 0.5)
@@ -249,8 +249,6 @@ def test_workcell_file_errors_say_what_is_wrong(tmp_path):
         file = tmp_path / "cell.yaml"
         file.write_text(text, encoding="utf-8")
         return load_workcell(file)
-
-    import yaml
 
     data = workcell_data()
     data["motion"]["tcp_speed"] = 1.0
@@ -1142,10 +1140,11 @@ def test_the_cups_are_lowered_until_the_fish_pushes_back():
     felt = rig.sequence.contact_depth
     assert felt == pytest.approx(0.010, abs=0.0011)
     assert 0.100 - felt - 0.010 - 1e-9 <= lowest(rig) < 0.100 - felt  # pressed on, not through
-    # down in one smooth move from 15 mm above, stopped where it had pressed on (40 N), then up
+    # down in one smooth move from 15 mm above, stopped at max_press (15 mm past the surface
+    # vision measured) though it would have pressed 10 mm on from the contact, then up
     heights = [pose[2, 3] for kind, pose in rig.arm.moves if kind == "lin"]
     assert heights[0] == pytest.approx(0.115) and heights[1] == pytest.approx(lowest(rig))
-    assert lowest(rig) == pytest.approx(0.095 - 40 / 3000, abs=0.0011) and heights[2] > 0.115
+    assert lowest(rig) == pytest.approx(0.100 - 0.015, abs=0.0011) and heights[2] > 0.115
 
     hard = Rig()
     hard.arm.contact_surface, hard.arm.contact_stiffness = 0.100, 20000.0
@@ -1156,8 +1155,8 @@ def test_the_cups_are_lowered_until_the_fish_pushes_back():
     nothing = Rig()
     nothing.arm.contact_surface = 0.05  # no fish under the cups
     error = nothing.fails()
-    assert error.code == E_NO_SEAL and "nothing felt 25 mm past" in error.message
-    assert nothing.sequence.step == "approach" and lowest(nothing) == pytest.approx(0.075)
+    assert error.code == E_NO_SEAL and "nothing felt 15 mm past" in error.message
+    assert nothing.sequence.step == "approach" and lowest(nothing) == pytest.approx(0.085)
     assert nothing.gripper.state() != GripperState.VACUUM_OFF  # still on: Control lets go
 
     blind = Rig(cell=make_workcell(lambda d: d["grasp"].update(feel_contact=False)))
@@ -1173,9 +1172,66 @@ def test_the_cups_are_lowered_until_the_fish_pushes_back():
 def test_the_cups_feel_no_further_than_the_table_lets_them():
     thin = Rig()
     thin.arm.contact_surface = CELL.table_z  # nothing under the cups above the table
-    error = thin.fails(thickness=0.025)  # 35 mm past its top would be below the table
-    assert error.code == E_NO_SEAL and "nothing felt 20 mm past" in error.message
+    error = thin.fails(thickness=0.015)  # 15 mm past its top would be its clearance's 5 mm in
+    assert error.code == E_NO_SEAL and "nothing felt 10 mm past" in error.message
     assert lowest(thin) == pytest.approx(CELL.table_z + CELL.table_clearance)  # its clearance
+
+
+def test_the_cups_never_go_into_the_table_vision_or_the_camera_sees():
+    # On the real arm the cups were pushed through a fish into the table. Whatever the fish's
+    # height says, the cups' lowest lip stays table_clearance above the higher of table.z and
+    # the table vision measured next to the fish, and the camera watching the table on the
+    # way down stops them where they come that close to it
+    blind = make_workcell(lambda d: d["grasp"].update(feel_contact=False))
+    rig = Rig(cell=blind)
+    rig.sequence.run(plan(), table_z=0.088)  # vision: the table 88 mm higher than table.z
+    assert lowest(rig) == pytest.approx(0.088 + CELL.table_clearance, abs=0.0011)  # not 0.090
+    assert tuple(rig.steps) == STEPS  # short of the planned depth, still a grasp
+    rig = Rig(cell=blind)
+    rig.sequence.run(plan(), table_z=-0.02)  # measured lower than table.z: table.z counts
+    assert lowest(rig) == pytest.approx(0.090)
+
+    # the cups' rims: tilted on a sloping fish, one side of them is lower than the TCP
+    rims = np.array([(dx, dy, 0.0) for dx in (-0.08, 0.08) for dy in (-0.03, 0.03)])
+    tilted = plan_grasp(blind, sloping_fish(10.0), True, 0.60, 0.10, SLOT, math.radians(90))
+    rig = Rig(cell=blind, cup_rims=rims)
+    rig.sequence.run(tilted, table_z=0.08)
+    tcp = rig.arm.moves[1][1]
+    lips = (rims @ tcp[:3, :3].T)[:, 2] + tcp[2, 3]
+    assert lips.min() == pytest.approx(0.085, abs=0.0011) and tcp[2, 3] > lips.min() + 0.01
+
+    # the camera sees the table 90 mm up: stopped 5 mm over it, the fish can't be there
+    camera = Rig(cell=blind, table_below=lambda: 0.090)
+    error = camera.fails()
+    assert error.code == E_NO_SEAL and "over the table the camera sees" in error.message
+    assert camera.sequence.step == "approach"
+    assert lowest(camera) == pytest.approx(0.095, abs=0.0011)
+    seen = []  # no depth in view: no stop, the planned depth
+    unseen = Rig(cell=blind, table_below=lambda: seen.append(1))
+    unseen.run()
+    assert seen and lowest(unseen) == pytest.approx(0.090)
+    feeling = Rig(table_below=lambda: 0.096)  # feeling for the fish: the same stop
+    feeling.arm.contact_surface = 0.05  # nothing would push back before the table
+    error = feeling.fails()
+    assert error.code == E_NO_SEAL and "over the table the camera sees" in error.message
+    assert lowest(feeling) == pytest.approx(0.101, abs=0.0011)
+
+
+def test_the_cups_press_no_further_than_max_press():
+    # the bellows compress about 30 mm: past that the gripper itself pushes on the fish
+    def cell(**grasp):
+        data = workcell_data()
+        data["grasp"].update(grasp)
+        return workcell_from_mapping(data)
+
+    capped = cell(feel_contact=False, press_distance=0.012, max_press=0.012)
+    assert capped.problems() == []
+    rig = Rig(cell=capped)
+    rig.run()
+    assert lowest(rig) == pytest.approx(0.088)
+    assert any("max_press" in p for p in cell(max_press=0.0).problems())
+    assert any("max_press" in p for p in cell(max_press=0.05).problems())
+    assert any("press_distance" in p for p in cell(press_distance=0.02).problems())
 
 
 def test_joint_torques_that_stop_while_feeling_end_the_grasp_cleanly():

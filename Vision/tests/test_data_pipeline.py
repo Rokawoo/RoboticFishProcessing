@@ -326,7 +326,7 @@ def test_augment_set_copies_labels_unchanged_and_replaces_safely(augmenter, tmp_
     monkeypatch.undo()
     augmenter.augment_set(folder, copies=1, assume_yes=True)  # and the next run cleans up
     assert len(pc.list_images(out)) == 2
-    assert [p.name for p in tmp_path.iterdir()] == ["fishA", "fishA (augmented)"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["fishA", "fishA (augmented)"]
 
 
 # ---------------------------------------------------------------------------

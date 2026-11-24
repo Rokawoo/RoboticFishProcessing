@@ -35,6 +35,77 @@ def test_the_launch_file_swaps_in_the_real_driver_without_touching_fairino_s_fil
     assert "ros2_cmd_server" in source and "generate_launch_description" in source
 
 
+def _launch_module(monkeypatch):
+    """The launch file as a module, with stand-ins for ROS's launch package."""
+    import importlib.util
+
+    launch = types.ModuleType("launch")
+    launch.LaunchDescription = list
+    actions = types.ModuleType("launch.actions")
+    for name in ("DeclareLaunchArgument", "OpaqueFunction", "Shutdown"):
+        setattr(actions, name, lambda *args, **kwargs: kwargs)
+    actions.RegisterEventHandler = lambda handler: handler
+    handlers = types.ModuleType("launch.event_handlers")
+    handlers.OnProcessExit = lambda target_action, on_exit: types.SimpleNamespace(
+        target_action=target_action, on_exit=on_exit
+    )
+    substitutions = types.ModuleType("launch.substitutions")
+    substitutions.LaunchConfiguration = str
+    stand_ins = {
+        "launch": launch,
+        "launch.actions": actions,
+        "launch.event_handlers": handlers,
+        "launch.substitutions": substitutions,
+    }
+    for name, module in stand_ins.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    spec = importlib.util.spec_from_file_location("fr5_bringup_launch", LAUNCH_FILE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_launch_swaps_either_plugin_and_starts_the_server_once_the_driver_is_up(monkeypatch):
+    launch = _launch_module(monkeypatch)
+    mock, real = f"<plugin>{launch.MOCK}</plugin>", f"<plugin>{launch.REAL}</plugin>"
+    assert launch.swap_plugin(mock, "real") == real == launch.swap_plugin(real, "real")
+    assert launch.swap_plugin(real, "mock") == mock == launch.swap_plugin(mock, "mock")
+    with pytest.raises(RuntimeError, match="neither"):
+        launch.swap_plugin("<robot/>", "real")
+    server = object()  # a 3.7 controller takes one SDK connection: the driver's first
+    waiting = launch.after_all(["spawner a", "spawner b"], server)
+    assert [handler.target_action for handler in waiting] == ["spawner a", "spawner b"]
+    assert waiting[0].on_exit(None, None) is None  # one spawner still running
+    assert waiting[1].on_exit(None, None) == [server]  # the last one done: the server starts
+    assert launch.after_all([], server) == [server]
+
+
+def test_a_launch_that_dies_on_the_way_up_is_said_at_once(tmp_path, monkeypatch):
+    sys.path.insert(0, str(REPO / "ControlSys"))
+    from rfp_controlsys import pick_place
+
+    link = types.SimpleNamespace(node=types.SimpleNamespace(count_publishers=lambda topic: 0))
+    log = tmp_path / "launch.log"
+    died = "print('[ERROR] [ros2_control_node-5]: process has died [pid 42, exit code 1]')"
+    bringup = Bringup([sys.executable, "-c", died], log)
+    bringup.start()
+    bringup.process.wait(timeout=30)
+    with pytest.raises(SystemExit) as stopped:
+        pick_place.wait_for_launch(link, bringup, timeout=5.0)
+    bringup.stop()
+    said = str(stopped.value)
+    assert "stopped" in said and "[ERROR] [ros2_control_node-5]" in said
+    assert pick_place.DRIVER_STOPPED in said and str(log) in said
+    log.write_text("[ERROR] [launch]: package 'fairino5_v6_moveit2_config' not found\n")
+    assert pick_place.MISSING_PACKAGE in _exit_text(pick_place, link, bringup)
+
+
+def _exit_text(pick_place, link, bringup) -> str:
+    with pytest.raises(SystemExit) as stopped:
+        pick_place.wait_for_launch(link, bringup, timeout=1.0)
+    return str(stopped.value)
+
+
 def test_the_joint_limits_keep_fairino_s_speeds_and_allow_real_accelerations():
     import yaml
 
@@ -162,7 +233,7 @@ def test_robot_sh_sources_what_bashrc_did_and_finds_fairino_s_workspace(tmp_path
             str(script),
         ],
         check=False,
-        env={**os.environ, "HOME": home.as_posix()},
+        env={"HOME": home.as_posix(), "PATH": os.environ.get("PATH", "")},  # nothing else leaks in
         capture_output=True,
         text=True,
         timeout=60,

@@ -2,9 +2,11 @@
 Lay out the cell by hand in a 3D window (pick_place.py --mode setup). Nothing moves. Drag the
 corner balls of the table, pick area and placement zone, the slots (blue balls) and the
 keep-out zones (red; one along a whole table edge goes along the edge nearest its ball);
-buttons turn the cell a quarter turn about the arm, add or remove a slot, undo and save. The
-camera's views follow the pick area and the placement zone grows to hold its slots. Every
-change is checked (rfp_arm.layout.check_layout). Save changes only the layout's lines.
+buttons turn the cell a quarter turn about the arm or to face where the real arm points,
+add or remove a slot, undo and save. The camera's views follow the pick area and the placement
+zone grows to hold its slots. Every change is checked (rfp_arm.layout.check_layout). Save
+changes only the layout's lines. The layout is kept in the cell's frame (Layout.yaw_deg turns
+it about the arm); what is drawn and dragged is in {B}.
 """
 
 import copy
@@ -32,10 +34,10 @@ from rfp_arm.layout import (
     view_footprint,
     with_layout,
 )
-from rfp_arm.workcell import DEFAULT_FILE, PANEL_FILE, Workcell, workcell_from_mapping
+from rfp_arm.workcell import DEFAULT_FILE, PANEL_FILE, Workcell, turn_xy, workcell_from_mapping
 
 from rfp_sim.assets import find_robot_meshes, robot_link_meshes
-from rfp_sim.render import GRIPPER_COLOR, add_arm, cached_gripper
+from rfp_sim.render import GRIPPER_COLOR, add_arm, cached_gripper, turned_mesh
 from rfp_sim.settings import MESH_CACHE, SIM_DIR, gripper_path
 from rfp_sim.settings import load_settings as load_sim_settings
 
@@ -62,6 +64,7 @@ SLOT_GAP = 0.02  # m: between the fish an added slot is put next to
 CORNER_RADIUS = 0.02  # m
 SLOT_RADIUS = 0.03
 FAR = 3.0  # m from the arm: a ball dragged past the horizon stops here
+NEAR_AXIS = 0.15  # m: a TCP this close to the base's axis points nowhere in particular
 BUTTON = 26  # px
 LINE = 18  # px: a line of text at font size 9
 CHAR = 8.4  # px: a character's width there
@@ -309,10 +312,14 @@ class LayoutEditor:
         panel_file: Path | None = PANEL_FILE,
         off_screen: bool = False,
         log=print,
+        arm_joints=None,
     ):
+        """`arm_joints`: a function giving the real arm's joints now (rad, the FR5's order),
+        or None where it can't (no ROS, nothing publishing them)."""
         from rfp_vision.settings import load_settings as load_vision_settings
 
         self.workcell_file, self.panel_file, self.log = Path(workcell_file), panel_file, log
+        self.arm_joints = arm_joints
         self.data, self.saved = load_layout_data(self.workcell_file, panel_file)
         self.layout = copy.deepcopy(self.saved)
         vision = load_vision_settings(panel=panel_file)
@@ -358,7 +365,8 @@ class LayoutEditor:
 
     def look_at_table(self) -> None:
         """From the front (-Y), steeply down, the whole table in view."""
-        (x0, x1), (y0, y1) = self.layout.work["x"], self.layout.work["y"]
+        corners = self._base(_corners(self.layout.work))
+        (x0, y0), (x1, y1) = corners.min(axis=0), corners.max(axis=0)
         middle = ((x0 + x1) / 2, (y0 + y1) / 2, self.table_z)
         self.plotter.camera_position = [
             (middle[0], middle[1] - 1.3, self.table_z + 2.4),
@@ -380,6 +388,19 @@ class LayoutEditor:
     @property
     def table_z(self) -> float:
         return float(self.data["table"]["z"])
+
+    @property
+    def yaw(self) -> float:
+        """rad the cell is turned about the arm."""
+        return math.radians(self.layout.yaw_deg)
+
+    def _base(self, xy) -> np.ndarray:
+        """Points of the cell's frame in {B}."""
+        return turn_xy(xy, self.yaw)
+
+    def _cell(self, xy) -> np.ndarray:
+        """Points of {B} in the cell's frame."""
+        return turn_xy(xy, -self.yaw)
 
     @property
     def handle_z(self) -> float:
@@ -430,6 +451,7 @@ class LayoutEditor:
         buttons = [
             ("Turn the cell 90 deg left about the arm", lambda: self.turn(1)),
             ("Turn the cell 90 deg right", lambda: self.turn(-1)),
+            ("Face the arm: the pick area where the real arm points now", self.face_arm),
             ("Add a slot (a place for a fish)", self.add_slot),
             ("Remove the last slot", self.remove_slot),
             ("Undo all changes", self.undo),
@@ -457,16 +479,18 @@ class LayoutEditor:
 
     # -- the balls -------------------------------------------------------------------
     def _handle_places(self):
-        """(handle, (x, y), radius, color) of every ball, from the layout."""
+        """(handle, (x, y) in {B}, radius, color) of every ball, from the layout."""
         for part, _, color in ZONES:
             rect = getattr(self.layout, part)
             for i in (0, 1):
                 for j in (0, 1):
-                    yield (part, i, j), (rect["x"][i], rect["y"][j]), CORNER_RADIUS, color
+                    xy = self._base((rect["x"][i], rect["y"][j]))
+                    yield (part, i, j), tuple(xy), CORNER_RADIUS, color
         for k, slot in enumerate(self.layout.slots):
-            yield ("slot", k), tuple(slot), SLOT_RADIUS, SLOT_COLOR
+            yield ("slot", k), tuple(self._base(slot)), SLOT_RADIUS, SLOT_COLOR
         for k, zone in enumerate(self.layout.exclusions):
-            yield ("keep_out", k), _middle(zone), SLOT_RADIUS, EXCLUSION_COLOR
+            xy = self._base(_middle(zone))
+            yield ("keep_out", k), tuple(xy), SLOT_RADIUS, EXCLUSION_COLOR
 
     def rebuild(self) -> None:
         """A ball for every corner, slot and keep-out zone (after a change of what there is
@@ -536,7 +560,7 @@ class LayoutEditor:
         the checks wait for the drop."""
         if self.grabbed is None or self.grabbed[0] != handle:
             self.grabbed = (handle, copy.deepcopy(self.layout))
-        self.layout = moved(self.grabbed[1], handle, xy)
+        self.layout = moved(self.grabbed[1], handle, self._cell(xy))
         # a keep-out zone's ball stays under the mouse while its zone goes from edge to edge
         self._place_handles((handle, tuple(xy)) if handle[0] == "keep_out" else None)
         self._draw()
@@ -563,7 +587,7 @@ class LayoutEditor:
         self.refresh()
 
     def drag(self, handle: tuple, xy) -> None:
-        """Drag a ball to `xy` (m, on the table) and let go: what the mouse does."""
+        """Drag a ball to `xy` (m, on the table, in {B}) and let go: what the mouse does."""
         self._dragging(handle, xy)
         self._dropped()
 
@@ -571,6 +595,33 @@ class LayoutEditor:
     def turn(self, quarter_turns: int) -> None:
         self.layout = turned(self.layout, quarter_turns)
         self.message = f"turned the cell {90 * quarter_turns:+d} deg about the arm"
+        self.rebuild()
+        self.look_at_table()
+
+    def face_arm(self) -> None:
+        """Turn the cell about the arm so the pick area's middle lies where the real arm's
+        TCP points now (point it there with the pendant first). Nothing moves."""
+        joints = self.arm_joints() if self.arm_joints else None
+        if joints is None:
+            self.message = (
+                "can't read the arm: on the robot PC, start ./robot.sh ros in another terminal "
+                "(MoveIt and the driver), point the arm at the pick area's middle, click again"
+            )
+            self.refresh()
+            return
+        tcp = self.cell.tcp_of_tip(FR5.fk(np.asarray(joints, float)))[:3, 3]
+        if math.hypot(tcp[0], tcp[1]) < NEAR_AXIS:
+            self.message = "the arm points nowhere in particular: reach out over the table first"
+            self.refresh()
+            return
+        middle = _middle(self.layout.pick_area)
+        turn = math.atan2(tcp[1], tcp[0]) - math.atan2(middle[1], middle[0])
+        self.layout = copy.deepcopy(self.layout)
+        self.layout.yaw_deg = round(math.degrees(math.remainder(turn, 2 * math.pi)), 1)
+        self.message = (
+            f"the cell turned to {self.layout.yaw_deg:.1f} deg: the pick area's middle where "
+            "the arm points"
+        )
         self.rebuild()
         self.look_at_table()
 
@@ -664,21 +715,25 @@ class LayoutEditor:
             else:
                 self.plotter.add_mesh(mesh, name=name, pickable=False, render=False, **style)
 
+        def turned(mesh):  # drawn in the cell's frame, shown in {B}
+            return turned_mesh(mesh, self.yaw) if mesh.n_points else mesh
+
         work = lay.work
-        add(_plane(work, z - 0.003), "table", color=(0.42, 0.43, 0.45), opacity=0.9)
-        add(_grid(work, z - 0.002), "grid", color=(0.55, 0.56, 0.6), line_width=1)
-        add(_outline(work, z - 0.001), "table edge", color=TABLE_COLOR, line_width=2)
+        add(turned(_plane(work, z - 0.003)), "table", color=(0.42, 0.43, 0.45), opacity=0.9)
+        add(turned(_grid(work, z - 0.002)), "grid", color=(0.55, 0.56, 0.6), line_width=1)
+        add(turned(_outline(work, z - 0.001)), "table edge", color=TABLE_COLOR, line_width=2)
         for part, color in (("pick_area", PICK_COLOR), ("placement_zone", PLACE_COLOR)):
             rect = getattr(lay, part)
-            add(_plane(rect, z - 0.001), f"{part} fill", color=color, opacity=0.18)
-            add(_outline(rect, z), part, color=color, line_width=3)
+            add(turned(_plane(rect, z - 0.001)), f"{part} fill", color=color, opacity=0.18)
+            add(turned(_outline(rect, z)), part, color=color, line_width=3)
         for k in range(len(lay.exclusions), 8):
             self.plotter.remove_actor(f"keep out {k}", render=False)
             self.plotter.remove_actor(f"keep out {k} fill", render=False)
         for k, zone in enumerate(lay.exclusions[:8]):
-            add(_plane(zone, z - 0.0015), f"keep out {k} fill", color=EXCLUSION_COLOR, opacity=0.2)
-            add(_outline(zone, z), f"keep out {k}", color=EXCLUSION_COLOR, line_width=2)
-        add(self._placed_fish(z), "placed fish", color=SLOT_COLOR, line_width=2)
+            fill = turned(_plane(zone, z - 0.0015))
+            add(fill, f"keep out {k} fill", color=EXCLUSION_COLOR, opacity=0.2)
+            add(turned(_outline(zone, z)), f"keep out {k}", color=EXCLUSION_COLOR, line_width=2)
+        add(turned(self._placed_fish(z)), "placed fish", color=SLOT_COLOR, line_width=2)
         add(self._views(cell, z), "views", color=VIEW_COLOR, line_width=1)
         self._labels(z)
 
@@ -720,13 +775,13 @@ class LayoutEditor:
         points, labels = [], []
         for part, name, _ in ZONES:
             rect = getattr(lay, part)
-            points.append((rect["x"][0] + 0.02, rect["y"][0] + 0.02, z))
+            points.append((*self._base((rect["x"][0] + 0.02, rect["y"][0] + 0.02)), z))
             labels.append(name)
         for k, slot in enumerate(lay.slots, 1):
-            points.append((slot[0], slot[1], z + 0.04))
+            points.append((*self._base(slot), z + 0.04))
             labels.append(f"slot {k}")
         for zone in lay.exclusions:  # at its ball, as a slot's
-            points.append((*_middle(zone), z + 0.04))
+            points.append((*self._base(_middle(zone)), z + 0.04))
             labels.append(f"keep out: {zone['name']}")
         self.plotter.add_point_labels(
             points,
@@ -807,6 +862,11 @@ class LayoutEditor:
         return self.layout
 
 
+def _corners(rect: dict) -> np.ndarray:
+    (x0, x1), (y0, y1) = rect["x"], rect["y"]
+    return np.array([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], float)
+
+
 def _plane(rect: dict, z: float) -> pv.PolyData:
     (x0, x1), (y0, y1) = rect["x"], rect["y"]
     return pv.Plane(center=((x0 + x1) / 2, (y0 + y1) / 2, z), i_size=x1 - x0, j_size=y1 - y0)
@@ -833,9 +893,11 @@ def _mm_pair(values) -> str:
     return f"{values[0] * 1000:.0f}..{values[1] * 1000:.0f}"
 
 
-def edit_layout(workcell_file: Path = DEFAULT_FILE, panel_file: Path | None = PANEL_FILE) -> None:
-    """Open the editor; returns when its window is closed."""
-    editor = LayoutEditor(workcell_file, panel_file)
+def edit_layout(
+    workcell_file: Path = DEFAULT_FILE, panel_file: Path | None = PANEL_FILE, arm_joints=None
+) -> None:
+    """Open the editor; returns when its window is closed. `arm_joints`: as LayoutEditor's."""
+    editor = LayoutEditor(workcell_file, panel_file, arm_joints=arm_joints)
     for finding in editor.findings:
         editor.log(("❌ " if finding.error else "⚠️  ") + finding.text)
     editor.show()

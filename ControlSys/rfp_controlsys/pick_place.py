@@ -69,7 +69,13 @@ from rfp_vision.settings import load_settings as load_vision_settings
 from rfp_vision.vision_system import VisionSystem
 
 from rfp_controlsys.console import Console, ask
-from rfp_controlsys.cycle import LENS_WARNING_DEG, PickPlaceCycle
+from rfp_controlsys.cycle import (
+    LENS_WARNING_DEG,
+    PickPlaceCycle,
+    cup_rims,
+    lowest_lip,
+    table_seen,
+)
 from rfp_controlsys.run_log import RunLog
 from rfp_controlsys.selector import RuleSelector
 from rfp_controlsys.settings import PANEL_FILE, ControlSettings, run_defaults
@@ -212,7 +218,8 @@ def bring_up(link, mode: str, allowed: bool, wait: float = 2.0) -> Bringup | Non
     server = None  # FAIRINO's command server with the real arm
     if hardware == "real" and FairinoIO.present(link, wait=0.5):
         server = False  # started by hand: a second one would compete for the controller
-        print("   FAIRINO's command server runs already: not starting another")
+        print("   FAIRINO's command server runs already: not starting another (a 3.7 controller")
+        print("   takes one SDK connection: if the driver can't connect, stop that server)")
     log = REPO / "ControlSys" / "runs" / "ros_launch.log"
     bringup = Bringup(launch_command(hardware, cmd_server=server), log)
     print(f"Starting MoveIt and the FR5's driver ({hardware} hardware); its log: {log}")
@@ -221,6 +228,41 @@ def bring_up(link, mode: str, allowed: bool, wait: float = 2.0) -> Bringup | Non
     except RuntimeError as e:
         sys.exit(f"❌ {e}")
     return bringup
+
+
+LAUNCH_WAIT = 60.0  # s for a launch just started to publish the arm's joints
+MISSING_PACKAGE = (
+    "FAIRINO's packages aren't sourced (the launch can't find them): source "
+    "~/rfp_ws/install/setup.bash, and add that line to ~/.bashrc after the ROS one (or run "
+    "through ./robot.sh, which does it)"
+)
+DRIVER_STOPPED = (
+    "FAIRINO's driver stopped: its SDK connection to the controller failed. Is the controller "
+    "on and reachable (ping 192.168.58.2)? Is another program connected to it (an old launch: "
+    "ps aux | grep fr5_bringup, stop it with kill -INT <pid>)? Then start again"
+)
+
+
+def wait_for_launch(link, bringup: Bringup, timeout: float = LAUNCH_WAIT) -> None:
+    """Until the launch just started publishes the arm's joints; exits at once, saying why,
+    if it dies on the way (or never gets there)."""
+    deadline = time.monotonic() + timeout
+    while link.node.count_publishers("joint_states") == 0 or not bringup.running():
+        if not bringup.running() or time.monotonic() > deadline:
+            log = bringup.log_text()
+            why = bringup.first_error() or "no [ERROR] line"
+            hint = ""
+            if "not found" in log and "package" in log:
+                hint = MISSING_PACKAGE
+            elif "ros2_control_node" in log and ("died" in log or "stopped" in log):
+                hint = DRIVER_STOPPED
+            state = "stopped" if not bringup.running() else f"no joints after {timeout:.0f} s"
+            sys.exit(
+                f"❌ MoveIt and the FR5's driver: {state}. {why}\n"
+                + (f"   {hint}\n" if hint else "")
+                + f"   The launch's log: {bringup.log_file}"
+            )
+        time.sleep(0.5)
 
 
 def moveit_arm(link, workcell: Workcell, console: Console, io=None, timeout: float = 15.0):
@@ -245,7 +287,7 @@ def fairino_io(link, timeout: float = 5.0) -> FairinoIO:
     try:
         io = FairinoIO(link)
     except ImportError as e:
-        sys.exit(f"❌ fairino_msgs isn't available ({e}): build and source frcobot_ros2")
+        sys.exit(f"❌ fairino_msgs isn't available ({e}): {MISSING_PACKAGE}")
     io.connect(timeout, require_state=False)
     if io.stateless:
         print("⚠️  " + io.no_state_reason() + ".")
@@ -259,11 +301,17 @@ def fairino_io(link, timeout: float = 5.0) -> FairinoIO:
 # Modes
 # ---------------------------------------------------------------------------
 def observe(
-    vision: VisionSystem, workcell: Workcell, console: Console, camera_pose, twin=None, force=None
+    vision: VisionSystem,
+    workcell: Workcell,
+    console: Console,
+    camera_pose,
+    twin=None,
+    force=None,
+    tcp=None,
 ) -> None:
     """What the camera and the model see and where each fish lies in {B}, live until q, Esc
-    or Ctrl+C; with `force` (Arm.contact_force) the force felt on the gripper too. Nothing
-    moves."""
+    or Ctrl+C; with `force` (Arm.contact_force) the force felt on the gripper too, and with
+    `tcp` (Arm.tcp_pose) how high the cups are over the table. Nothing moves."""
     if force is not None and force(zero=True) is None:
         force = None  # the controller reports no joint torques
     print()
@@ -282,13 +330,23 @@ def observe(
         lines = [f"{len(fish_list.valid)} valid of {len(fish_list.fish)} fish"]
         if felt is not None:
             lines.append(f"force on the gripper {felt:.1f} N")
+        if tcp is not None:  # the cups on the table: both 0 if tool.tcp, table.z and the mount are
+            lowest = lowest_lip(tcp(), cup_rims(vision.settings))
+            height = f"cups {(lowest - workcell.table_z) * 1000:.0f} mm over table.z"
+            table = None
+            if frame.depth is not None:
+                table = table_seen(frame, camera_pose(), vision.settings.depth_range_m)
+            if table is not None:
+                height += f", {(lowest - table) * 1000:.0f} mm over the table the camera sees"
+            lines.append(height)
         image = draw_axes(draw_fish_list(frame.color, fish_list, frame.intrinsics), frame,
                           fish_list.camera_pose, workcell.table_z)  # fmt: skip
         console.show(image, lines)
         if time.monotonic() - last_print >= 1.0:
             last_print = time.monotonic()
             seen = "; ".join(_fish_text(f) for f in fish_list.fish) or "no fish"
-            print("   " + seen + ("" if felt is None else f"; force {felt:.1f} N"))
+            extra = "".join(f"; {line}" for line in lines[1:])
+            print("   " + seen + extra)
         if not console.window:
             time.sleep(0.2)
 
@@ -308,7 +366,11 @@ def check_camera(vision: VisionSystem, workcell: Workcell, console: Console) -> 
 
 def _fish_text(fish) -> str:
     if not fish.vision_ok:
-        return f"fish {fish.fish_id}: {fish.failure_code}"
+        where = ""
+        if fish.seen_at is not None:
+            where = f" at x {fish.seen_at[0] * 1000:.0f} y {fish.seen_at[1] * 1000:.0f} mm"
+        detail = f" ({fish.detail})" if fish.detail else ""
+        return f"fish {fish.fish_id}: {fish.failure_code}{detail}{where}"
     x, y, z = fish.grasp_point * 1000
     heading = f"{np.degrees(fish.heading):.0f} deg" + ("" if fish.heading_known else " (head?)")
     return (
@@ -364,8 +426,10 @@ def check(
         low, high = vision.settings.depth_range_m
         valid = float(((frame.depth >= low) & (frame.depth <= high)).mean())
         print(f"   depth: {valid:.0%} of pixels between {low:g} and {high:g} m (VS-17 wants 95%)")
+    print("   Touch the cups to the table (pendant, manual mode) to check tool.tcp, table.z and")
+    print("   the camera's mount: the cups' height over both should read about 0 mm.")
     observe(vision, workcell, console, lambda: workcell.camera_of_tcp(arm.tcp_pose()), twin,
-            force=arm.contact_force)  # fmt: skip
+            force=arm.contact_force, tcp=arm.tcp_pose)  # fmt: skip
     print("Check done: nothing moved. Next: --mode dry-run --step")
 
 
@@ -489,6 +553,49 @@ def calibrate_first(
         return load_workcell(workcell.source, panel)
     except WorkcellError as e:
         sys.exit(f"❌ {e}")
+
+
+READY_QUESTION = "Clear the controller's errors and switch it to automatic (nothing moves)? [y/N] "
+
+
+def ready_controller(io: FairinoIO, yes: bool) -> None:
+    """Before the arm moves: the controller in automatic with no errors (the driver moves it
+    only then). If not, asks to clear its errors and switch it over (nothing moves); -y does
+    it without asking. Exits with what to do on the pendant when that can't. Without its
+    state (3.7) it can't tell: asks, and a no goes on as the pendant has it."""
+    if io.stateless:
+        print("⚠️  The controller's mode and errors aren't read here: the driver moves the arm")
+        print("   only in automatic mode with no errors.")
+        if yes or (sys.stdin.isatty() and ask(READY_QUESTION).strip().lower() in ("y", "yes")):
+            _make_ready(io)
+        else:
+            print("   Left as it is: if the arm doesn't move, set automatic on the pendant.")
+        return
+    if (fault := io.fault()) is None:
+        return
+    print(f"⚠️  The controller: {fault}")
+    if "emergency stop" in fault:
+        sys.exit("❌ Release the emergency stop, clear the error on the pendant, start again.")
+    if not yes and not (sys.stdin.isatty() and ask(READY_QUESTION).strip().lower() in ("y", "yes")):
+        sys.exit(
+            "❌ On the pendant: clear the error and switch to automatic (a joint past its limit: "
+            "jog it back into range in manual mode first), then start again."
+        )
+    _make_ready(io)
+
+
+def _make_ready(io: FairinoIO) -> None:
+    try:
+        left = io.make_ready()
+    except ArmError as e:
+        sys.exit(f"❌ {e}")
+    if left:
+        sys.exit(
+            f"❌ The controller still reports: {left}. On the pendant: a joint past its limit "
+            "is jogged back into range in manual mode; then clear the error, switch to automatic "
+            "and start again."
+        )
+    print("   ✅ errors cleared, automatic, enabled")
 
 
 def start_checks(mode: str, workcell: Workcell, io: FairinoIO | None, gripper) -> None:
@@ -720,6 +827,8 @@ def main() -> None:
             )
         bringup = bring_up(link, mode, run["bringup"])
         started = bringup is not None  # a launch just started takes a while to come up
+        if started:
+            wait_for_launch(link, bringup)
         try:
             io = fairino_io(link, 60.0 if started else 5.0) if mode in REAL_MODES else None
             arm = moveit_arm(link, workcell, console, io, 60.0 if started else 15.0)
@@ -747,6 +856,7 @@ def main() -> None:
         else:
             gripper = make_gripper(workcell.gripper, io, workcell.grasp.release_timeout)
         if mode in MOVING_MODES:
+            ready_controller(io, args.yes)
             start_checks(mode, workcell, io, gripper)
             measure_first = args.calibrate or not workcell.calibrated
             if measure_first:
@@ -795,12 +905,42 @@ def setup(args) -> None:
     print("=" * 60)
     workcell_file = args.workcell or WORKCELL_FILE
     print(f"Workcell: {workcell_file}; control panel: {args.panel}")
-    print("Drag the boxes' handles and the balls; the buttons turn the layout, the placement")
-    print("heading, add or remove slots, and save. Close the window when done.")
+    print("Drag the boxes' handles and the balls; the buttons turn the layout (a quarter turn,")
+    print("or to face where the real arm points), add or remove slots, and save. Close the")
+    print("window when done.")
+    read, close = arm_joints_reader()
     try:
-        edit_layout(workcell_file, args.panel)
+        edit_layout(workcell_file, args.panel, arm_joints=read)
     except (WorkcellError, FileNotFoundError, ValueError, KeyError) as e:
         sys.exit(f"❌ {e}")
+    finally:
+        close()
+
+
+def arm_joints_reader():
+    """(A function giving the real arm's joints now, rad in the FR5's order, from
+    /joint_states, or None; one closing it). Without ROS: (None, a no-op). Reads only; the
+    link to ROS is made at the first read."""
+    import importlib.util
+
+    if importlib.util.find_spec("rclpy") is None:
+        return None, lambda: None
+    from rfp_arm.kinematics import FR5
+    from rfp_arm.ros_link import RosLink
+
+    state = {}
+
+    def read() -> list[float] | None:
+        if "read" not in state:
+            state["link"] = RosLink("rfp_setup")
+            state["read"] = state["link"].joint_reader(FR5.joint_names)
+        return state["read"]()
+
+    def close() -> None:
+        if "link" in state:
+            state["link"].close()
+
+    return read, close
 
 
 def layout_report(workcell: Workcell, vision_settings: VisionSettings) -> list[str]:

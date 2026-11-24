@@ -3,6 +3,8 @@ own layout (and changes), a clock that only moves when told, a fake control box 
 small inverse kinematics solver."""
 
 import copy
+import re
+from pathlib import Path
 
 import numpy as np
 import yaml
@@ -33,16 +35,43 @@ TEST_LAYOUT = Layout(
 )
 
 
+# The camera mount and look height the tests are written for: the shipped ones are the real
+# cell's, measured and saved by calibration
+TEST_CAMERA = {
+    "mount": {"xyz": [0.0, -0.104, 0.163], "rpy_deg": [0, 0, 0]},
+    "calibrated": False,
+    "calibration_version": "nominal-0",
+}
+TEST_LOOK_HEIGHT = 0.45
+
+
+def use_test_camera(workcell_file: Path) -> None:
+    """Writes TEST_CAMERA and TEST_LOOK_HEIGHT into a copy of the shipped workcell file."""
+    text = workcell_file.read_text(encoding="utf-8")
+    mount = TEST_CAMERA["mount"]
+    for key, value in (
+        ("mount", f"{{xyz: {mount['xyz']}, rpy_deg: {mount['rpy_deg']}}}"),
+        ("calibrated", "false"),
+        ("height", str(TEST_LOOK_HEIGHT)),
+    ):
+        text, count = re.subn(rf"(?m)^  {key}: [^#\n]*", f"  {key}: {value}  ", text)
+        assert count == 1, key
+    workcell_file.write_text(text, encoding="utf-8")
+
+
 def frozen_layout() -> Layout:
     """A copy of TEST_LAYOUT, to change."""
     return copy.deepcopy(TEST_LAYOUT)
 
 
 def workcell_data() -> dict:
-    """The mapping of Arm/configs/workcell.yaml with the tests' layout, to change and load."""
+    """The mapping of Arm/configs/workcell.yaml with the tests' layout, camera mount and look
+    height, to change and load."""
     data = yaml.safe_load(DEFAULT_FILE.read_text(encoding="utf-8"))
     for section in ("motion", "grasp", "gripper"):  # the defaults, to change in a test
         data.setdefault(section, {})
+    data["camera"].update(copy.deepcopy(TEST_CAMERA))
+    data["observation"]["height"] = TEST_LOOK_HEIGHT
     return with_layout(data, TEST_LAYOUT)
 
 

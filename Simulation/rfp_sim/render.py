@@ -118,6 +118,7 @@ class Scene:
         size = (zone.x[1] - zone.x[0], zone.y[1] - zone.y[0])
         center = ((zone.x[0] + zone.x[1]) / 2, (zone.y[0] + zone.y[1]) / 2, cell.table_z)
         table = pv.Plane(center=center, direction=(0, 0, 1), i_size=size[0], j_size=size[1])
+        table = turned_mesh(table, zone.yaw)
         if texture:
             self.table = plotter.add_mesh(table, texture=breadboard_texture(size), ambient=0.25)
         else:
@@ -140,17 +141,19 @@ class Scene:
     def _add_room(self) -> None:
         cell = self.world.workcell
         (x0, x1), (y0, y1), top = cell.work_zone.x, cell.work_zone.y, cell.table_z
+        yaw = cell.work_zone.yaw
         floor = top - FLOOR_DROP
         add = self.plotter.add_mesh
-        add(pv.Box((x0, x1, y0, y1, top - TABLE_THICKNESS, top - 0.0005)), color=(0.42, 0.43, 0.45))
+        slab = pv.Box((x0, x1, y0, y1, top - TABLE_THICKNESS, top - 0.0005))
+        add(turned_mesh(slab, yaw), color=(0.42, 0.43, 0.45))
         legs = [
             pv.Box((x, x + 0.06, y, y + 0.06, floor, top - TABLE_THICKNESS))
             for x in (x0 + 0.04, x1 - 0.10)
             for y in (y0 + 0.04, y1 - 0.10)
         ]
-        add(pv.merge(legs), color=(0.3, 0.31, 0.33))
-        add(pv.Plane(center=((x0 + x1) / 2, (y0 + y1) / 2, floor), i_size=6, j_size=6),
-            color=(0.22, 0.23, 0.25))  # fmt: skip
+        add(turned_mesh(pv.merge(legs), yaw), color=(0.3, 0.31, 0.33))
+        middle = cell.work_zone.footprint.center
+        add(pv.Plane(center=(*middle, floor), i_size=6, j_size=6), color=(0.22, 0.23, 0.25))
 
     def _add_arm(self, meshes: dict) -> list:
         return add_arm(self.plotter, self.world.chain, meshes)
@@ -316,6 +319,23 @@ _VIEW_LINES = [2, 0, 1, 2, 0, 2, 2, 0, 3, 2, 0, 4, 5, 1, 2, 3, 4, 1]
 _VIEW_FACES = [3, 0, 1, 2, 3, 0, 2, 3, 3, 0, 3, 4, 3, 0, 4, 1, 4, 1, 2, 3, 4]
 
 
+def turned_mesh(mesh, yaw: float):
+    """A mesh built in a turned frame (a zone's), turned into {B}: about the base's axis."""
+    return mesh.rotate_z(math.degrees(yaw), point=(0.0, 0.0, 0.0)) if yaw else mesh
+
+
+def outline_mesh(rect, z: float) -> pv.PolyData:
+    """A workcell.Rect's edge at height z, in {B}."""
+    corners = np.asarray(rect.corners())
+    points = np.column_stack([corners, np.full(len(corners), z)])
+    return pv.lines_from_points(np.vstack([points, points[:1]]))
+
+
+def box_mesh(box) -> pv.PolyData:
+    """A workcell.Box as a mesh in {B}."""
+    return turned_mesh(pv.Box((*box.x, *box.y, *box.z)), box.yaw)
+
+
 def view_pyramid(camera: np.ndarray, intrinsics: Intrinsics, table_z: float) -> np.ndarray:
     """The camera's view as a pyramid: its lens (row 0) and where the image's four corner
     rays meet the table (rows 1-4; VIEW_REACH out along the optical axis for a ray that
@@ -428,13 +448,7 @@ class Viewer:
         self.vision = VisionLayer(self.plotter, world.workcell.table_z)
         self.text = self.plotter.add_text("", position="upper_left", font_size=11, color="white")
         cell = world.workcell
-        middle = np.array(
-            [
-                (cell.pick_area.x[0] + cell.placement_zone.x[1]) / 2,
-                (cell.pick_area.y[0] + cell.placement_zone.y[1]) / 2,
-                cell.table_z,
-            ]
-        )
+        middle = np.array([*(cell.pick_area.center + cell.placement_zone.center) / 2, cell.table_z])
         self.plotter.camera_position = [
             tuple(middle + (1.5, -1.3, 1.1)),
             tuple(middle + (0, 0, 0.15)),
@@ -460,9 +474,7 @@ class Viewer:
             (cell.pick_area, (0.3, 0.9, 0.4)),
             (cell.placement_zone, (0.3, 0.6, 1.0)),
         ):
-            (x0, x1), (y0, y1) = rect.x, rect.y
-            corners = np.array([[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z], [x0, y0, z]])
-            self.plotter.add_mesh(pv.lines_from_points(corners), color=color, line_width=3)
+            self.plotter.add_mesh(outline_mesh(rect, z), color=color, line_width=3)
         for x, y in cell.slots:
             slot = pv.Disc(center=(x, y, z), inner=0.0, outer=0.015, normal=(0, 0, 1))
             self.plotter.add_mesh(slot, color=(0.3, 0.6, 1.0))

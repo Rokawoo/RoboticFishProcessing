@@ -42,14 +42,16 @@ CELL = make_workcell()
 K = VisionSettings(width=320, height=180).lens()  # the camera as set, small
 
 
-def fish(fish_id, x, y, heading_deg=90.0, confidence=0.9, code="none", overlap=False, known=True):
+def fish(fish_id, x, y, heading_deg=90.0, confidence=0.9, code="none", overlap=False, known=True,
+         table_z=None):  # fmt: skip
     ok = code == "none"
     pose = pose_down((x, y, 0.10), math.radians(heading_deg)) if ok else None
     outline = np.array([[100, 60], [220, 60], [220, 120], [100, 120]], float)
     heading = math.radians(heading_deg) if ok else None
     bbox = (x - 0.1, x + 0.1, y - 0.3, y + 0.3, 0.0, 0.1)  # vision places failed fish too
     return Fish(fish_id, ok, code, confidence, pose, pose, heading, 0.60, 0.12, 0.10, bbox,
-                overlap, outline, heading_known=known)  # fmt: skip
+                overlap, outline, heading_known=known, table_z=table_z,
+                table_measured=table_z is not None)  # fmt: skip
 
 
 class Hold:
@@ -270,7 +272,7 @@ def test_a_fish_measured_just_past_the_pick_area_s_edge_is_still_picked():
     rig = Rig((edge + PICK_AREA_TOLERANCE + 0.03, -0.10))  # further out: not this cell's fish
     report = rig.run()
     assert report.successes == 0 and rig.gripper.events == []
-    assert CELL.pick_area_seen[0][1] == pytest.approx(edge + PICK_AREA_TOLERANCE)
+    assert CELL.pick_area_seen.x[1] == pytest.approx(edge + PICK_AREA_TOLERANCE)
 
 
 def test_only_valid_fish_inside_the_pick_area_are_candidates():
@@ -474,6 +476,34 @@ def test_a_plan_the_arm_would_fold_into_itself_on_is_refused_before_anything_mov
     assert not any(math.dist(pose[:2, 3], A) < 0.05 for kind, pose in rig.arm.moves)
 
 
+def test_the_grasp_is_measured_from_near_the_fish_not_from_the_search_height():
+    # The search looks from observation.height (0.65 m on the robot PC: a wide view). The
+    # grasp goes by the depth of the look over the fish, which is better the closer it is
+    # (the D405's noise grows with the square of the distance): that look is just high
+    # enough to see all of it, never above close_height, and never so low that the cups
+    # come within pregrasp_distance of the tallest fish of its type
+    from rfp_arm.poses import tool_down
+    from rfp_controlsys.cycle import Sighting
+
+    cell = make_workcell(lambda data: data["observation"].update(height=0.65))
+    rig = Rig(A, cell=cell)
+    rig.table.settings = VisionSettings()  # stand-ins: up to 0.22 m tall
+    tallest = rig.table.settings.fish.thickness_range_m[1]
+
+    def heights(length, thickness):
+        target = Sighting(np.array(A), 0.0, length, thickness, True)
+        return [pose.camera[2, 3] - cell.table_z for pose in rig.cycle._look_poses(target)]
+
+    margin = ControlSettings().look_margin
+    fits = margin * 0.60 / (2 * math.tan(math.radians(87.0) / 2)) + 0.10 / 2
+    assert heights(0.60, 0.10)[0] == pytest.approx(fits) and fits < 0.65 - 0.2
+    over_tcp = cell.camera_of_tcp(tool_down((0.0, 0.0, 0.0), 0.0))[2, 3]
+    floor = tallest + cell.grasp.pregrasp_distance + over_tcp
+    assert min(heights(0.60, 0.10)) == pytest.approx(floor)
+    assert heights(0.15, 0.0) == pytest.approx([floor, floor])  # no height measured: not lower
+    assert max(heights(1.5, 0.10)) == pytest.approx(cell.close_look_height)  # 0.62
+
+
 def test_a_fish_cut_off_is_looked_at_from_higher_until_it_is_seen_whole():
     heights = []
 
@@ -481,7 +511,7 @@ def test_a_fish_cut_off_is_looked_at_from_higher_until_it_is_seen_whole():
         def observe(self, t_base_camera, on_frame=None, frames=None):
             observation = super().observe(t_base_camera, on_frame)
             heights.append(round(float(t_base_camera[2, 3]), 3))
-            whole = t_base_camera[2, 3] > 0.55  # high enough: the whole fish, too wide
+            whole = t_base_camera[2, 3] > 0.50  # high enough: the whole fish, too wide
             for f in observation.fish_list.fish:
                 code = "geometry_out_of_range" if whole else "out_of_frame"
                 f.failures, f.failure_code, f.seen_at = (code,), code, (*A, 0.0)
@@ -490,9 +520,11 @@ def test_a_fish_cut_off_is_looked_at_from_higher_until_it_is_seen_whole():
     rig = Rig((*A, {"code": "out_of_frame"}))
     rig.table.__class__ = Closer
     report = rig.run()
-    # each look over it from higher than the last, as it didn't fit the one before
-    focus = heights[1:4]
-    assert focus == sorted(focus) and focus[-1] > 0.55 > focus[0]
+    # each look over it from higher than the last, as it didn't fit the one before, until
+    # one sees all of it
+    focus = heights[1:]
+    whole_at = next(i for i, height in enumerate(focus) if height > 0.50)
+    assert whole_at >= 1 and focus[: whole_at + 1] == sorted(focus[: whole_at + 1])
     assert "geometry_out_of_range" in report.ended  # why, as the look that saw all of it says
 
 
@@ -516,6 +548,61 @@ def test_a_camera_turned_on_its_mount_stops_the_run():
     report = rig.run(max_cycles=3)
     assert "as if the camera were turned about" in report.ended and "calibrate" in report.ended
     assert report.successes == 0
+
+
+def test_a_table_seen_off_table_z_stops_the_run_before_the_cups_go_down():
+    # The fish's height is measured from the table the camera sees next to it: 30 mm off
+    # table.z, the camera's height on the gripper or table.z is wrong, and the cups' depth
+    # with them (on the real arm they went through a fish into the table)
+    rig = Rig((*A, {"table_z": CELL.table_z + 0.03}))
+    report = rig.run(max_cycles=1)
+    assert "table.z or the camera's mount" in report.ended and report.successes == 0
+    assert all(kind == "ptp" for kind, _ in rig.arm.moves)  # looked; never went down
+    assert any("30 mm above the workcell's table.z" in s for s in rig.operator.states)
+    ok = Rig((*A, {"table_z": CELL.table_z - 0.01}))  # within table_tolerance_m: picked
+    assert ok.run(max_cycles=1).successes == 1
+
+
+def test_the_table_watched_on_the_way_down_is_placed_by_where_its_frame_was_taken():
+    # A frame taken higher up, placed by where the camera is now, puts the table too low:
+    # each frame is kept with the camera pose it was taken from
+    from rfp_controlsys.cycle import table_seen
+
+    rig = Rig(A)
+    cycle = rig.cycle
+    camera = pose_down((0.40, -0.10, 0.30), 0.0)  # straight down, 0.30 m over table.z
+    depth = np.full((180, 320), 0.30, np.float32)  # all table, 0.30 m from the lens
+    cycle._frame = Frame(np.zeros((180, 320, 3), np.uint8), depth, K, 0.0, 0.0, 1)
+    cycle._frame_camera = camera
+    assert cycle._table_below() == pytest.approx(CELL.table_z, abs=1e-6)
+    assert table_seen(cycle._frame, camera, (0.07, 1.0)) == pytest.approx(CELL.table_z, abs=1e-6)
+    lower = rig.arm.tcp_pose()
+    lower[2, 3] -= 0.10  # the arm has gone 0.10 m further down since: the frame's pose counts
+    rig.arm.tcp_pose = lambda: lower
+    assert cycle._table_below() == pytest.approx(CELL.table_z, abs=1e-6)
+    cycle._frame = Frame(np.zeros((180, 320, 3), np.uint8), None, K, 0.0, 0.0, 2)
+    assert cycle._table_below() is None  # no depth: can't tell
+    holes = np.zeros((180, 320), np.float32)  # nothing in range: can't tell
+    assert table_seen(Frame(None, holes, K, 0.0, 0.0, 3), camera, (0.07, 1.0)) is None
+
+
+def test_the_cups_rims_and_their_lowest_lip():
+    from rfp_controlsys.cycle import cup_rims, lowest_lip
+
+    settings = VisionSettings()
+    rims = cup_rims(settings)
+    long, wide = settings.cup_footprint_m
+    assert rims.shape == (48, 3) and np.allclose(rims[:, 2], 0.0)  # six cups, eight points each
+    assert np.ptp(rims[:, 0]) == pytest.approx(long) and np.ptp(rims[:, 1]) == pytest.approx(wide)
+    level = pose_down((0.4, 0.0, 0.10), 0.0)
+    assert lowest_lip(level, rims) == pytest.approx(0.10) == lowest_lip(level, None)
+    tilted = level.copy()
+    turn = math.radians(10)
+    tilted[:3, :3] = level[:3, :3] @ np.array(
+        [[math.cos(turn), 0, math.sin(turn)], [0, 1, 0], [-math.sin(turn), 0, math.cos(turn)]]
+    )
+    assert lowest_lip(tilted, rims) == pytest.approx(0.10 - long / 2 * math.sin(turn), abs=1e-3)
+    assert cup_rims(None) is None
 
 
 def test_two_fish_near_where_one_was_expected_are_no_sign_of_a_turned_camera():
@@ -731,6 +818,44 @@ def test_script_refuses_the_real_arm_until_the_workcell_is_verified(capsys):
         pick_place.confirm_real_motion("dry-run", yes=False)
     pick_place.confirm_real_motion("dry-run", yes=True)
     assert "THE REAL ARM WILL MOVE" in capsys.readouterr().out
+
+
+def test_the_controller_is_made_ready_only_when_the_operator_says_so(monkeypatch, capsys):
+    # In manual mode, or with an error, the driver doesn't move the arm: the operator is asked
+    # to let the program clear the errors and switch to automatic (nothing moves); -y says yes
+    class IO:
+        stateless = False
+
+        def __init__(self, fault):
+            self.faults, self.readied = [fault], 0
+
+        def fault(self):
+            return self.faults[-1]
+
+        def make_ready(self):  # None: nothing left in the way
+            self.readied += 1
+            self.faults.append(None)
+
+    manual = IO("the robot is in manual mode: switch it to automatic")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)  # no terminal: no answer
+    with pytest.raises(SystemExit, match="On the pendant"):
+        pick_place.ready_controller(manual, yes=False)
+    assert manual.readied == 0  # nothing sent without a yes
+    pick_place.ready_controller(manual, yes=True)
+    assert manual.readied == 1 and "errors cleared, automatic" in capsys.readouterr().out
+    stopped = IO("emergency stop pressed")  # released by hand only
+    with pytest.raises(SystemExit, match="Release the emergency stop"):
+        pick_place.ready_controller(stopped, yes=True)
+    assert stopped.readied == 0
+    ready = IO(None)
+    pick_place.ready_controller(ready, yes=False)  # nothing to do, nothing asked
+    assert ready.readied == 0
+    blind = IO(None)
+    blind.stateless = True  # 3.7: no state to tell automatic from manual
+    pick_place.ready_controller(blind, yes=False)  # not asked to: goes on as the pendant has it
+    assert blind.readied == 0 and "Left as it is" in capsys.readouterr().out
+    pick_place.ready_controller(blind, yes=True)
+    assert blind.readied == 1
 
 
 def test_a_moveit_driving_a_mock_arm_beside_the_real_one_is_refused():

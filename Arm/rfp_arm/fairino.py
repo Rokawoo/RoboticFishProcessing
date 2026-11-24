@@ -245,7 +245,26 @@ class FairinoIO:
         main, sub = error_code(state)
         if main:
             return f"controller error {main}-{sub}"
+        if int(getattr(state, "robot_mode", 0)) == 1:
+            return "the robot is in manual mode: switch it to automatic"
         return None
+
+    def make_ready(self, timeout: float = 3.0) -> str | None:
+        """Clear the controller's errors, switch it to automatic and enable it
+        (ResetAllError(), Mode(0), RobotEnable(1)): nothing moves. What still keeps it from
+        moving the arm (`fault()`, or a command it refused), or None. Without its state it
+        can't tell: None once the commands are answered."""
+        refused = []
+        for text in ("ResetAllError()", "Mode(0)", "RobotEnable(1)"):
+            answer = self.send(text)
+            if not self.succeeded(answer):
+                refused.append(f"{text} answered '{answer}'")
+        if self._never_stated():
+            return "; ".join(refused) or None
+        deadline = self._clock() + timeout
+        while (fault := self.fault()) and self._clock() < deadline:
+            self._sleep(0.05)
+        return "; ".join([*refused, *([fault] if fault else [])]) or None
 
     def report(self) -> list[str]:
         """What the controller reports now, for the operator (check mode)."""

@@ -16,7 +16,7 @@ One cycle (`cycle.py`):
 - **Focus:** the camera straight over the fish, high enough to see all of it, again while it's cut off at the image's edge. A fish that can't be picked after `max_looks_per_fish` looks is set aside; the operator is told why.
 - **Checks:** a fish that seems to jump as the camera moves means the camera isn't mounted where the workcell says: the run stops. The whole grasp plan is checked before anything moves, so no pick stops half way.
 - **Decide:** the selector chooses among the candidates; its answer is validated.
-- **Grasp:** carried just over what lies on the way; a failure is retried, skipped or handed to the operator; one CSV row.
+- **Grasp:** a table measured more than `table_tolerance_m` off `table.z` next to the fish stops the run first (the cups' depth would be off by as much); carried just over what lies on the way; a failure is retried, skipped or handed to the operator; one CSV row.
 - **Slots** are used in turn: each placed fish is taken away before its slot comes round again.
 
 **Taught demos:** `demo.py` plays hand-taught poses with vacuum steps (no camera), on the simulated or the real arm; `demo.py record <name>` teaches one from the arm's joints. Files: [Demos/](../Demos/).

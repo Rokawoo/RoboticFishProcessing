@@ -16,9 +16,11 @@ class ControlSettings:
     empty_passes_to_end: int = 3  # passes over the observation poses with no fish (SY-22)
     max_reobserve: int = 3  # "reobserve" answers in a row, then the fallback rule (Table CS-1)
     # Looks from straight above a fish, each aimed at what the last saw, until one sees all
-    # of it; the image's long side spans look_margin times its expected length
+    # of it; the image's long side spans look_margin times its expected length (the grasp
+    # goes by that look's depth: as low as that, not from the search's height). At 1.15 more
+    # first looks cut the fish off: 3.35 looks per fish against 3.1 in the benchmark
     focus_steps: int = 3
-    look_margin: float = 1.15
+    look_margin: float = 1.25
     max_looks_per_fish: int = 2  # looks at a fish without a candidate, then the operator is told
     search_frames: int = 1  # frames per look while searching (a fish is looked at closely later)
     fish_list_max_age_s: float = 1.0  # CS-12, CS-53
@@ -30,7 +32,9 @@ class ControlSettings:
     # A fish seen whole jumping more than this between two looks (and by half the camera's
     # move or more): the camera isn't mounted where the workcell says; the run stops
     max_jump_m: float = 0.10
-    table_warning_m: float = 0.015  # the table seen this far from table.z: the operator is told
+    # The table seen this far from table.z next to a fish about to be picked: the run stops
+    # (table.z or the camera's height on the gripper is wrong, so the cups' depth would be too)
+    table_tolerance_m: float = 0.015
     # Carry a fish over what vision saw on the way (other fish, placed fish), not at the
     # fixed lift height; the way is the straight line widened by half a fish and this
     carry_over_seen: bool = True

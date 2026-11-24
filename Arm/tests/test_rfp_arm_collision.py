@@ -69,6 +69,12 @@ def test_what_of_the_arm_is_in_a_box():
     assert body == "base" and all(low <= v <= high for v, (low, high) in zip(point, ranges))
     far = Box("far", (1.00, 1.30), (-0.85, 0.85), (0.0, 1.5))  # the shipped operator's side
     assert CELL.collision.in_box(FR5, q, far) is None
+    # a box of a turned cell: its ranges in the cell's frame, turned 90 deg left from {B}
+    turned = Box("cups", (-0.02, 0.02), (-0.42, -0.38), (0.28, 0.32), np.radians(90))
+    body, point = CELL.collision.in_box(FR5, q, turned)
+    assert body == "gripper" and np.allclose(point[:2], (0.40, 0.0), atol=0.03)  # in {B}
+    other_way = dataclasses.replace(turned, yaw=np.radians(-90))  # on the far side of the base
+    assert CELL.collision.in_box(FR5, q, other_way) is None
 
 
 def test_where_the_arm_hides_the_table_from_the_camera():

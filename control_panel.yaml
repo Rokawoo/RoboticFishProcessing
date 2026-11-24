@@ -15,19 +15,20 @@ run:                  # pick_place.py's defaults; the command line wins
   twin: true          # 3D window of the arm, the fish vision finds and the depth
 
 workcell:
-  verified: false     # true once the cell is measured; the real arm won't move before
+  verified: false     # true once the cell is measured and checked; the arm won't move before
   gripper:
     driver: serial              # serial | http (the valve board) | controller (FR5 I/O)
     serial_port: /dev/ttyACM0   # Windows: COM3, ...
     http_host: ""               # the valve board over Wi-Fi; 192.168.4.1 on its own network
-  motion:
-    tcp_speed_max: 0.25         # m/s, the limit for every move
-    approach_speed: 0.05        # m/s down over the fish (onto it, if the arm can't feel)
-    carry_speed: 0.20           # m/s with a fish
-    free_speed: 0.25            # m/s without
-    ptp_velocity_scale: 0.30    # share of the joint speed limits on point-to-point moves
+  motion:                       # slow for the first runs on the real arm
+    tcp_speed_max: 0.10         # m/s, the limit for every move
+    approach_speed: 0.03        # m/s down over the fish (onto it, if the arm can't feel)
+    carry_speed: 0.08           # m/s with a fish
+    free_speed: 0.10            # m/s without
+    ptp_velocity_scale: 0.10    # share of the joint speed limits on point-to-point moves
+    ptp_acceleration_scale: 0.10  # and of their accelerations
   grasp:
-    feel_contact: true          # lower the cups until the fish pushes back (real arm)
+    feel_contact: false         # true once --mode check shows the force rise as you push the cups
     feel_speed: 0.02            # m/s down onto the fish, in one move, until it pushes back
     contact_force: 15.0         # N that count as touching it     (tune: --mode check)
     press_force_max: 40.0       # N at which pressing stops
@@ -41,8 +42,8 @@ workcell:
     heading_deg: -90            # where placed fish point their heads: from +X toward +Y
 
 vision:
-  hfov_deg: 74                  # camera's view across the image, deg (data sheet: 87); a run
-                                # says if the camera reports another
+  hfov_deg: 87                  # camera's view across the image, deg; a run says if the camera
+                                # reports another
   min_confidence: 0.60          # weaker detections are flagged low_confidence: not picked
   use_depth: true               # false: every fish is put on the table plane
   align_to_surface: true        # tilt the cups onto the fish's sloping surface
@@ -51,7 +52,7 @@ vision:
   check_size: true              # false: don't refuse fish too big to be one
   fish_type: stand_in           # stand_in (printed fish) or catfish (real): sizes, balance point
   stand_in:
-    balance_ahead_share: 0.115  # cups this share of the length ahead of the middle, toward
+    balance_ahead_share: 0.05   # cups this share of the length ahead of the middle, toward
                                 # the head (a stand-in balances at 0.126)
   hold:                         # camera check that a held fish is still there
     use_mask: true

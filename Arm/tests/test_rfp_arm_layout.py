@@ -28,7 +28,13 @@ from rfp_arm.layout import (
     with_layout,
 )
 from rfp_arm.poses import tool_down
-from rfp_arm.workcell import DEFAULT_FILE, PANEL_FILE, load_workcell, workcell_from_mapping
+from rfp_arm.workcell import (
+    DEFAULT_FILE,
+    PANEL_FILE,
+    describe,
+    load_workcell,
+    workcell_from_mapping,
+)
 
 FISH = FishSize(1.0, 0.25, 0.21, 0.126)  # the largest stand-in vision passes
 VIEW = CameraView(87.0, 1280, 720)
@@ -54,7 +60,9 @@ def frozen() -> tuple[dict, object]:
 def test_the_shipped_layout_works():
     data, layout = load_layout_data()  # the cell: workcell.yaml with the panel on top
     found = check(layout, data)
-    assert [f.text for f in found if f.error] == []
+    # cell_yaw_deg as set on the robot PC may put the cell across the back of the arm, which
+    # the check says (the run refuses those moves); nothing else may be wrong
+    assert [f.text for f in found if f.error and "first joint would turn" not in f.text] == []
     # the arm reaches 0.675 m out with the tool down where fish are carried (0.50 m up)
     cell = workcell_from_mapping(data)
     assert lift_height(cell, FISH.length) == pytest.approx(cell.table_z + 0.50)
@@ -127,6 +135,74 @@ def test_turning_the_layout_about_the_arm():
     assert turned(taught, -1).poses[0]["joints_deg"][0] == pytest.approx(-80.0)
 
 
+def test_a_cell_turned_by_its_yaw_is_the_layout_turned_by_hand():
+    # cell_yaw_deg turns everything in the layout about the arm: a quarter turn of it is the
+    # same cell as the coordinates turned a quarter (the setup window's button)
+    data, layout = frozen()
+    by_hand = workcell_from_mapping(with_layout(data, turned(layout, 1)))
+    layout.yaw_deg = 90.0
+    by_yaw = workcell_from_mapping(with_layout(data, layout))
+
+    def corners(rect):
+        return sorted(tuple(np.round(c, 6)) for c in rect.corners())
+
+    for a, b in ((by_hand.pick_area, by_yaw.pick_area),
+                 (by_hand.placement_zone, by_yaw.placement_zone),
+                 (by_hand.work_zone.footprint, by_yaw.work_zone.footprint),
+                 *zip([z.footprint for z in by_hand.exclusion_zones],
+                      [z.footprint for z in by_yaw.exclusion_zones])):  # fmt: skip
+        assert corners(a) == corners(b)
+    assert np.allclose(by_hand.slots, by_yaw.slots)
+    assert by_hand.placement_heading == pytest.approx(by_yaw.placement_heading)
+    for a, b in zip(by_hand.observation_poses, by_yaw.observation_poses):
+        assert np.allclose(a.camera, b.camera)
+    points = np.random.default_rng(1).uniform(-1.3, 1.3, (2000, 3))
+    for a, b in ((by_hand.pick_area, by_yaw.pick_area), (by_hand.work_zone, by_yaw.work_zone)):
+        assert [a.contains(p) for p in points] == [b.contains(p) for p in points]
+    assert by_yaw.pick_area.contains(by_hand.pick_area.center)
+    assert sorted(f.text for f in check_layout(by_hand, FISH, VIEW)) == sorted(
+        f.text for f in check_layout(by_yaw, FISH, VIEW)
+    )
+    assert "; the cell turned 90.0 deg about the arm" in describe(by_yaw)[0]
+    # the editor keeps the layout in the cell's frame: turned again by hand, the yaw stays
+    assert turned(layout, 1).yaw_deg == 90.0
+
+
+def test_a_cell_across_the_back_of_the_arm_is_found():
+    # j1 stops at +-175 deg: a look, a fish and the slot on both sides of that stop need the
+    # arm turned the long way round between them, which is refused (cell_yaw_deg -75 on the
+    # robot PC's cell: the benchmark placed none of 20 fish), though each is reachable
+    data, layout = frozen()
+    layout.yaw_deg = 170.0
+    errors = [f for f in check(layout, data) if f.error]
+    assert len(errors) == 1 and "the arm's first joint would turn" in errors[0].text
+    assert "Face the arm" in errors[0].text and errors[0].where is not None
+    for yaw in (0.0, 90.0, -90.0):
+        layout.yaw_deg = yaw
+        assert not any("first joint" in f.text for f in check(layout, data))
+
+
+def test_the_cell_s_yaw_is_saved_and_added_where_missing(files):
+    workcell, panel = files
+    text = workcell.read_text(encoding="utf-8")
+    start = text.index("# The layout below")
+    workcell.write_text(
+        text[:start] + text[text.index("zones:") :], encoding="utf-8"
+    )  # an old file
+    data, layout = load_layout_data(workcell, panel)
+    assert layout.yaw_deg == 0.0 and "cell_yaw_deg" not in data
+    layout.yaw_deg = -12.5
+    assert "cell_yaw_deg in workcell.yaml" in save_layout(layout, workcell, panel)
+    data, back = load_layout_data(workcell, panel)
+    assert back.yaw_deg == -12.5 and data["cell_yaw_deg"] == -12.5
+    lines = workcell.read_text(encoding="utf-8").splitlines()
+    assert lines.index("cell_yaw_deg: -12.5") == lines.index("zones:") - 1  # above the zones
+    back.yaw_deg = 30.0
+    save_layout(back, workcell, panel)  # there now: changed in place
+    assert workcell.read_text(encoding="utf-8").count("cell_yaw_deg:") == 1
+    assert load_layout_data(workcell, panel)[1].yaw_deg == 30.0
+
+
 def test_a_view_is_the_image_on_the_table():
     camera = tool_down((0.4, 0.0, 0.45), 0.0)  # z down; image x along +X
     corners = view_footprint(camera, VIEW, plane_z=0.0)
@@ -183,7 +259,8 @@ def test_a_layout_that_cant_be_written_as_asked_is_not_written(files):
     by_hand = f"  pick_area:\n    x: {area['x']}\n    y: {area['y']}"
     workcell.write_text(before.replace(line, by_hand))
     _, layout = load_layout_data(workcell, panel)
-    layout.pick_area["x"] = [v - 0.04 for v in area["x"]]  # several lines: changed by hand there
+    x = area["x"]
+    layout.pick_area["x"] = [x[0] + 0.02, x[1] - 0.02]  # several lines: changed by hand there
     with pytest.raises(LayoutError, match="by hand"):
         save_layout(layout, workcell, panel)
     assert not workcell.with_name("workcell.yaml.bak").exists()

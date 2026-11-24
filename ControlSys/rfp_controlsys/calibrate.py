@@ -4,8 +4,8 @@ calibrated: small moves of the arm around a fish (or anything the model sees), a
 that puts every sighting on one point (`camera.mount`, the lens frame in the tip link).
 Moves along x, y and z give its turn (also a camera mounted turned or mirrored); turns and
 tilts about the tool give where the lens is across it. Along the tool's axis the drawing's
-value stays (a tilt shifts the object's apparent middle). Start 0.3-0.5 m over a fish in the
-middle of the image. No ROS.
+value stays (a tilt shifts the object's apparent middle). Start over a fish in the middle of
+the image (calibrate_first: from the first observation pose). No ROS.
 """
 
 import math
@@ -222,7 +222,7 @@ def measure(
         if len(seen) < 2:
             raise ValueError(
                 f"the object isn't wholly in view {what}: put a fish in the middle of the "
-                "image, the camera 0.3-0.5 m above it, and start again"
+                "image, all of it in view, and start again"
             )
         tips.append(workcell.tip_of_tcp(arm.tcp_pose()))
         points.append(np.mean(seen, axis=0))

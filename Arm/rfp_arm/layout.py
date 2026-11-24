@@ -24,6 +24,7 @@ from rfp_arm.workcell import (
     PANEL_FILE,
     Rect,
     Workcell,
+    apart,
     merged,
     panel_section,
     workcell_from_mapping,
@@ -36,7 +37,8 @@ class LayoutError(ValueError):
 
 @dataclass
 class Layout:
-    """The layout part of the workcell file, in its units (meters, degrees)."""
+    """The layout part of the workcell file, in its units (meters, degrees). Everything but
+    taught joints is in the cell's frame, turned `yaw_deg` about the arm's base."""
 
     work: dict  # {"x": [low, high], "y": [low, high], "height": h}: the table
     pick_area: dict  # {"x": [low, high], "y": [low, high]}
@@ -45,6 +47,7 @@ class Layout:
     poses: list  # [{"name", "camera_xy", "yaw_deg"}] or [{"name", "joints_deg"}]
     heading_deg: float
     slots: list  # [[x, y]]
+    yaw_deg: float = 0.0  # cell_yaw_deg
 
 
 # Where each part is in the workcell file (and under `workcell:` in the control panel)
@@ -56,6 +59,7 @@ PATHS = {
     "poses": ("observation", "poses"),
     "heading_deg": ("placement", "heading_deg"),
     "slots": ("placement", "slots"),
+    "yaw_deg": ("cell_yaw_deg",),
 }
 LISTS = ("exclusions", "poses", "slots")
 
@@ -95,6 +99,7 @@ def layout_of(data: dict) -> Layout:
         poses=poses,
         heading_deg=float(placement.get("heading_deg", HEADING_DEG)),
         slots=[_floats(slot) for slot in placement["slots"]],
+        yaw_deg=float(data.get("cell_yaw_deg", 0.0)),
     )
 
 
@@ -143,7 +148,7 @@ def _wrap_deg(angle: float) -> float:
 def turned(layout: Layout, quarter_turns: int) -> Layout:
     """The whole layout turned about the arm's base (its z axis) by quarter turns, counter-
     clockwise seen from above: a table on another side of the arm. Zones stay boxes along
-    the axes; taught observation poses turn with the first joint."""
+    the cell's axes; taught observation poses turn with the first joint."""
     k = quarter_turns % 4
 
     def point(xy) -> list[float]:
@@ -174,6 +179,7 @@ def turned(layout: Layout, quarter_turns: int) -> Layout:
         poses=poses,
         heading_deg=_wrap_deg(layout.heading_deg + 90.0 * k),
         slots=[point(slot) for slot in layout.slots],
+        yaw_deg=layout.yaw_deg,
     )
 
 
@@ -337,7 +343,7 @@ def _hidden(pick: Rect, views: list[np.ndarray], half_width: float, step: float 
     xs = np.arange(pick.x[0], pick.x[1] + 1e-9, step)
     ys = np.arange(pick.y[0], pick.y[1] + 1e-9, step)
     gx, gy = np.meshgrid(xs, ys, indexing="ij")
-    grid = np.column_stack([gx.ravel(), gy.ravel()])
+    grid = pick.base(np.column_stack([gx.ravel(), gy.ravel()]))  # in {B}
     seen = np.zeros(len(grid), bool)
     for corners in views:
         seen |= _inside_convex(grid, corners)
@@ -357,7 +363,8 @@ def _hidden(pick: Rect, views: list[np.ndarray], half_width: float, step: float 
     if not hidden.any():
         return None
     i, j = np.argwhere(hidden)[0]
-    return float(xs[i]), float(ys[j])
+    x, y = pick.base(np.array([xs[i], ys[j]]))
+    return float(x), float(y)
 
 
 def observation_camera(cell: Workcell, pose, chain: Chain = FR5) -> np.ndarray:
@@ -371,6 +378,30 @@ def _overlap(a: tuple, b: tuple) -> bool:
     return a[0] < b[1] and b[0] < a[1]
 
 
+def _first_joint_turns(turns: dict, travel: float) -> Finding | None:
+    """The first joint stops at +-175 deg: a cell across the back of the arm puts a look, a
+    fish and the slot on both sides of that stop, and the arm would turn the long way round
+    between them, more than a move may turn it (it is refused). The worst such pair."""
+    worst = None
+    pairs = [("look", "pick"), ("pick", "slot"), ("slot", "look")]  # the cycle's moves
+    for a, b in pairs:
+        for what, xy, j in turns[a]:
+            for other, other_xy, k in turns[b]:
+                if abs(j - k) > travel and (worst is None or abs(j - k) > worst[0]):
+                    worst = (abs(j - k), what, other, xy if xy is not None else other_xy)
+    if worst is None:
+        return None
+    turn, what, other, where = worst
+    return Finding(
+        True,
+        f"{what} and {other}: the arm's first joint would turn {math.degrees(turn):.0f} deg "
+        f"between them, more than the {math.degrees(travel):.0f} a move may: the cell lies "
+        "across the back of the arm, where that joint stops (+-175 deg). Turn the cell ('Face "
+        "the arm') or move it",
+        where,
+    )
+
+
 def check_layout(
     cell: Workcell, fish: FishSize, view: CameraView | None = None, chain: Chain = FR5
 ) -> list[Finding]:
@@ -379,9 +410,10 @@ def check_layout(
     the arm can't reach (observation poses; the pick area at a fish's top and at the lift
     height; each slot at the carry and release heights, the way the fish goes in), the arm
     in an exclusion zone at those poses (its links and the gripper: the collision model),
-    fish that would reach out of the table or into an exclusion zone when lifted or placed,
-    placed fish in the pick area, slots closer than a fish is wide, and the part of the
-    pick area no observation pose sees.
+    the first joint turned further between a look, a fish and a slot than a move may turn
+    it, fish that would reach out of the table or into an exclusion zone when lifted or
+    placed, placed fish in the pick area, slots closer than a fish is wide, and the part of
+    the pick area no observation pose sees.
     """
     found = [Finding(True, problem) for problem in cell.problems()]
     table = cell.table_z
@@ -434,7 +466,10 @@ def check_layout(
                 )
 
     pick = cell.pick_area
-    points = [(x, y) for x in pick.x for y in pick.y] + [(sum(pick.x) / 2, sum(pick.y) / 2)]
+    points = [(float(x), float(y)) for x, y in (*pick.corners(), pick.center)]
+    turns = {"look": [], "pick": [], "slot": []}  # (where, the first joint) the cycle goes
+    for what, q in postures:
+        turns["look"].append((what, None, float(q[0])))
     for xy in points:
         where = f"({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm"
         if cell.close_look_height is not None and all(
@@ -452,6 +487,8 @@ def check_layout(
         at_top = _reach(cell, chain, xy, top, YAWS)
         at_lift = None if at_top is None else _reach(cell, chain, xy, lift, YAWS)
         postures += [(f"picking at {where}", q) for q in (at_top, at_lift) if q is not None]
+        if at_top is not None:
+            turns["pick"].append((f"picking at {where}", xy, float(at_top[0])))
         if at_top is None:
             found.append(Finding(True, f"pick area at {where}: out of the arm's reach", xy))
         elif at_lift is None:
@@ -469,7 +506,7 @@ def check_layout(
     along = np.array([math.cos(heading), math.sin(heading)])
     across = np.array([-along[1], along[0]])
     zone = cell.work_zone
-    table_rect = Rect(zone.x, zone.y)
+    table_rect = zone.footprint
     for k, slot in enumerate(cell.slots, 1):
         problem = None
         for ahead in (0.0, fish.cups_ahead) if fish.cups_ahead > 0 else (0.0,):
@@ -478,6 +515,7 @@ def check_layout(
                 q = None if problem else _reach(cell, chain, tool, z, ways)
                 if q is not None:
                     postures.append((f"slot {k} at the {what} height", q))
+                    turns["slot"].append((f"slot {k}", tuple(slot), float(q[0])))
                 elif problem is None:
                     problem = (
                         f"slot {k}: out of the arm's reach at the {what} height "
@@ -490,10 +528,9 @@ def check_layout(
             found.append(Finding(True, problem, tuple(slot)))
         elif finding := _slot_wrist(cell, chain, k, slot, lift, heading, middle):
             found.append(finding)
-        corners = [
+        corners = [  # around the placed fish
             np.asarray(slot) + a * fish.length / 2 * along + b * fish.width / 2 * across
-            for a in (-1, 1)
-            for b in (-1, 1)
+            for a, b in ((-1, -1), (1, -1), (1, 1), (-1, 1))
         ]
         if not all(table_rect.contains(c, -1e-9) for c in corners):
             found.append(
@@ -512,9 +549,7 @@ def check_layout(
                         tuple(slot),
                     )
                 )
-        xs = [c[0] for c in corners]
-        ys = [c[1] for c in corners]
-        if _overlap((min(xs), max(xs)), pick.x) and _overlap((min(ys), max(ys)), pick.y):
+        if not apart(np.array(corners), pick.corners()):
             found.append(
                 Finding(
                     False,
@@ -535,14 +570,12 @@ def check_layout(
                     )
                 )
 
+    if finding := _first_joint_turns(turns, math.radians(cell.motion.max_joint_travel_deg)):
+        found.append(finding)
+
     half = fish.length / 2
-    reach_x, reach_y = (pick.x[0] - half, pick.x[1] + half), (pick.y[0] - half, pick.y[1] + half)
-    if not (
-        zone.x[0] <= reach_x[0]
-        and reach_x[1] <= zone.x[1]
-        and zone.y[0] <= reach_y[0]
-        and reach_y[1] <= zone.y[1]
-    ):
+    reach = pick.grown(half)  # where the ends of a fish lying in the pick area can be
+    if not table_rect.inside(reach.corners(), -1e-9).all():
         found.append(
             Finding(
                 False,
@@ -551,10 +584,8 @@ def check_layout(
             )
         )
     for exclusion in cell.exclusion_zones:
-        if (
-            _overlap(reach_x, exclusion.x)
-            and _overlap(reach_y, exclusion.y)
-            and _overlap((lift - fish.thickness, lift), exclusion.z)
+        if reach.overlaps(exclusion.footprint) and _overlap(
+            (lift - fish.thickness, lift), exclusion.z
         ):
             found.append(
                 Finding(
@@ -653,6 +684,7 @@ def rounded(layout: Layout) -> Layout:
         poses=[pose(p) for p in layout.poses],
         heading_deg=round(layout.heading_deg, 1),
         slots=[[round(v, 3) for v in slot] for slot in layout.slots],
+        yaw_deg=round(layout.yaw_deg, 1),
     )
 
 
@@ -664,7 +696,7 @@ def _text(part: str, value) -> str | list[str]:
         )
     if part in ("pick_area", "placement_zone"):
         return f"{{x: {_pair(value['x'])}, y: {_pair(value['y'])}}}"
-    if part == "heading_deg":
+    if part in ("heading_deg", "yaw_deg"):
         return _deg(value)
     if part == "exclusions":
         return [
@@ -790,6 +822,15 @@ def _set_items(lines: list[str], path: tuple, items: list[str], where: str) -> N
     lines[i + 1 : i + 1 + len(block)] = others + new
 
 
+def _insert_before(lines: list[str], key: str, line: str, where: str) -> None:
+    """A top-level `line` added just before the top-level `key`."""
+    i = _locate(lines, (key,), where)
+    while i > 0 and lines[i - 1].lstrip().startswith("#"):  # above the key's own comments
+        i -= 1
+    end = "\r\n" if lines[i].endswith("\r\n") else "\n"
+    lines.insert(i, line + end)
+
+
 def save_layout(
     layout: Layout,
     workcell_file: Path = DEFAULT_FILE,
@@ -831,6 +872,8 @@ def save_layout(
             continue
         if part in LISTS:
             _set_items(lines[target], full, text, target.name)
+        elif part == "yaw_deg" and not _has(parsed[target], full):  # a file from before it
+            _insert_before(lines[target], "zones", f"{path[0]}: {text}", target.name)
         else:
             _set_value(lines[target], full, text, target.name)
         _put(expected[target], full, copy.deepcopy(value))

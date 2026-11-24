@@ -16,7 +16,11 @@ np = pytest.importorskip("numpy")
 cv2 = pytest.importorskip("cv2")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Arm" / "tests"))
-from arm_helpers import frozen_layout, make_workcell  # the tests' own layout
+from arm_helpers import (  # the tests' own layout
+    frozen_layout,
+    make_workcell,
+    use_test_camera,
+)
 from rfp_arm.interfaces import ArmError, GripperState, MotionAborted
 from rfp_arm.poses import rotation_angle, tool_down, yaw_of
 from rfp_sim.assets import load_fish, read_3mf, stand_in_fish
@@ -265,7 +269,7 @@ def test_virtual_camera_sees_the_table_and_the_fish_where_they_are():
         found = detector.detect(frame.color)
         assert len(found) == 1 and found[0].conf == 0.99
         settings = VisionSettings(check_size=False, stable_frames=1)
-        located = FishLocator(settings, CELL.table_z, CELL.pick_area.area).locate(
+        located = FishLocator(settings, CELL.table_z, CELL.pick_area).locate(
             frame, found, world.camera_pose()
         )
         seen = located.fish[0]
@@ -293,7 +297,7 @@ def test_a_whole_cycle_in_the_virtual_cell():
     camera = VirtualCamera(world, {})
     try:
         vision_settings = VisionSettings(check_size=False)
-        locator = FishLocator(vision_settings, CELL.table_z, CELL.pick_area.area)
+        locator = FishLocator(vision_settings, CELL.table_z, CELL.pick_area)
         vision = VisionSystem(camera, TruthDetector(camera), locator, vision_settings)
         arm, gripper = VirtualArm(world, CELL), VirtualGripper(world)
         cycle = PickPlaceCycle(
@@ -331,7 +335,7 @@ def test_a_fish_cut_off_by_the_view_is_placed_after_a_look_from_above_it():
         camera = VirtualCamera(world, {})
         try:
             vision_settings = VisionSettings(check_size=False)
-            locator = FishLocator(vision_settings, cell.table_z, cell.pick_area.area)
+            locator = FishLocator(vision_settings, cell.table_z, cell.pick_area)
             vision = VisionSystem(camera, TruthDetector(camera), locator, vision_settings)
             console = Console(window=False, interactive=False)
             states = []
@@ -376,7 +380,7 @@ def test_the_camera_s_mount_is_measured_from_a_few_moves_over_a_fish():
     camera = VirtualCamera(world, {})
     try:
         vision_settings = VisionSettings()
-        locator = FishLocator(vision_settings, CELL.table_z, CELL.pick_area.area)
+        locator = FishLocator(vision_settings, CELL.table_z, CELL.pick_area)
         vision = VisionSystem(camera, TruthDetector(camera), locator, vision_settings)
         said = []
         result = measure(VirtualArm(world, real), vision, CELL, log=said.append,
@@ -397,6 +401,7 @@ def test_a_real_run_measures_an_uncalibrated_camera_first(tmp_path):
     import dataclasses
     import shutil
 
+    from rfp_arm.layout import save_layout
     from rfp_arm.poses import from_parts, rot_z
     from rfp_arm.workcell import DEFAULT_FILE, load_workcell
     from rfp_controlsys import pick_place
@@ -407,14 +412,18 @@ def test_a_real_run_measures_an_uncalibrated_camera_first(tmp_path):
 
     path = tmp_path / "workcell.yaml"
     shutil.copy(DEFAULT_FILE, path)  # the shipped file: its camera section is what is saved
+    use_test_camera(path)  # uncalibrated, a nominal mount, looking from 0.45 m
+    save_layout(frozen_layout(), path, None)  # the tests' layout, made for that camera
     cell = load_workcell(path, panel=None)
     assert not cell.calibrated
     real = dataclasses.replace(cell, camera=cell.camera @ from_parts(rot_z(math.pi), (0, 0, 0)))
     world = World(real, settings(), stand_in_fish(0.35), lens=LENS)
-    look = cell.observation_poses[0].camera[:2, 3]  # wherever the file's first look is
+    view = cell.observation_poses[0].camera  # wherever the file's first look is
+    look, across, down = view[:2, 3], view[:2, 0], view[:2, 1]  # the image's x and y on the table
+    along = rot_z(math.atan2(across[1], across[0]))  # the fish along the image's long side
     world.fish = [
-        Fish("fish 1", world.model, from_parts(rot_z(0.0), (look[0], look[1] - 0.02, 0.0))),
-        Fish("fish 2", world.model, from_parts(rot_z(0.0), (look[0] + 0.02, look[1] + 0.15, 0.0))),
+        Fish("fish 1", world.model, from_parts(along, (*look - 0.02 * down, 0.0))),
+        Fish("fish 2", world.model, from_parts(along, (*look - 0.02 * across + 0.15 * down, 0.0))),
     ]
     camera = VirtualCamera(world, {})
     try:
@@ -459,7 +468,7 @@ def test_the_twin_follows_the_arm_and_shows_what_vision_finds():
         assert np.allclose(edges.points[1:, 2], CELL.table_z, atol=1e-6)
         assert np.allclose(sides.points, edges.points)
         frame = camera.read()
-        locator = FishLocator(VisionSettings(check_size=False), CELL.table_z, CELL.pick_area.area)
+        locator = FishLocator(VisionSettings(check_size=False), CELL.table_z, CELL.pick_area)
         fish_list = locator.locate(frame, detector.detect(frame.color), world.camera_pose())
         assert fish_list.valid
         twin.show_fish(fish_list, frame)
@@ -493,7 +502,7 @@ def test_the_3d_simulation_shows_what_vision_finds_over_the_true_fish():
     viewer = Viewer(world, {}, camera, show=False)
     try:
         frame = camera.read()
-        locator = FishLocator(VisionSettings(check_size=False), CELL.table_z, CELL.pick_area.area)
+        locator = FishLocator(VisionSettings(check_size=False), CELL.table_z, CELL.pick_area)
         fish_list = locator.locate(frame, detector.detect(frame.color), world.camera_pose())
         assert fish_list.valid
         viewer.show_fish(fish_list, frame)
@@ -898,6 +907,49 @@ def test_dragging_a_corner_or_a_slot_and_adding_one():
     assert not clear
 
 
+def test_the_layout_turns_to_face_where_the_real_arm_points(tmp_path):
+    # The cell drawn turned from the real table: point the arm at the pick area's middle on
+    # the real table (pendant), click "Face the arm": the layout turns about the arm to it
+    import shutil
+
+    from rfp_arm.kinematics import FR5
+    from rfp_arm.layout import load_layout_data, reach_joints, save_layout
+    from rfp_arm.workcell import DEFAULT_FILE, PANEL_FILE
+    from rfp_sim.layout_editor import LayoutEditor
+
+    workcell, panel = tmp_path / "workcell.yaml", tmp_path / "control_panel.yaml"
+    shutil.copy(DEFAULT_FILE, workcell)
+    shutil.copy(PANEL_FILE, panel)
+    use_test_camera(workcell)
+    save_layout(frozen_layout(), workcell, panel)
+    pointing = []
+    editor = LayoutEditor(workcell, panel, off_screen=True, log=lambda text: None,
+                          arm_joints=lambda: pointing[-1] if pointing else None)  # fmt: skip
+    try:
+        editor.face_arm()  # no ROS, or nothing publishing the joints: says what to start
+        assert "can't read the arm" in editor.message and editor.layout.yaw_deg == 0.0
+        middle = editor.cell.pick_area.center
+        bearing = math.atan2(middle[1], middle[0]) + math.radians(30.0)
+        reach = float(np.hypot(*middle))
+        target = tool_down((reach * math.cos(bearing), reach * math.sin(bearing), 0.2), 0.0)
+        pointing.append(reach_joints(editor.cell, target))
+        editor.face_arm()
+        assert editor.layout.yaw_deg == pytest.approx(30.0, abs=0.06)
+        center = editor.cell.pick_area.center  # the drawn cell follows
+        assert math.atan2(center[1], center[0]) == pytest.approx(bearing, abs=0.002)
+        assert not [f for f in editor.findings if f.error]
+        assert "cell_yaw_deg in workcell.yaml" in editor.save()
+        assert load_layout_data(workcell, panel)[1].yaw_deg == pytest.approx(30.0, abs=0.06)
+        folded = np.radians([0.0, -135.0, 110.0, -30.0, -90.0, 0.0])  # the TCP over the base
+        assert np.hypot(*editor.cell.tcp_of_tip(FR5.fk(folded))[:2, 3]) < 0.15
+        pointing.append(folded)
+        editor.face_arm()
+        assert "nowhere in particular" in editor.message
+        assert editor.layout.yaw_deg == pytest.approx(30.0, abs=0.06)  # unchanged
+    finally:
+        editor.plotter.close()
+
+
 def test_dragging_a_keep_out_zone():
     from rfp_sim.layout_editor import moved
 
@@ -934,6 +986,7 @@ def test_the_layout_editor_turns_drags_checks_and_saves(tmp_path):
     workcell, panel = tmp_path / "workcell.yaml", tmp_path / "control_panel.yaml"
     shutil.copy(DEFAULT_FILE, workcell)
     shutil.copy(PANEL_FILE, panel)
+    use_test_camera(workcell)  # the camera the tests' layout is made for
     save_layout(frozen_layout(), workcell, panel)  # the tests' layout, in the shipped files
     said = []
     editor = LayoutEditor(workcell, panel, off_screen=True, log=said.append)

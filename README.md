@@ -108,7 +108,7 @@ The arm picks every fish in the pick area and places it in a slot, the slots in 
 
 ## Set up the workcell
 
-[Arm/configs/workcell.yaml](Arm/configs/workcell.yaml) holds the cell's geometry; speeds, forces and the other limits are in [control_panel.yaml](control_panel.yaml). It ships with placeholders and `verified: false`: the real arm won't move until the cell is measured and the panel says `verified: true`.
+[Arm/configs/workcell.yaml](Arm/configs/workcell.yaml) holds the cell's geometry; speeds, forces and the other limits are in [control_panel.yaml](control_panel.yaml). It holds the robot PC's cell with `verified: false`: the real arm won't move until the cell is checked and the panel says `verified: true`.
 
 ### Lay it out in 3D
 
@@ -116,7 +116,7 @@ The arm picks every fish in the pick area and places it in a slot, the slots in 
 python main.py --mode setup
 ```
 
-The arm over the table, with the pick area (green), the placement zone and its slots (blue), keep-out zones (red), the camera's views (yellow) and the arm's reach. Drag a corner to size a zone, a blue ball to move a slot, a red ball to move a keep-out zone; the turn buttons move the cell 90° about the arm. Everything is checked as you go: red can't work, yellow may not. **Save** writes only the layout's lines (with a `.bak` copy) and makes a verified cell unverified. Every mode prints the same checks when it starts.
+The arm over the table, with the pick area (green), the placement zone and its slots (blue), keep-out zones (red), the camera's views (yellow) and the arm's reach. Drag a corner to size a zone, a blue ball to move a slot, a red ball to move a keep-out zone; the turn buttons move the cell 90° about the arm. **Face the arm** turns the whole cell about the arm so the pick area's middle lies where the real arm points: on the robot PC, start `./robot.sh ros` in another terminal, jog the cups over the middle of the real pick area, click it (it reads the joints; nothing moves). The turn is `cell_yaw_deg` in workcell.yaml. Everything is checked as you go: red can't work, yellow may not. **Save** writes only the layout's lines (with a `.bak` copy) and makes a verified cell unverified. Every mode prints the same checks when it starts.
 
 ### Which way is which
 
@@ -124,36 +124,36 @@ Everything is in the **arm's base frame**, the controller's too: origin in the m
 
 ### What to set
 
-The cell as shipped, from above: `o` the slot (placed heads point `v`, `heading_deg: -90`), `O` the observation pose. From 0.45 m the camera sees 0.68 × 0.38 m of the pick area (`vision.hfov_deg` 74); a fish past the view's edge gets a closer look.
+The cell as shipped, from above, before `cell_yaw_deg` turns all of it about the arm (−75: 75° clockwise): `o` the slot (placed heads point `v`, `heading_deg: -90`), `O` the observation pose. From 0.65 m the camera sees about 1.2 × 0.7 m (`vision.hfov_deg` 87). Each fish is then looked at from straight above it, just high enough to see all of it and a quarter more (about 0.5 m for a 0.6 m fish, at most `close_height`): the grasp goes by that look's depth, which is better the closer the camera is.
 
 ```
  y (m)
   0.90   ====================== operator side (keep out) =====================
   0.60   =====================================================================
   0.00   ----------------------------- [arm] --------------------------> +x
-                                         |
- -0.11   +----------------------+        |
-         | placement zone (blue)|        |
- -0.18   |                      |   +----------------------------------+
-         |                      |   | pick area (green):               |
- -0.37   |      o slot 1        |   | fish are expected here           |
-         |      v               |   |                O                 |
- -0.60   +----------------------+   |                                  |
- -0.62                              +----------------------------------+
-       -0.69                 -0.30 -0.225                             0.28   x (m)
+ -0.11   +-----------------+
+         | placement zone  |
+ -0.18   | (blue)  o slot 1|  +--------------------------------+
+         |         v       |  | pick area (green):             |
+         |                 |  | fish are expected here         |
+         |                 |  |               O                |
+ -0.50   +-----------------+  |                                |
+ -0.57                        +--------------------------------+
+       -0.69            -0.40 -0.37                          0.16   x (m)
 ```
 
 | Setting | What it is | Rules |
 |---|---|---|
+| `cell_yaw_deg` | The layout below turned about the arm (from +X toward +Y; negative: clockwise seen from above) | Set by **Face the arm**; taught `joints_deg` poses aren't turned |
 | `zones.pick_area` | Where fish are picked: a fish's middle must be inside | |
 | `zones.placement` | Where fish are placed | Not overlapping the pick area |
 | `placement.slots` | Where placed fish's middles go, in turn | One is enough (each placed fish is taken away); in the placement zone, within reach when carrying |
 | `placement.heading_deg` | Which way placed heads point (panel) | |
 | `zones.work` | The table: the tool and a held fish's ends stay over it | Half a fish length to spare around the pick area |
-| `table.z` | Height of the table top | A run says when the camera measures it more than 15 mm off |
+| `table.z` | Height of the table top | Check it with the touch-off (below); a run stops when the camera measures it more than 15 mm off (`table_tolerance_m`) |
 | `zones.exclusion` | Boxes the arm never enters (operator, equipment) | |
 | `observation.poses` | Where the search looks from, `observation.height` above the table | Prefer taught `joints_deg`, with j6 near 0 |
-| `observation.close_height` | The highest look over one fish | High enough to see a whole fish |
+| `observation.close_height` | The highest look over one fish (the grasp is measured from as low as sees all of it) | High enough to see a whole fish |
 | `tool.wrist_range_deg` | How far j6 may turn (vacuum tube; panel) | j6 = 0 where the tube hangs free |
 | `tool.tcp`, `camera.mount` | The cups' middle and the camera lens on the gripper | The first `dry-run` or `run` measures the mount; `--calibrate` again |
 | `gripper` | What switches the vacuum: `driver: serial`, `serial_port` (panel) | Test: `python Arm/scripts/gripper_bench.py status` |
@@ -162,11 +162,15 @@ The cell as shipped, from above: `o` the slot (placed heads point `v`, `heading_
 
 **Measuring:** bring the cups' middle over the point, pointing straight down, and run `pick_place.py --mode check`: it prints the cups' position (`TCP (mm)`) and the joints (`joints (deg)`, for `joints_deg`). The pendant shows the flange: same x and y, different z.
 
+**Touch-off:** in `--mode check`, jog the cups (manual mode) until their lips just touch the table. It prints how high the cups are over `table.z` and over the table the camera sees: both should read about 0 mm. The first comes from the arm alone (`table.z`, `tool.tcp`); the second from the camera's mount too (its height on the gripper isn't calibrated: measure it).
+
 ## Run it on the arm
 
 > Set the controller's speed limit and collision detection on the pendant. q or Esc in the camera window, or Ctrl+C, stops the arm; if the program dies mid-move, the move finishes.
 
-Every planned move is checked before it runs: no point of the arm faster than `tcp_speed_max`, the zones, the wrist's range, and the arm against itself ([collision_model.yaml](Arm/configs/collision_model.yaml); after changing the gripper, run `python Simulation/make_collision_model.py`).
+Every planned move is checked before it runs: no point of the arm faster than `tcp_speed_max`, the zones, the wrist's range, and the arm against itself ([collision_model.yaml](Arm/configs/collision_model.yaml); after changing the gripper, run `python Simulation/make_collision_model.py`). The panel ships slow for the first runs (`tcp_speed_max` 0.10 m/s, point-to-point moves at 10%).
+
+**Down onto a fish** the cups go at most `max_press` (15 mm) past the fish's top as vision measured it, and their lips never come within the table's clearance of the table: `table.z` or the table vision measured next to the fish, whichever is higher, and the table the camera sees on the way down, which stops the move (the fish is tried again). `feel_contact` (stop where the joint torques feel the fish) is off in the panel: turn it on once step 2 below shows the force rise as you push the cups.
 
 **Once, on the robot PC** (Ubuntu 22.04, controller at 192.168.58.2):
 
@@ -184,14 +188,18 @@ It installs ROS 2, MoveIt 2, ros2_control and librealsense, and builds FAIRINO's
 | Step | Command | Arm moves | Check |
 |---|---|---|---|
 | 1 | `./robot.sh --mode sim --cycles 2` | in the 3D twin (mock hardware) | Whole cycles planned and run |
-| 2 | `./robot.sh --mode check` | no | Driver and firmware; the controller's flange about 100 mm from MoveIt's tip link; the fish found where they lie; the force on the gripper (push the cups; set `contact_force`, `press_force_max`) |
+| 2 | `./robot.sh --mode check` | no | Driver and firmware; the controller's flange about 100 mm from MoveIt's tip link; the fish found where they lie; the touch-off (above); the force on the gripper (push the cups; set `contact_force`, `press_force_max`) |
 | 3 | `python Arm/scripts/gripper_bench.py pulse 500` | no | The valve clicks |
 | 4 | `./robot.sh --mode dry-run --step` | **yes**, vacuum off | The camera's mount measured over a fish first; then Enter before each move; approaches stop 50 mm above the fish |
 | 5 | `./robot.sh --mode run --cycles 1` | **yes** | One fish; then without `--cycles` |
 
 If the arm went the opposite way to the fish in the image, the camera is mounted turned: step 4 measures it, and a run stops by itself when a fish lying still seems to jump as the camera moves.
 
-**Firmware 3.7:** its command server may send no state. The run then goes on without it, saying that the emergency stop, errors and joint torques can't be read here (the approach is then blind: no contact is felt).
+**The controller** has to be in automatic mode with no errors before the arm moves. Steps 4 and 5 check it and ask to clear its errors and switch it to automatic (`ResetAllError()`, `Mode(0)`, `RobotEnable(1)`: nothing moves); `-y` does it without asking. A pressed emergency stop, or a joint past its limit (jog it back in manual mode), is for you on the pendant.
+
+**If the launch stops** on the way up, the run says why from its log: FAIRINO's packages not sourced, or the driver's connection to the controller failed (another program connected to it: a 3.7 controller takes one, so the command server starts once the driver is up).
+
+**Firmware 3.7:** its command server may send no state. The run then goes on without it, saying that the emergency stop, errors and joint torques can't be read here (the approach is then blind: no contact is felt; automatic mode can't be read, so the run asks to set it each time).
 
 ## Documentation
 

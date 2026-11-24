@@ -264,7 +264,9 @@ def test_each_failed_check_gives_its_code_and_clears_the_poses():
 
     # too narrow for the cups, or lumpy: picked all the same (the fish given to the arm are
     # big enough; the hold check tells whether the cups sealed)
-    assert code(middle, change=sliver, require_heading=False) == "none"
+    assert code(middle, change=sliver, require_heading=False, measure_table=False) == "none"
+    # measured, the "table" around so small an outline is the fish under it: 0 mm high
+    assert code(middle, change=sliver, require_heading=False) == "invalid_depth"
 
     def lumpy(frame, detections):  # 3 cm steps every ~6 cm: no spot where all six cups seal
         rows, columns = np.indices(frame.depth.shape)
@@ -342,7 +344,9 @@ def test_a_table_lower_than_the_workcell_says_doesnt_shrink_the_fish():
     assert fish.table_z == pytest.approx(-0.08, abs=0.002)
     assert fish.thickness == pytest.approx(0.10, abs=0.003)
     assert fish.total_length == pytest.approx(0.585, abs=0.006)
-    assert np.allclose(fish.middle, (0.40, -0.10, 0.02), atol=0.004)
+    # the cups go to the higher of the depth's reading (0.02) and table.z plus the height
+    # measured: 80 mm short, not into the fish (and the cycle stops: the table is off)
+    assert np.allclose(fish.middle, (0.40, -0.10, 0.10), atol=0.004)
     blind = locator(measure_table=False).locate(frame, detections, CAMERA).fish[0]
     assert not blind.table_measured and blind.thickness == pytest.approx(0.02, abs=0.003)
     assert blind.total_length < 0.56  # measured from table.z: short and thin

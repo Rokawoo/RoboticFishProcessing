@@ -26,6 +26,8 @@ PICK_AREA_TOLERANCE = 0.03
 # How far j6 may turn unless the panel says otherwise (tool.wrist_range_deg): the vacuum
 # tube runs into the gripper, so the wrist never winds a full turn. 0: the tube hangs free
 WRIST_RANGE_DEG = (-170.0, 170.0)
+# m: grasp.max_press may be at most this (the bellows compress 30 mm; the rest a margin)
+MAX_PRESS_LIMIT = 0.025
 HEADING_DEG = 0.0  # where placed fish point their heads: from +X toward +Y (AS-52)
 
 
@@ -58,51 +60,96 @@ class WorkcellError(ValueError):
     """The workcell file is missing something, or its values contradict each other."""
 
 
+def turn_xy(points, angle: float) -> np.ndarray:
+    """Points (x, y): one, or (n, 2), turned `angle` (rad) about the base's axis,
+    counter-clockwise seen from above."""
+    c, s = math.cos(angle), math.sin(angle)
+    return np.asarray(points, float) @ np.array([[c, s], [-s, c]])
+
+
+def apart(a: np.ndarray, b: np.ndarray) -> bool:
+    """Whether two convex polygons (n, 2) are apart (touching counts as apart)."""
+    for poly in (a, b):
+        for p, q in zip(poly, np.roll(poly, -1, axis=0)):
+            normal = np.array([q[1] - p[1], p[0] - q[0]])
+            pa, pb = a @ normal, b @ normal
+            if pa.max() <= pb.min() + 1e-12 or pb.max() <= pa.min() + 1e-12:
+                return True
+    return False
+
+
 @dataclass(frozen=True)
 class Rect:
-    """Rectangle on the table: x and y ranges in {B}."""
+    """Rectangle on the table: x and y ranges in the cell's frame, which is turned `yaw` (rad)
+    about the arm's base from {B} (the workcell's cell_yaw_deg)."""
 
     x: tuple[float, float]
     y: tuple[float, float]
+    yaw: float = 0.0
+
+    def local(self, xy) -> np.ndarray:
+        """Points of {B} (x, y, more ignored; one or (n, ...)) in the rectangle's frame."""
+        return turn_xy(np.asarray(xy, float)[..., :2], -self.yaw)
+
+    def base(self, xy) -> np.ndarray:
+        """Points of the rectangle's frame in {B}."""
+        return turn_xy(xy, self.yaw)
+
+    def inside(self, points, margin: float = 0.0) -> np.ndarray:
+        """Which points are inside, at least `margin` from the edges (< 0: that far out)."""
+        p = self.local(points)
+        x, y = p[..., 0], p[..., 1]
+        return (
+            (self.x[0] + margin <= x)
+            & (x <= self.x[1] - margin)
+            & (self.y[0] + margin <= y)
+            & (y <= self.y[1] - margin)
+        )
 
     def contains(self, xy, margin: float = 0.0) -> bool:
-        return (
-            self.x[0] + margin <= xy[0] <= self.x[1] - margin
-            and self.y[0] + margin <= xy[1] <= self.y[1] - margin
-        )
+        return bool(self.inside(xy, margin))
 
-    def overlaps(self, other: "Rect") -> bool:
-        return (
-            self.x[0] < other.x[1]
-            and other.x[0] < self.x[1]
-            and self.y[0] < other.y[1]
-            and other.y[0] < self.y[1]
-        )
+    def corners(self) -> np.ndarray:
+        """(4, 2) corners in {B}, around the rectangle."""
+        (x0, x1), (y0, y1) = self.x, self.y
+        return self.base(np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]))
 
     @property
-    def area(self) -> tuple[tuple[float, float], tuple[float, float]]:
-        return self.x, self.y
+    def center(self) -> np.ndarray:
+        return self.base(np.array([sum(self.x) / 2, sum(self.y) / 2]))
+
+    def grown(self, by: float) -> "Rect":
+        return Rect((self.x[0] - by, self.x[1] + by), (self.y[0] - by, self.y[1] + by), self.yaw)
+
+    def overlaps(self, other: "Rect") -> bool:
+        """Whether their insides overlap (edges touching don't)."""
+        return not apart(self.corners(), other.corners())
 
 
 @dataclass(frozen=True)
 class Box:
-    """Axis-aligned box in {B}."""
+    """Box: x and y ranges in a frame turned `yaw` about the arm's base from {B}, and z."""
 
     name: str
     x: tuple[float, float]
     y: tuple[float, float]
     z: tuple[float, float]
+    yaw: float = 0.0
+
+    @property
+    def footprint(self) -> Rect:
+        return Rect(self.x, self.y, self.yaw)
 
     def contains(self, point, margin: float = 0.0) -> bool:
         """Whether `point` is inside; with a margin > 0, also if it is that close outside."""
-        return all(
-            low - margin <= value <= high + margin
-            for value, (low, high) in zip(point, (self.x, self.y, self.z))
-        )
+        if not self.z[0] - margin <= point[2] <= self.z[1] + margin:
+            return False
+        return self.footprint.contains(point, -margin)
 
     @property
     def center(self) -> tuple[float, float, float]:
-        return tuple((low + high) / 2 for low, high in (self.x, self.y, self.z))
+        x, y = self.footprint.center
+        return float(x), float(y), sum(self.z) / 2
 
     @property
     def size(self) -> tuple[float, float, float]:
@@ -171,7 +218,10 @@ class GraspSettings:
     feel_speed: float = 0.02  # m/s
     contact_force: float = 15.0  # N pushing back: the cups are on the fish
     press_force_max: float = 40.0  # N: stop pressing, whatever press_distance says
-    feel_max_depth: float = 0.025  # m past the expected surface with no contact: E_NO_SEAL
+    feel_max_depth: float = 0.015  # m past the expected surface with no contact: E_NO_SEAL
+    # m: the deepest the cups ever go past the fish's measured surface, feeling or not (the
+    # bellows compress 30 mm: deeper, the arm pushes into the fish and the table)
+    max_press: float = 0.015
     # Controller commands sent before pressing and after the hold is confirmed, e.g. the
     # controller's ImpedanceControlStartStop(...) for a compliant wrist (parameters still to
     # be found on the arm)
@@ -222,6 +272,8 @@ class Workcell:
     observation_poses: list[ObservationPose]
     placement_heading: float  # rad (AS-52)
     slots: list[tuple[float, float]]
+    # rad the layout (zones, slots, observation poses, heading) is turned about the base
+    cell_yaw: float = 0.0
     # Camera height above the table (m) for a look centered on one fish; None: no such looks
     close_look_height: float | None = None
     # How far the last joint may turn (rad): the vacuum tube must not wind up
@@ -262,11 +314,9 @@ class Workcell:
         return self.pick_area.contains(xy, -PICK_AREA_TOLERANCE)
 
     @property
-    def pick_area_seen(self) -> tuple[tuple[float, float], tuple[float, float]]:
-        """The pick area as vision checks it (x and y ranges): PICK_AREA_TOLERANCE wider."""
-        (x0, x1), (y0, y1) = self.pick_area.area
-        t = PICK_AREA_TOLERANCE
-        return (x0 - t, x1 + t), (y0 - t, y1 + t)
+    def pick_area_seen(self) -> Rect:
+        """The pick area as vision checks it: PICK_AREA_TOLERANCE wider."""
+        return self.pick_area.grown(PICK_AREA_TOLERANCE)
 
     # -- limits (SF-10, SF-13) ---------------------------------------------
     def pose_problem(
@@ -297,7 +347,7 @@ class Workcell:
                     return (
                         f"{name} would enter the exclusion zone '{exclusion.name}' at {_mm(point)}"
                     )
-            over_table = Rect(zone.x, zone.y).contains(point, -1e-9)
+            over_table = zone.footprint.contains(point, -1e-9)
             if work_zone and (not over_table or point[2] > zone.z[1] + 1e-9):
                 return f"{name} would leave the work zone at {_mm(point)}"
             if over_table and is_tool and point[2] < floor - 1e-9:
@@ -311,10 +361,9 @@ class Workcell:
     def problems(self) -> list[str]:
         """What is wrong with the workcell's own values (empty = consistent)."""
         found = []
-        zone = Rect(self.work_zone.x, self.work_zone.y)
+        zone = self.work_zone.footprint
         for name, rect in (("pick area", self.pick_area), ("placement zone", self.placement_zone)):
-            corners = [(x, y) for x in rect.x for y in rect.y]
-            if not all(zone.contains(c, -1e-9) for c in corners):
+            if not zone.inside(rect.corners(), -1e-9).all():
                 found.append(f"the {name} is not inside the work zone")
         if self.pick_area.overlaps(self.placement_zone):
             found.append("the placement zone overlaps the pick area (AS-51)")
@@ -345,6 +394,11 @@ class Workcell:
                 found.append(f"motion.{name} must be above 0 and at most tcp_speed_max")
         if not 0 < limits.ptp_velocity_scale <= 1 or not 0 < limits.ptp_acceleration_scale <= 1:
             found.append("motion.ptp_*_scale must be above 0 and at most 1")
+        g = self.grasp
+        if not 0 < g.max_press <= MAX_PRESS_LIMIT:
+            found.append(f"grasp.max_press must be above 0 and at most {MAX_PRESS_LIMIT}")
+        if not 0 <= g.press_distance <= g.max_press:
+            found.append("grasp.press_distance must be at least 0 and at most max_press")
         if self.gripper.driver not in ("serial", "http", "controller"):
             found.append("gripper.driver must be 'serial', 'http' or 'controller'")
         elif self.gripper.driver == "serial" and not self.gripper.serial_port:
@@ -383,11 +437,13 @@ def load_workcell(path: Path | None = None, panel: Path | None = PANEL_FILE) -> 
 
 
 def workcell_from_mapping(data: dict) -> Workcell:
-    _only(data, "workcell", {"verified", "robot", "tool", "camera", "table", "zones",
-                             "observation", "placement", "motion", "grasp", "gripper"})  # fmt: skip
+    allowed = {"verified", "robot", "tool", "camera", "table", "cell_yaw_deg", "zones",
+               "observation", "placement", "motion", "grasp", "gripper"}  # fmt: skip
+    _only(data, "workcell", allowed)
     robot, tool, camera, table = data["robot"], data["tool"], data["camera"], data["table"]
     zones, observation, placement = data["zones"], data["observation"], data["placement"]
     table_z = float(table["z"])
+    yaw = math.radians(float(data.get("cell_yaw_deg", 0.0)))
     work = zones["work"]
     body = tool.get("body")
     model = tool.get("collision_model")
@@ -399,11 +455,11 @@ def workcell_from_mapping(data: dict) -> Workcell:
         if "joints_deg" in entry:
             joints = tuple(math.radians(float(v)) for v in entry["joints_deg"])
             poses.append(ObservationPose(name, joints=joints))
-        else:
-            x, y = (float(v) for v in entry["camera_xy"])
+        else:  # in the cell's frame, turned with it
+            x, y = turn_xy([float(v) for v in entry["camera_xy"]], yaw)
             z = table_z + float(observation["height"])
-            yaw = math.radians(float(entry.get("yaw_deg", 0.0)))
-            poses.append(ObservationPose(name, camera=tool_down((x, y, z), yaw)))
+            look = math.radians(float(entry.get("yaw_deg", 0.0))) + yaw
+            poses.append(ObservationPose(name, camera=tool_down((x, y, z), look)))
 
     return Workcell(
         verified=bool(data.get("verified", False)),
@@ -426,11 +482,12 @@ def workcell_from_mapping(data: dict) -> Workcell:
             _range(work["x"]),
             _range(work["y"]),
             (table_z, table_z + float(work["height"])),
+            yaw,
         ),
-        pick_area=_rect(zones["pick_area"]),
-        placement_zone=_rect(zones["placement"]),
+        pick_area=_rect(zones["pick_area"], yaw),
+        placement_zone=_rect(zones["placement"], yaw),
         exclusion_zones=[
-            Box(str(z["name"]), _range(z["x"]), _range(z["y"]), _range(z["z"]))
+            Box(str(z["name"]), _range(z["x"]), _range(z["y"]), _range(z["z"]), yaw)
             for z in zones.get("exclusion") or []
         ],
         observation_poses=poses,
@@ -439,8 +496,9 @@ def workcell_from_mapping(data: dict) -> Workcell:
             if observation.get("close_height") is not None
             else None
         ),
-        placement_heading=math.radians(float(placement.get("heading_deg", HEADING_DEG))),
-        slots=[(float(x), float(y)) for x, y in placement["slots"]],
+        placement_heading=math.radians(float(placement.get("heading_deg", HEADING_DEG))) + yaw,
+        slots=[tuple(float(v) for v in turn_xy(slot, yaw)) for slot in placement["slots"]],
+        cell_yaw=yaw,
         motion=_settings(MotionLimits, data.get("motion"), "motion"),
         grasp=_settings(GraspSettings, data.get("grasp"), "grasp"),
         gripper=_settings(GripperSettings, data.get("gripper"), "gripper"),
@@ -463,8 +521,8 @@ def _range(values) -> tuple[float, float]:
     return low, high
 
 
-def _rect(data: dict) -> Rect:
-    return Rect(_range(data["x"]), _range(data["y"]))
+def _rect(data: dict, yaw: float = 0.0) -> Rect:
+    return Rect(_range(data["x"]), _range(data["y"]), yaw)
 
 
 def _pose(data: dict) -> np.ndarray:
@@ -480,14 +538,18 @@ def _settings(cls, data: dict | None, where: str):
 
 
 def describe(workcell: Workcell) -> list[str]:
-    """A few lines for the operator: what this workcell is."""
+    """A few lines for the operator: what this workcell is (zones and heading as the files
+    have them, in the cell's frame)."""
     pick, place = workcell.pick_area, workcell.placement_zone
+    turn = math.degrees(workcell.cell_yaw)
+    heading = math.degrees(math.remainder(workcell.placement_heading - workcell.cell_yaw, math.tau))
     return [
-        f"table at z = {workcell.table_z * 1000:.0f} mm; work zone {_span(workcell.work_zone)}",
+        f"table at z = {workcell.table_z * 1000:.0f} mm; work zone {_span(workcell.work_zone)}"
+        + (f"; the cell turned {turn:.1f} deg about the arm" if abs(turn) > 1e-6 else ""),
         (
             f"pick area x {_pair(pick.x)}, y {_pair(pick.y)} mm; placement zone "
             f"x {_pair(place.x)}, y {_pair(place.y)} mm, {len(workcell.slots)} slots, "
-            f"heading {math.degrees(workcell.placement_heading):.0f} deg"
+            f"heading {heading:.0f} deg"
         ),
         (
             f"{len(workcell.observation_poses)} observation pose(s); "
