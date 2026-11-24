@@ -378,6 +378,16 @@ def test_manual_mode_is_a_fault_and_the_controller_can_be_made_ready(ros, firmwa
     assert not robot.manual_mode and robot.error == (0, 0) and io.fault() is None
     robot.emergency_stop = True  # that one stays: released by hand
     assert io.make_ready(timeout=0.2) == "emergency stop pressed"
+    robot.emergency_stop, robot.manual_mode = False, True
+    sent = io.send
+
+    def worded_otherwise(text, timeout=2.0):  # a driver whose answer isn't the one expected
+        answer = sent(text, timeout)
+        return "?" if text == "Mode(0)" else answer
+
+    io.send = worded_otherwise
+    assert io.make_ready() is None  # its state says automatic: the state decides
+    assert not robot.manual_mode
 
 
 @pytest.mark.parametrize("firmware", ["3.7.5", "3.7.8", "3.9.5"])

@@ -252,8 +252,9 @@ class FairinoIO:
     def make_ready(self, timeout: float = 3.0) -> str | None:
         """Clear the controller's errors, switch it to automatic and enable it
         (ResetAllError(), Mode(0), RobotEnable(1)): nothing moves. What still keeps it from
-        moving the arm (`fault()`, or a command it refused), or None. Without its state it
-        can't tell: None once the commands are answered."""
+        moving the arm (`fault()`, and the commands it refused), or None. With its state, the
+        state decides (an answer the driver words otherwise doesn't stop a ready arm);
+        without it, the answers do."""
         refused = []
         for text in ("ResetAllError()", "Mode(0)", "RobotEnable(1)"):
             answer = self.send(text)
@@ -264,7 +265,7 @@ class FairinoIO:
         deadline = self._clock() + timeout
         while (fault := self.fault()) and self._clock() < deadline:
             self._sleep(0.05)
-        return "; ".join([*refused, *([fault] if fault else [])]) or None
+        return "; ".join([*refused, fault]) if fault else None
 
     def report(self) -> list[str]:
         """What the controller reports now, for the operator (check mode)."""
